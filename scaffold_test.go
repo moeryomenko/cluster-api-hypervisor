@@ -7,7 +7,7 @@
 //
 //	GO111MODULE=off go test .
 //
-// The subprocess checks (`go tool <name>`) force GO111MODULE=on and
+// The subprocess checks (`go tool -n <name>`) force GO111MODULE=on and
 // GOPROXY=off so they are deterministic, offline, and fail fast.
 
 package main
@@ -29,7 +29,7 @@ const (
 )
 
 // requiredTools are the Go tool directives that tools/go.mod must declare
-// and that must be resolvable as `go tool <name>`.
+// and that must be resolvable as `go tool -n <name>`.
 var requiredTools = []string{
 	"controller-gen",
 	"golangci-lint",
@@ -84,12 +84,20 @@ func TestToolchainContract(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 				defer cancel()
 
-				cmd := exec.CommandContext(ctx, "go", "tool", name)
+				// `go tool -n` prints the resolved tool path without
+				// executing the binary, so it cannot hang on no-args usage
+				// (gotestsum) or exit non-zero for a usage error
+				// (controller-gen, setup-envtest). An undeclared tool fails
+				// with "go: no such tool" and a non-zero exit.
+				cmd := exec.CommandContext(ctx, "go", "tool", "-n", name)
 				cmd.Env = append(os.Environ(), "GO111MODULE=on", "GOPROXY=off")
 				out, err := cmd.CombinedOutput()
 				if err != nil {
-					t.Fatalf("go tool %s: not resolvable: %v: %s",
+					t.Fatalf("go tool -n %s: not resolvable: %v: %s",
 						name, err, strings.TrimSpace(string(out)))
+				}
+				if resolved := strings.TrimSpace(string(out)); resolved == "" {
+					t.Fatalf("go tool -n %s: resolved to an empty path", name)
 				}
 			})
 		}
