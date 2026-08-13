@@ -43,13 +43,12 @@ tidy: ## Tidy go module dependencies
 	@go work sync
 
 .PHONY: generate
-generate: ## Run controller-gen codegen (no-op until api/ exists)
-	@if [ ! -d api ]; then \
-		echo "api/ does not exist yet; skipping code generation"; \
-	else \
-		go tool controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."; \
-		go tool controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases; \
-	fi
+generate: ## Run controller-gen codegen (deepcopy, CRDs, RBAC, webhook manifests)
+	@go tool controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
+	@go tool controller-gen crd:crdVersions=v1 rbac:roleName=manager-role webhook paths="./api/..." \
+		output:crd:artifacts:config=config/crd/bases \
+		output:rbac:artifacts:config=config/rbac \
+		output:webhook:artifacts:config=config/webhook
 
 .PHONY: generate-check
 generate-check: ## Fail if a second generate changes tracked files
