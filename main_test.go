@@ -797,3 +797,182 @@ func assertPausedClusterUntouched(t *testing.T, c client.Client, key client.Obje
 		time.Sleep(250 * time.Millisecond)
 	}
 }
+
+// Bootstrap and control-plane wiring contract (test-first): the single
+// manager built from this package must register the bootstrap and
+// control-plane controllers, HypervisorConfig and HypervisorControlPlane, in
+// addition to the two infrastructure controllers and the five webhooks, and
+// must accept one concurrency flag per controller.
+//
+// The pinned contract, in prose:
+//
+//   - The binary documents --hypervisorconfig-concurrency and
+//     --hypervisorcontrolplane-concurrency in its --help output. Both are
+//     integer flags that default to 1, and both reject a non-integer value at
+//     startup with a flag parse error.
+//   - Started against the envtest control plane with a kubeconfig and a
+//     webhook certificate directory, the manager accepts both concurrency
+//     flags and runs. The controller-runtime metrics endpoint (the manager
+//     does not configure one, so it binds the standard :8080) then exposes,
+//     per controller, a controller_runtime_max_concurrent_reconciles series
+//     valued at the concurrency flag of that controller. That series is the
+//     registration proof: a registered controller announces itself through
+//     the metric, and its value proves the flag is plumbed into the
+//     controller options. The proof needs no host operation and no fixture
+//     objects.
+//   - The registration proof is deliberately metric-only and creates no
+//     HypervisorConfig or HypervisorControlPlane objects. A HypervisorConfig
+//     linked to a CAPI Machine and Cluster would trigger real PKI generation
+//     (a cluster PKI Secret and a rendered data Secret), and a paused probe
+//     would be filtered by the controllers' paused event gate before any
+//     reconcile; the metrics series alone prove registration and flag
+//     plumbing. With no objects on the control plane, neither controller
+//     records any reconcile across a settle window, which is the zero
+//     side-effect proof: a reconcile that ran would surface as a
+//     controller_runtime_reconcile_total series.
+//
+// While the manager does not yet wire the controllers, the
+// --hypervisorconfig-concurrency and --hypervisorcontrolplane-concurrency
+// flags are missing: the binary exits on startup with an unknown-flag error
+// and --help does not document the flags, so this suite fails (red phase).
+
+// bootstrapConcurrencyFlags are the per-controller concurrency flags the
+// manager must document and accept for the bootstrap and control-plane
+// controllers: one for the HypervisorConfig controller, one for the
+// HypervisorControlPlane controller.
+var bootstrapConcurrencyFlags = []string{
+	"hypervisorconfig-concurrency",
+	"hypervisorcontrolplane-concurrency",
+}
+
+// TestMainBootstrapControllerFlags runs the provider binary with --help and
+// asserts that both per-controller concurrency flags are documented as
+// integer flags defaulting to 1, and that the binary rejects a non-integer
+// value for each flag at startup.
+func TestMainBootstrapControllerFlags(t *testing.T) {
+	bin := buildManagerBinary(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin, "--help")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("manager --help exited with an error: %v (stderr: %s)", err, stderr.String())
+	}
+	output := stdout.String() + stderr.String()
+
+	for _, flag := range bootstrapConcurrencyFlags {
+		t.Run(flag, func(t *testing.T) {
+			// The flag is documented with the integer type.
+			intFlag := regexp.MustCompile(`(?m)--` + flag + `\s+int\b`)
+			if !intFlag.MatchString(output) {
+				t.Errorf("manager --help does not document --%s as an int flag", flag)
+			}
+
+			// The documented default is 1.
+			defaultOne := regexp.MustCompile(`(?m)--` + flag + `[^\n]*\(default 1\)`)
+			if !defaultOne.MatchString(output) {
+				t.Errorf("manager --help does not document --%s with default 1", flag)
+			}
+
+			// A non-integer value is rejected as a flag parse error, which
+			// proves the flag is parsed as an integer at runtime rather than
+			// accepted as an opaque string.
+			reject := exec.CommandContext(ctx, bin, "--"+flag+"=not-an-int")
+			var rejectOut, rejectErr bytes.Buffer
+			reject.Stdout = &rejectOut
+			reject.Stderr = &rejectErr
+			if err := reject.Run(); err == nil {
+				t.Fatalf("manager accepted --%s=not-an-int, want a flag parse error", flag)
+			}
+			if msg := rejectErr.String(); !strings.Contains(msg, "invalid argument") {
+				t.Errorf("manager rejected --%s=not-an-int with %q, want an invalid-argument parse error", flag, msg)
+			}
+		})
+	}
+}
+
+// TestMainBootstrapControllersRegistered starts the provider binary against
+// the envtest control plane with both per-controller concurrency flags set to
+// a non-default value and asserts the wiring contract: the manager runs, the
+// metrics endpoint exposes one max-concurrent-reconciles series per
+// controller carrying the flag value, and neither controller records any
+// reconcile across a settle window. The proof creates no fixture objects: a
+// HypervisorConfig linked to a Machine and Cluster would trigger real PKI
+// generation and data-Secret rendering, and a paused probe would be filtered
+// by the controllers' paused event gate; the metrics series alone prove
+// registration and flag plumbing, and the reconcile series absence proves
+// zero side effects.
+func TestMainBootstrapControllersRegistered(t *testing.T) {
+	envTest, err := helpers.StartEnvTest(t)
+	if err != nil {
+		t.Fatalf("helpers.StartEnvTest: %v", err)
+	}
+	installCAPICoreCRDs(t, envTest.Env.Config)
+
+	kubeconfigPath := writeEnvTestKubeconfig(t, envTest.Env.KubeConfig)
+
+	certDir := t.TempDir()
+	_, serverCertPEM, serverKeyPEM := generateWebhookCerts(t)
+	writeFile(t, filepath.Join(certDir, "tls.crt"), serverCertPEM)
+	writeFile(t, filepath.Join(certDir, "tls.key"), serverKeyPEM)
+
+	// The concurrency flags are passed at their non-default value 2, so the
+	// metrics series values prove the flags are plumbed into the controller
+	// options and not merely accepted.
+	mgr := startManager(t,
+		"--kubeconfig", kubeconfigPath,
+		"--webhook-cert-dir", certDir,
+		"--webhook-port", "9443",
+		"--health-addr", ":9440",
+		"--hypervisorconfig-concurrency", "2",
+		"--hypervisorcontrolplane-concurrency", "2",
+	)
+
+	waitForHealthz(t, mgr, "http://127.0.0.1:9440/healthz", 30*time.Second)
+
+	// Registration proof without host operations or side effects: the metrics
+	// endpoint exposes a max-concurrent-reconciles series per controller
+	// carrying the concurrency flag value.
+	waitForControllerConcurrency(t, mgr, "hypervisorconfig", 2, 30*time.Second)
+	waitForControllerConcurrency(t, mgr, "hypervisorcontrolplane", 2, 30*time.Second)
+
+	// Zero reconcile side effects: with no fixture objects on the control
+	// plane, neither controller records any reconcile during a settle window.
+	// A reconcile that ran would surface as a reconcile_total series and fail
+	// the assertion.
+	assertNoControllerReconciles(t, mgr, "hypervisorconfig", 5*time.Second)
+	assertNoControllerReconciles(t, mgr, "hypervisorcontrolplane", 5*time.Second)
+
+	mgr.stop(t)
+}
+
+// assertNoControllerReconciles polls the manager metrics endpoint for a
+// settle window and fails as soon as the named controller records any
+// reconcile, regardless of the result. A registered controller with no
+// objects to reconcile records nothing; the absence of the series is the
+// zero-side-effect proof.
+func assertNoControllerReconciles(t *testing.T, mgr *runningManager, controller string, timeout time.Duration) {
+	t.Helper()
+
+	re := regexp.MustCompile(`controller_runtime_reconcile_total\{controller="` + controller + `"`)
+	deadline := time.Now().Add(timeout)
+	for {
+		if !mgr.alive() {
+			t.Fatalf("manager exited while watching controller %q reconcile activity; stderr:\n%s", controller, mgr.stderr.String())
+		}
+		body, err := scrapeMetrics(mgr)
+		if err == nil {
+			if m := re.FindString(body); m != "" {
+				t.Fatalf("controller %q recorded an unexpected reconcile: %s", controller, m)
+			}
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
