@@ -930,6 +930,7 @@ func TestReconcileDependencyFailureSurfaces(t *testing.T) {
 				{op: opByName, name: testBridge},
 				{op: opAdd, kind: "bridge", name: testBridge},
 			},
+			wantNft: [][]string{},
 		},
 		{
 			name:      "dnsmasq start fails",
@@ -940,6 +941,7 @@ func TestReconcileDependencyFailureSurfaces(t *testing.T) {
 				{op: opAdd, kind: "bridge", name: testBridge},
 			},
 			wantDns: []string{"start:dnsmasq"},
+			wantNft: [][]string{},
 		},
 		{
 			name:      "nft apply fails",
