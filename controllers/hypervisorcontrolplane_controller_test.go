@@ -77,12 +77,16 @@ package controllers
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
@@ -182,29 +186,42 @@ type controlPlaneFixture struct {
 	newConfig     *recordingNewConfig
 	createMachine *recordingCreateMachine
 	genPKI        *recordingCPPKI
+	health        *recordingHealthCheck
 }
 
 // newControlPlaneFixture builds the reconciler under test over the recording
-// seams. The composite literal pins the exact reconciler shape the
-// implementation must expose: the controller-runtime wiring plus the
-// injectable NewConfig, CreateMachine, and GeneratePKI dependencies.
+// seams with the canned cluster PKI fixture bytes.
 func newControlPlaneFixture(t *testing.T, c client.Client) *controlPlaneFixture {
+	t.Helper()
+	return newControlPlaneFixtureWithPKI(t, c, fixtureClusterPKI())
+}
+
+// newControlPlaneFixtureWithPKI builds the reconciler under test over the
+// recording seams with the given cluster PKI. The composite literal pins the
+// exact reconciler shape the implementation must expose: the
+// controller-runtime wiring plus the injectable NewConfig, CreateMachine,
+// GeneratePKI, and CheckAPIServerHealth dependencies. The readiness tests
+// pass real generated PKI so the rendered kubeconfig is parseable; the
+// machine-creation suite keeps the canned fixture bytes.
+func newControlPlaneFixtureWithPKI(t *testing.T, c client.Client, pk pki.ClusterPKI) *controlPlaneFixture {
 	t.Helper()
 
 	newConfig := &recordingNewConfig{}
 	createMachine := &recordingCreateMachine{c: c}
-	genPKI := &recordingCPPKI{pk: fixtureClusterPKI()}
+	genPKI := &recordingCPPKI{pk: pk}
+	health := &recordingHealthCheck{}
 
 	r := &HypervisorControlPlaneReconciler{
-		Client:        c,
-		Scheme:        newScheme(),
-		Recorder:      record.NewFakeRecorder(16),
-		NewConfig:     newConfig.build,
-		CreateMachine: createMachine.create,
-		GeneratePKI:   genPKI.gen,
+		Client:               c,
+		Scheme:               newScheme(),
+		Recorder:             record.NewFakeRecorder(16),
+		NewConfig:            newConfig.build,
+		CreateMachine:        createMachine.create,
+		GeneratePKI:          genPKI.gen,
+		CheckAPIServerHealth: health.check,
 	}
 
-	return &controlPlaneFixture{r: r, newConfig: newConfig, createMachine: createMachine, genPKI: genPKI}
+	return &controlPlaneFixture{r: r, newConfig: newConfig, createMachine: createMachine, genPKI: genPKI, health: health}
 }
 
 // linkedControlPlane is the CAPI linkage the machine-creation contract reads:
@@ -743,4 +760,436 @@ func TestControlPlaneMachineCreationFailure(t *testing.T) {
 			t.Errorf("failed reconcile created %d cluster PKI Secrets, want 0", got)
 		}
 	})
+}
+
+// Readiness and kubeconfig contract (test-first, red).
+//
+// This section pins the control-plane readiness contract: once the first
+// control-plane Machine's VM is up, the reconciler polls the workload
+// apiserver healthz endpoint through an injectable seam, and only when the
+// apiserver is healthy does it write the conventional <cluster>-kubeconfig
+// Secret, set status.initialized and status.ready, and report the
+// ControlPlaneReady condition.
+//
+// The contract, in prose:
+//
+//   - HypervisorControlPlaneReconciler gains one readiness seam,
+//     CheckAPIServerHealth, called as
+//     CheckAPIServerHealth(ctx, cpIP, clientCert, clientKey, caCert) and
+//     returning nil exactly when the workload apiserver is healthy. The tests
+//     inject a recording fake whose result (healthy, not ready, failing) is
+//     chosen per test.
+//   - The reconciler resolves the first control-plane Machine (the one with
+//     the control-plane role label) and its linked HypervisorMachine (the
+//     conventional same-name infrastructure object), reads the InternalIP
+//     address, and polls the apiserver at https://<ip>:6443 through the seam
+//     with the cluster PKI material as the client certificate and CA.
+//   - Before the VM reports an address the reconciler must not poll, must not
+//     write anything, and must requeue: nothing in the committed watch set
+//     (control plane, Machines, Clusters) fires on a HypervisorMachine status
+//     change, so the requeue is what eventually notices the boot.
+//   - When the poll reports healthy, the reconciler renders the admin
+//     kubeconfig with the server https://<cp-ip>:6443 and the cluster CA,
+//     writes it as the conventional <cluster>-kubeconfig Secret in the
+//     control plane's namespace under the CAPI data key "value", and sets
+//     status.initialized, status.ready, and the ControlPlaneReady condition.
+//   - The poller is bounded: a never-healthy apiserver ends the reconcile in
+//     a requeue and the kubeconfig Secret is never written; a failing healthz
+//     check behaves the same. In both cases initialized and ready stay false
+//     and no ready condition is reported.
+//
+// Unlike the machine-creation suite, the readiness tests generate real
+// cluster PKI through pki.GenerateClusterPKI instead of the canned fixture
+// bytes: the rendered kubeconfig must be a parseable document whose CA
+// round-trips, which canned bytes cannot satisfy.
+const (
+	// controlPlaneReadyCondition is the condition type the readiness contract
+	// requires once the workload apiserver is healthy.
+	controlPlaneReadyCondition = clusterv1.ConditionType("ControlPlaneReady")
+
+	// kubeconfigSecretDataKey is the data key the conventional
+	// <cluster>-kubeconfig Secret carries the rendered document under.
+	kubeconfigSecretDataKey = "value"
+)
+
+// errAPIServerNotReady is the sentinel the healthz fake returns while the
+// workload apiserver is still starting; the poller must treat it as
+// not-yet-healthy and keep polling.
+var errAPIServerNotReady = errors.New("apiserver not ready yet")
+
+// healthCheckCall captures one invocation of the apiserver healthz seam: the
+// poll target IP and the cluster PKI material passed as client credentials
+// and CA.
+type healthCheckCall struct {
+	cpIP       string
+	clientCert []byte
+	clientKey  []byte
+	caCert     []byte
+}
+
+// recordingHealthCheck records every healthz invocation and returns the
+// injected result: nil for a healthy apiserver, errAPIServerNotReady for a
+// never-healthy apiserver, or the injected hard error.
+type recordingHealthCheck struct {
+	calls  []healthCheckCall
+	result error
+}
+
+// check implements the CheckAPIServerHealth seam.
+func (s *recordingHealthCheck) check(_ context.Context, cpIP string, clientCert, clientKey, caCert []byte) error {
+	s.calls = append(s.calls, healthCheckCall{cpIP: cpIP, clientCert: clientCert, clientKey: clientKey, caCert: caCert})
+	return s.result
+}
+
+// mustGenerateClusterPKI generates real cluster PKI material for the given
+// control-plane IP and machine name, failing the test on error. The readiness
+// tests need parseable certificates because the kubeconfig the reconciler
+// renders must round-trip its CA.
+func mustGenerateClusterPKI(t *testing.T, cpIP, cpName string) pki.ClusterPKI {
+	t.Helper()
+	pk, err := pki.GenerateClusterPKI(cpIP, cpName)
+	if err != nil {
+		t.Fatalf("GenerateClusterPKI(%q, %q): %v", cpIP, cpName, err)
+	}
+	return pk
+}
+
+// getControlPlane reads the control plane back from the API store so the
+// readiness assertions observe the persisted status and conditions.
+func getControlPlane(t *testing.T, c client.Client, cp *controlplanev1alpha1.HypervisorControlPlane) *controlplanev1alpha1.HypervisorControlPlane {
+	t.Helper()
+	got := &controlplanev1alpha1.HypervisorControlPlane{}
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(cp), got); err != nil {
+		t.Fatalf("Get HypervisorControlPlane: %v", err)
+	}
+	return got
+}
+
+// wantCPStatus fails the test unless the control plane reports exactly the
+// expected initialized and ready flags.
+func wantCPStatus(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane, initialized, ready bool) {
+	t.Helper()
+	if cp.Status.Initialized != initialized {
+		t.Errorf("status.initialized = %v, want %v", cp.Status.Initialized, initialized)
+	}
+	if cp.Status.Ready != ready {
+		t.Errorf("status.ready = %v, want %v", cp.Status.Ready, ready)
+	}
+}
+
+// wantControlPlaneReadyCondition fails the test unless the control plane
+// carries a ControlPlaneReady condition with exactly the given status.
+func wantControlPlaneReadyCondition(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane, status corev1.ConditionStatus) {
+	t.Helper()
+	for _, cond := range cp.Status.Conditions {
+		if cond.Type != controlPlaneReadyCondition {
+			continue
+		}
+		if cond.Status != status {
+			t.Errorf("ControlPlaneReady condition status = %q, want %q", cond.Status, status)
+		}
+		return
+	}
+	t.Errorf("control plane has no %s condition (conditions %+v)", controlPlaneReadyCondition, cp.Status.Conditions)
+}
+
+// wantControlPlaneReadyNotTrue fails the test unless the control plane has no
+// ControlPlaneReady condition reporting True.
+func wantControlPlaneReadyNotTrue(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane) {
+	t.Helper()
+	for _, cond := range cp.Status.Conditions {
+		if cond.Type == controlPlaneReadyCondition && cond.Status == corev1.ConditionTrue {
+			t.Errorf("control plane reports %s=True (conditions %+v), want no ready condition", controlPlaneReadyCondition, cp.Status.Conditions)
+			return
+		}
+	}
+}
+
+// kubeconfigSecretKey returns the conventional key of the
+// <cluster-name>-kubeconfig Secret in the given namespace.
+func kubeconfigSecretKey(clusterName, namespace string) client.ObjectKey {
+	return client.ObjectKey{Namespace: namespace, Name: clusterName + "-kubeconfig"}
+}
+
+// wantKubeconfigSecret fails the test unless the conventional kubeconfig
+// Secret exists and returns it.
+func wantKubeconfigSecret(t *testing.T, c client.Client, key client.ObjectKey) *corev1.Secret {
+	t.Helper()
+	secret := &corev1.Secret{}
+	if err := c.Get(t.Context(), key, secret); err != nil {
+		t.Fatalf("Get kubeconfig Secret %s: %v", key, err)
+	}
+	return secret
+}
+
+// wantNoKubeconfigSecret fails the test unless no conventional kubeconfig
+// Secret exists.
+func wantNoKubeconfigSecret(t *testing.T, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	if err := c.Get(t.Context(), key, &corev1.Secret{}); err == nil {
+		t.Errorf("kubeconfig Secret %s exists, want none", key)
+	} else if !apierrors.IsNotFound(err) {
+		t.Fatalf("Get kubeconfig Secret %s: %v", key, err)
+	}
+}
+
+// kubeconfigYAML is the subset of a rendered kubeconfig document the
+// readiness tests read back: the cluster server URL and CA data.
+type kubeconfigYAML struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Clusters   []struct {
+		Name    string `yaml:"name"`
+		Cluster struct {
+			Server                   string `yaml:"server"`
+			CertificateAuthorityData string `yaml:"certificate-authority-data"`
+		} `yaml:"cluster"`
+	} `yaml:"clusters"`
+}
+
+// parseKubeconfig decodes a rendered kubeconfig document.
+func parseKubeconfig(t *testing.T, data []byte) kubeconfigYAML {
+	t.Helper()
+	doc := kubeconfigYAML{}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("decode kubeconfig document: %v", err)
+	}
+	return doc
+}
+
+// newControlPlaneInfraMachine creates the linked HypervisorMachine for one
+// control-plane Machine, the way the infra controller would after the VM
+// boots: the conventional same-name infrastructure object owned by the CAPI
+// Machine, reporting ip as its InternalIP when ip is non-empty (an empty ip
+// leaves the VM not yet up).
+func newControlPlaneInfraMachine(t *testing.T, c client.Client, lcp *linkedControlPlane, machineName, ip string) *infrastructurev1alpha1.HypervisorMachine {
+	t.Helper()
+	ctx := t.Context()
+
+	machine := &clusterv1.Machine{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: lcp.namespace, Name: machineName}, machine); err != nil {
+		t.Fatalf("Get Machine %q: %v", machineName, err)
+	}
+
+	hm := &infrastructurev1alpha1.HypervisorMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      machineName,
+			Namespace: lcp.namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: clusterv1.GroupVersion.String(),
+					Kind:       "Machine",
+					Name:       machine.Name,
+					UID:        machine.UID,
+				},
+			},
+		},
+		Spec: infrastructurev1alpha1.HypervisorMachineSpec{ClusterName: machine.Spec.ClusterName},
+	}
+	if err := c.Create(ctx, hm); err != nil {
+		t.Fatalf("create HypervisorMachine: %v", err)
+	}
+	if ip == "" {
+		return hm
+	}
+	hm.Status.Addresses = []clusterv1.MachineAddress{{Type: clusterv1.MachineInternalIP, Address: ip}}
+	if err := c.Status().Update(ctx, hm); err != nil {
+		t.Fatalf("set HypervisorMachine addresses: %v", err)
+	}
+	return hm
+}
+
+// wantRequeue fails the test unless the reconcile result requests a retry.
+func wantRequeue(t *testing.T, res ctrl.Result) {
+	t.Helper()
+	if !res.Requeue && res.RequeueAfter <= 0 {
+		t.Errorf("Reconcile result %+v does not requeue, want a requeue", res)
+	}
+}
+
+// newReadinessControlPlane wires a control plane for the readiness contract
+// with real generated PKI: the cluster linkage, the template, the control
+// plane, and a first reconcile that creates the Machine, its bootstrap
+// config, and the cluster PKI Secret. The healthz seam returns healthResult
+// on every poll.
+func newReadinessControlPlane(t *testing.T, c client.Client, namespace string, healthResult error) (*controlPlaneFixture, *linkedCluster, *linkedControlPlane, pki.ClusterPKI) {
+	t.Helper()
+	lc := newLinkedCluster(t, c, namespace, "capi-cluster")
+	machineName := lc.name + "-cp-0"
+	pk := mustGenerateClusterPKI(t, testCPIP, machineName)
+	fx := newControlPlaneFixtureWithPKI(t, c, pk)
+	fx.health.result = healthResult
+	lcp := newLinkedControlPlane(t, c, lc, lc.name+"-cp", 1, nil)
+
+	fx.reconcileControlPlane(t, lcp.cp)
+
+	return fx, lc, lcp, pk
+}
+
+// TestControlPlaneReadinessWritesKubeconfig pins the happy-path readiness
+// contract: once the first control-plane Machine's VM reports an address, the
+// reconciler polls the apiserver healthz at the machine's IP with the cluster
+// PKI material, and on a healthy response writes the conventional
+// <cluster>-kubeconfig Secret, sets initialized and ready, and reports the
+// ControlPlaneReady condition. A second reconcile converges: no duplicate
+// Secret and no error.
+func TestControlPlaneReadinessWritesKubeconfig(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx, lc, lcp, pk := newReadinessControlPlane(t, c, "cp-readiness-healthy", nil)
+
+	newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+	fx.reconcileControlPlane(t, lcp.cp)
+
+	if len(fx.health.calls) == 0 {
+		t.Fatal("apiserver healthz seam never called")
+	}
+	call := fx.health.calls[0]
+	if call.cpIP != testCPIP {
+		t.Errorf("healthz polled IP %q, want %q", call.cpIP, testCPIP)
+	}
+	if !bytes.Equal(call.caCert, pk.CA) {
+		t.Errorf("healthz CA does not match the cluster PKI CA")
+	}
+	if len(call.clientCert) == 0 || len(call.clientKey) == 0 {
+		t.Errorf("healthz client material empty (cert %d bytes, key %d bytes)", len(call.clientCert), len(call.clientKey))
+	}
+
+	secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+	data, ok := secret.Data[kubeconfigSecretDataKey]
+	if !ok {
+		t.Fatalf("kubeconfig Secret has no %q data key (keys %v)", kubeconfigSecretDataKey, secret.Data)
+	}
+	doc := parseKubeconfig(t, data)
+	wantServer := fmt.Sprintf("https://%s:%d", testCPIP, testCPPort)
+	if len(doc.Clusters) != 1 || doc.Clusters[0].Cluster.Server != wantServer {
+		t.Errorf("kubeconfig server = %+v, want %q", doc.Clusters, wantServer)
+	}
+
+	got := getControlPlane(t, c, lcp.cp)
+	wantCPStatus(t, got, true, true)
+	wantControlPlaneReadyCondition(t, got, corev1.ConditionTrue)
+
+	// A second reconcile converges: the Secret is not duplicated and the
+	// status stays ready.
+	fx.reconcileControlPlane(t, lcp.cp)
+	if count := countSecretsNamed(t, c, lc.namespace, lc.name+"-kubeconfig"); count != 1 {
+		t.Errorf("kubeconfig Secrets = %d after second reconcile, want 1", count)
+	}
+	got = getControlPlane(t, c, lcp.cp)
+	wantCPStatus(t, got, true, true)
+}
+
+// TestControlPlaneReadinessRespectsTimeout pins the bounded-poll contract: a
+// never-healthy apiserver ends the reconcile in a requeue, the kubeconfig
+// Secret is never written, and initialized, ready, and the ControlPlaneReady
+// condition all stay unset.
+func TestControlPlaneReadinessRespectsTimeout(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx, lc, lcp, _ := newReadinessControlPlane(t, c, "cp-readiness-timeout", errAPIServerNotReady)
+
+	newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+
+	res, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lcp.cp)})
+	if err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+	wantRequeue(t, res)
+
+	if len(fx.health.calls) == 0 {
+		t.Error("apiserver healthz seam never called")
+	} else if call := fx.health.calls[0]; call.cpIP != testCPIP {
+		t.Errorf("healthz polled IP %q, want %q", call.cpIP, testCPIP)
+	}
+
+	wantNoKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+	got := getControlPlane(t, c, lcp.cp)
+	wantCPStatus(t, got, false, false)
+	wantControlPlaneReadyNotTrue(t, got)
+}
+
+// TestControlPlaneReadinessFailureLeavesKubeconfigAbsent pins the failure
+// contract: a failing healthz check is treated like a not-yet-healthy poll —
+// the reconcile requeues, the kubeconfig Secret is never written, and
+// initialized, ready, and the ready condition stay unset.
+func TestControlPlaneReadinessFailureLeavesKubeconfigAbsent(t *testing.T) {
+	c := mustReconcileClient(t)
+	healthErr := errors.New("fake: apiserver healthz check failed")
+	fx, lc, lcp, _ := newReadinessControlPlane(t, c, "cp-readiness-failure", healthErr)
+
+	newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+
+	res, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lcp.cp)})
+	if err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+	wantRequeue(t, res)
+
+	if len(fx.health.calls) == 0 {
+		t.Error("apiserver healthz seam never called")
+	}
+
+	wantNoKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+	got := getControlPlane(t, c, lcp.cp)
+	wantCPStatus(t, got, false, false)
+	wantControlPlaneReadyNotTrue(t, got)
+}
+
+// TestControlPlaneReadinessWaitsForMachineAddresses pins the VM-not-up gate:
+// before the linked HypervisorMachine reports an InternalIP address, the
+// reconciler must not poll the apiserver, must not write the kubeconfig
+// Secret, must leave initialized and ready false, and must requeue so the
+// later boot is eventually noticed.
+func TestControlPlaneReadinessWaitsForMachineAddresses(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx, lc, lcp, _ := newReadinessControlPlane(t, c, "cp-readiness-waiting", nil)
+
+	newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", "")
+
+	res, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lcp.cp)})
+	if err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+	wantRequeue(t, res)
+
+	if len(fx.health.calls) != 0 {
+		t.Errorf("apiserver healthz seam called %d times with no VM address, want 0", len(fx.health.calls))
+	}
+
+	wantNoKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+	got := getControlPlane(t, c, lcp.cp)
+	wantCPStatus(t, got, false, false)
+	wantControlPlaneReadyNotTrue(t, got)
+}
+
+// TestControlPlaneReadinessKubeconfigContent pins the rendered kubeconfig
+// content: the document is a Config whose single cluster entry serves
+// https://<cp-ip>:6443 and whose certificate-authority-data is exactly the
+// base64 encoding of the cluster PKI CA.
+func TestControlPlaneReadinessKubeconfigContent(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx, lc, lcp, pk := newReadinessControlPlane(t, c, "cp-readiness-content", nil)
+
+	newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+	fx.reconcileControlPlane(t, lcp.cp)
+
+	secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+	data, ok := secret.Data[kubeconfigSecretDataKey]
+	if !ok {
+		t.Fatalf("kubeconfig Secret has no %q data key (keys %v)", kubeconfigSecretDataKey, secret.Data)
+	}
+	doc := parseKubeconfig(t, data)
+	if doc.APIVersion != "v1" || doc.Kind != "Config" {
+		t.Errorf("kubeconfig apiVersion/kind = %q/%q, want v1/Config", doc.APIVersion, doc.Kind)
+	}
+	if len(doc.Clusters) != 1 {
+		t.Fatalf("kubeconfig has %d cluster entries, want 1", len(doc.Clusters))
+	}
+	wantServer := fmt.Sprintf("https://%s:%d", testCPIP, testCPPort)
+	if got := doc.Clusters[0].Cluster.Server; got != wantServer {
+		t.Errorf("kubeconfig server = %q, want %q", got, wantServer)
+	}
+	wantCA := base64.StdEncoding.EncodeToString(pk.CA)
+	if got := doc.Clusters[0].Cluster.CertificateAuthorityData; got != wantCA {
+		t.Errorf("kubeconfig certificate-authority-data does not match the cluster PKI CA")
+	}
 }
