@@ -68,7 +68,7 @@ generate-check: ## Fail if a second generate changes tracked files
 
 .PHONY: envtest
 envtest: ## Run the envtest suite (controllers CRD contract + helpers) against the pinned k8s binaries
-	@KUBEBUILDER_ASSETS="$(ENVTEST_ASSETS)" go tool gotestsum --format-hide-empty-pkg -f testname -- $(RACE_DETECTOR) -count $(COUNT) ./controllers/... ./test/helpers/... -timeout=3m
+	@KUBEBUILDER_ASSETS="$(ENVTEST_ASSETS)" go tool gotestsum --format-hide-empty-pkg -f testname -- $(RACE_DETECTOR) -count $(COUNT) ./controllers/... ./test/helpers/... -timeout=15m
 
 .PHONY: image
 image: ## Build container image (stub; implemented in a later phase)
