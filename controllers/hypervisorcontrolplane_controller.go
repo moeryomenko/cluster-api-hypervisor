@@ -19,6 +19,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -36,13 +38,36 @@ import (
 
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
+	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
+)
+
+const (
+	// controlPlaneReadyConditionType is the condition type the control plane
+	// reports once the workload apiserver is healthy.
+	controlPlaneReadyConditionType = clusterv1.ConditionType("ControlPlaneReady")
+
+	// controlPlaneKubeconfigDataKey is the data key the conventional
+	// <cluster>-kubeconfig Secret carries the rendered admin kubeconfig under.
+	controlPlaneKubeconfigDataKey = "value"
+
+	// controlPlaneKubeconfigUser is the user entry of the rendered admin
+	// kubeconfig.
+	controlPlaneKubeconfigUser = "admin"
+
+	// controlPlaneAPIServerPort is the port the workload apiserver serves on.
+	controlPlaneAPIServerPort = 6443
+
+	// controlPlaneReadinessPollInterval is the delay before the next apiserver
+	// healthz poll while the apiserver is not yet healthy.
+	controlPlaneReadinessPollInterval = 30 * time.Second
 )
 
 // +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=hypervisorcontrolplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=hypervisorcontrolplanes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachines,verbs=get;list;watch
 // +kubebuilder:rbac:groups=bootstrap.cluster.x-k8s.io,resources=hypervisorconfigs,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
@@ -50,9 +75,13 @@ import (
 // object: it creates the control-plane Machine set (one Machine per replica
 // with the control-plane role label), wires every Machine's bootstrap ref to
 // a generated HypervisorConfig, and persists the cluster-scoped PKI Secret on
-// the first replica. The config generation, the Machine persistence, and the
-// PKI generation run behind injectable seams, so the reconcile contract is
-// testable without generating any RSA key.
+// the first replica. Once the first control-plane Machine's VM is up, it
+// polls the workload apiserver and, when healthy, renders the admin
+// kubeconfig into the conventional <cluster>-kubeconfig Secret before marking
+// the control plane initialized and ready. The config generation, the Machine
+// persistence, the PKI generation, and the apiserver healthz poll run behind
+// injectable seams, so the reconcile contract is testable without generating
+// any RSA key or dialing a real apiserver.
 type HypervisorControlPlaneReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -66,6 +95,10 @@ type HypervisorControlPlaneReconciler struct {
 	// GeneratePKI produces the cluster-scoped PKI material stored in the
 	// conventional <cluster>-pki Secret on the first replica.
 	GeneratePKI func() (pki.ClusterPKI, error)
+	// CheckAPIServerHealth polls the workload apiserver healthz endpoint at
+	// https://cpIP:6443 with the cluster PKI material and returns nil exactly
+	// when the apiserver is healthy.
+	CheckAPIServerHealth func(ctx context.Context, cpIP string, clientCert, clientKey, caCert []byte) error
 }
 
 // Reconcile moves the current state of the control-plane Machine set towards
@@ -77,10 +110,14 @@ type HypervisorControlPlaneReconciler struct {
 // bootstrap ref points at a generated HypervisorConfig persisted in the
 // control plane's namespace, and it is owned by the control plane. The
 // cluster-scoped PKI Secret is generated and persisted once on the first
-// replica; later reconciles read the existing Secret. A missing object is a
-// no-op, and a control plane with no linked Cluster is left untouched without
-// error. A failing PKI generation or Machine creation surfaces as a reconcile
-// error that preserves the underlying error.
+// replica; later reconciles read the existing Secret. Once the first
+// control-plane Machine's VM reports an address the reconciler polls the
+// workload apiserver, and when healthy renders the admin kubeconfig into the
+// conventional <cluster>-kubeconfig Secret and marks the control plane
+// initialized and ready; a not-yet-healthy apiserver requeues without error.
+// A missing object is a no-op, and a control plane with no linked Cluster is
+// left untouched without error. A failing PKI generation or Machine creation
+// surfaces as a reconcile error that preserves the underlying error.
 func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -141,6 +178,22 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	log.Info("reconciled control-plane Machines", "controlPlane", cp.Name, "replicas", replicas)
+
+	// Readiness: once the first control-plane Machine's VM reports an address,
+	// poll the workload apiserver and, when healthy, render the admin
+	// kubeconfig into the conventional <cluster>-kubeconfig Secret and mark
+	// the control plane initialized and ready. A VM with no address yet, or an
+	// apiserver that is not yet healthy, is not an error: the reconcile
+	// requeues and keeps polling.
+	if !cp.Status.Ready {
+		res, err := r.reconcileReadiness(ctx, cp, cluster)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if res.RequeueAfter > 0 {
+			return res, nil
+		}
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -301,4 +354,189 @@ func (r *HypervisorControlPlaneReconciler) clusterToHypervisorControlPlane(
 	return []reconcile.Request{{
 		NamespacedName: client.ObjectKey{Namespace: namespace, Name: ref.Name},
 	}}
+}
+
+// reconcileReadiness advances the control-plane readiness contract: it
+// resolves the first control-plane Machine and its linked HypervisorMachine,
+// and once the VM reports an InternalIP it polls the workload apiserver
+// healthz endpoint through the CheckAPIServerHealth seam with the cluster PKI
+// material. A healthy poll renders the admin kubeconfig into the conventional
+// <cluster>-kubeconfig Secret and marks the control plane initialized and
+// ready. A VM with no address yet, or an apiserver that is not yet healthy,
+// is not an error: the reconcile requeues after
+// controlPlaneReadinessPollInterval so the later boot is eventually noticed.
+func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	cluster *clusterv1.Cluster,
+) (ctrl.Result, error) {
+	log := ctrl.LoggerFrom(ctx)
+
+	machine, err := r.firstControlPlaneMachine(ctx, cp, cluster)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if machine == nil {
+		log.Info("control-plane Machine not created yet, waiting", "controlPlane", cp.Name)
+		return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
+	}
+
+	hm := &infrastructurev1alpha1.HypervisorMachine{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: machine.Name}, hm); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("linked HypervisorMachine not found, waiting for the VM", "machine", machine.Name)
+			return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("get HypervisorMachine %q: %w", machine.Name, err)
+	}
+
+	cpIP := internalIPAddress(hm.Status.Addresses)
+	if cpIP == "" {
+		log.Info("control-plane VM has no InternalIP address yet, waiting", "machine", machine.Name)
+		return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
+	}
+
+	pk, err := r.clusterPKI(ctx, cp, cluster)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if r.CheckAPIServerHealth == nil {
+		log.Info("apiserver healthz seam not wired, waiting", "controlPlane", cp.Name)
+		return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
+	}
+	if err := r.CheckAPIServerHealth(ctx, cpIP, pk.CA, pk.CAKey, pk.CA); err != nil {
+		log.Info("workload apiserver not healthy yet, waiting", "ip", cpIP, "error", err)
+		return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
+	}
+
+	serverURL := fmt.Sprintf("https://%s:%d", cpIP, controlPlaneAPIServerPort)
+	if err := r.ensureKubeconfigSecret(ctx, cp, cluster, serverURL, pk); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	cp.Status.Initialized = true
+	cp.Status.Ready = true
+	markControlPlaneReady(cp, corev1.ConditionTrue, "ControlPlaneReady", "control plane apiserver is healthy")
+	if err := r.Status().Update(ctx, cp); err != nil {
+		return ctrl.Result{}, fmt.Errorf("update HypervisorControlPlane readiness status: %w", err)
+	}
+	log.Info("control plane initialized and ready", "controlPlane", cp.Name, "server", serverURL)
+
+	return ctrl.Result{}, nil
+}
+
+// firstControlPlaneMachine resolves the first control-plane Machine of the
+// linked Cluster: the lexically first Machine carrying the cluster-name and
+// control-plane role labels. It returns nil while no such Machine exists.
+func (r *HypervisorControlPlaneReconciler) firstControlPlaneMachine(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	cluster *clusterv1.Cluster,
+) (*clusterv1.Machine, error) {
+	machines := &clusterv1.MachineList{}
+	if err := r.List(ctx, machines, client.InNamespace(cp.Namespace), client.MatchingLabels(map[string]string{
+		clusterv1.ClusterNameLabel:         cluster.Name,
+		clusterv1.MachineControlPlaneLabel: "",
+	})); err != nil {
+		return nil, fmt.Errorf("list control-plane Machines in %q: %w", cp.Namespace, err)
+	}
+	if len(machines.Items) == 0 {
+		return nil, nil
+	}
+	sort.Slice(machines.Items, func(i, j int) bool {
+		return machines.Items[i].Name < machines.Items[j].Name
+	})
+
+	return &machines.Items[0], nil
+}
+
+// internalIPAddress returns the first InternalIP machine address, or "" when
+// the machine reports no such address yet.
+func internalIPAddress(addresses []clusterv1.MachineAddress) string {
+	for _, addr := range addresses {
+		if addr.Type == clusterv1.MachineInternalIP {
+			return addr.Address
+		}
+	}
+	return ""
+}
+
+// clusterPKI reads the cluster-scoped PKI material from the conventional
+// <cluster>-pki Secret in the control plane's namespace.
+func (r *HypervisorControlPlaneReconciler) clusterPKI(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	cluster *clusterv1.Cluster,
+) (pki.ClusterPKI, error) {
+	key := client.ObjectKey{Namespace: cp.Namespace, Name: cluster.Name + "-pki"}
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, key, secret); err != nil {
+		return pki.ClusterPKI{}, fmt.Errorf("get cluster PKI Secret %q: %w", key, err)
+	}
+	pk, err := decodeClusterPKI(secret.Data)
+	if err != nil {
+		return pki.ClusterPKI{}, fmt.Errorf("read stored cluster PKI Secret %q: %w", key, err)
+	}
+
+	return pk, nil
+}
+
+// ensureKubeconfigSecret writes the rendered admin kubeconfig as the
+// conventional <cluster>-kubeconfig Secret in the control plane's namespace
+// under the "value" data key, unless the Secret already exists so a second
+// reconcile does not duplicate it.
+func (r *HypervisorControlPlaneReconciler) ensureKubeconfigSecret(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	cluster *clusterv1.Cluster,
+	serverURL string,
+	pk pki.ClusterPKI,
+) error {
+	key := client.ObjectKey{Namespace: cp.Namespace, Name: cluster.Name + "-kubeconfig"}
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, key, secret); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get kubeconfig Secret %q: %w", key, err)
+	}
+
+	data, err := pki.RenderKubeconfig(pk.CA, serverURL, controlPlaneKubeconfigUser, pk.CA, pk.CAKey)
+	if err != nil {
+		return fmt.Errorf("render admin kubeconfig: %w", err)
+	}
+	secret = &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+		Data:       map[string][]byte{controlPlaneKubeconfigDataKey: data},
+	}
+	if err := r.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create kubeconfig Secret %q: %w", key, err)
+	}
+
+	return nil
+}
+
+// markControlPlaneReady upserts the ControlPlaneReady condition on the control
+// plane status with the given status, preserving any other conditions.
+func markControlPlaneReady(cp *controlplanev1alpha1.HypervisorControlPlane, status corev1.ConditionStatus, reason, message string) {
+	for i := range cp.Status.Conditions {
+		if cp.Status.Conditions[i].Type != controlPlaneReadyConditionType {
+			continue
+		}
+		if cp.Status.Conditions[i].Status == status {
+			return
+		}
+		cp.Status.Conditions[i].Status = status
+		cp.Status.Conditions[i].Reason = reason
+		cp.Status.Conditions[i].Message = message
+		cp.Status.Conditions[i].LastTransitionTime = metav1.Now()
+		return
+	}
+	cp.Status.Conditions = append(cp.Status.Conditions, clusterv1.Condition{
+		Type:               controlPlaneReadyConditionType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		LastTransitionTime: metav1.Now(),
+	})
 }
