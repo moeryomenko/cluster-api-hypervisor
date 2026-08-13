@@ -19,27 +19,31 @@ limitations under the License.
 // This suite pins the certificate and kubeconfig material the bootstrap and
 // control-plane providers generate for a cluster, mirroring the phase-B
 // hand-rolled PKI: no kubeadm anywhere. Cluster-scoped PKI is generated once
-// per cluster: a self-signed CA, an apiserver certificate whose SANs include
-// the control-plane node's static IP and node name, a front-proxy client
-// certificate, and a service-account keypair. Per-machine artifacts are the
+// per cluster: a self-signed cluster CA, a distinct self-signed front-proxy
+// CA, an apiserver certificate whose SANs include the control-plane node's
+// static IP and node name, a front-proxy client certificate signed by the
+// front-proxy CA, and a service-account keypair. Per-machine artifacts are the
 // kubelet certificate and key signed by the cluster CA. Kubeconfigs are
 // rendered from PEM material with a fixed server URL.
 //
 // The contract, in prose:
 //
 //   - ClusterPKI holds the PEM-encoded certificate and key material for one
-//     cluster: CA/CAKey (the signing authority), APIServer/APIServerKey (the
-//     apiserver serving certificate), FrontProxy/FrontProxyKey (the
-//     front-proxy client certificate), ServiceAccount/ServiceAccountKey (the
-//     service-account keypair). Every field is a PEM block: certificates are
-//     CERTIFICATE blocks, keys are private keys in any standard PEM encoding.
+//     cluster: CA/CAKey (the cluster signing authority),
+//     FrontProxyCA/FrontProxyCAKey (a distinct front-proxy signing
+//     authority), APIServer/APIServerKey (the apiserver serving certificate),
+//     FrontProxy/FrontProxyKey (the front-proxy client certificate),
+//     ServiceAccount/ServiceAccountKey (the service-account keypair). Every
+//     field is a PEM block: certificates are CERTIFICATE blocks, keys are
+//     private keys in any standard PEM encoding.
 //   - GenerateClusterPKI(cpIP, cpName string) (ClusterPKI, error) generates
 //     the cluster PKI. cpIP is the control-plane node's static IP and cpName
 //     its node name; both must be non-empty and cpIP must be a valid IP
-//     literal. The CA is self-signed, the apiserver certificate carries cpIP
-//     as an IP SAN and cpName as a DNS SAN, and every generated certificate
-//     (apiserver, front-proxy, service-account) is signed by the generated
-//     CA — never self-signed.
+//     literal. The cluster CA and the front-proxy CA are self-signed and
+//     distinct; the apiserver certificate carries cpIP as an IP SAN and cpName
+//     as a DNS SAN; the apiserver and service-account certificates are signed
+//     by the cluster CA and the front-proxy client certificate is signed by
+//     the front-proxy CA — never self-signed.
 //   - GenerateKubeletCert(clusterPKI ClusterPKI, nodeName string)
 //     (certPEM, keyPEM []byte, err error) generates one node's kubelet
 //     certificate and key, signed by the cluster CA. The certificate common
@@ -84,6 +88,8 @@ var (
 	_ []byte = pki.ClusterPKI{}.FrontProxyKey
 	_ []byte = pki.ClusterPKI{}.ServiceAccount
 	_ []byte = pki.ClusterPKI{}.ServiceAccountKey
+	_ []byte = pki.ClusterPKI{}.FrontProxyCA
+	_ []byte = pki.ClusterPKI{}.FrontProxyCAKey
 
 	_ func(string, string) (pki.ClusterPKI, error)                 = pki.GenerateClusterPKI
 	_ func(pki.ClusterPKI, string) ([]byte, []byte, error)         = pki.GenerateKubeletCert
@@ -219,6 +225,11 @@ func TestGenerateClusterPKIProducesParsableMaterial(t *testing.T) {
 		assertPublicKeyMatches(t, cert, decodePrivateKey(t, pk.FrontProxyKey))
 	})
 
+	t.Run("front-proxy-ca", func(t *testing.T) {
+		cert := decodeCert(t, pk.FrontProxyCA)
+		assertPublicKeyMatches(t, cert, decodePrivateKey(t, pk.FrontProxyCAKey))
+	})
+
 	t.Run("service-account", func(t *testing.T) {
 		cert := decodeCert(t, pk.ServiceAccount)
 		assertPublicKeyMatches(t, cert, decodePrivateKey(t, pk.ServiceAccountKey))
@@ -264,10 +275,11 @@ func TestGenerateClusterPKIApiserverCertificateSANs(t *testing.T) {
 	})
 }
 
-// TestGenerateClusterPKICertificatesVerifyAgainstCA pins that the apiserver,
-// front-proxy, and service-account certificates are all signed by the
-// generated cluster CA, and that none of them verifies against a different
-// cluster's CA (they are not self-signed).
+// TestGenerateClusterPKICertificatesVerifyAgainstCA pins that the apiserver
+// and service-account certificates are signed by the generated cluster CA,
+// and that none of them verifies against a different cluster's CA (they are
+// not self-signed). The front-proxy client certificate is pinned separately
+// by TestGenerateClusterPKIFrontProxySignedByFrontProxyCA.
 func TestGenerateClusterPKICertificatesVerifyAgainstCA(t *testing.T) {
 	const (
 		cpIP   = "192.168.124.10"
@@ -285,7 +297,6 @@ func TestGenerateClusterPKICertificatesVerifyAgainstCA(t *testing.T) {
 		cert *x509.Certificate
 	}{
 		{name: "apiserver", cert: decodeCert(t, pk.APIServer)},
-		{name: "front-proxy", cert: decodeCert(t, pk.FrontProxy)},
 		{name: "service-account", cert: decodeCert(t, pk.ServiceAccount)},
 	}
 
@@ -311,6 +322,60 @@ func TestGenerateClusterPKICertificatesVerifyAgainstCA(t *testing.T) {
 				assertNotSignedBy(t, entry.cert, otherCA)
 			})
 		}
+	})
+}
+
+// TestGenerateClusterPKIFrontProxySignedByFrontProxyCA pins the front-proxy
+// signing authority: the front-proxy CA is a distinct, self-signed CA and the
+// front-proxy client certificate is signed by it, never by the cluster CA.
+func TestGenerateClusterPKIFrontProxySignedByFrontProxyCA(t *testing.T) {
+	const (
+		cpIP   = "192.168.124.10"
+		cpName = "cp1"
+	)
+
+	pk, err := pki.GenerateClusterPKI(cpIP, cpName)
+	if err != nil {
+		t.Fatalf("GenerateClusterPKI error: %v", err)
+	}
+	ca := decodeCert(t, pk.CA)
+	frontProxyCA := decodeCert(t, pk.FrontProxyCA)
+	frontProxyCert := decodeCert(t, pk.FrontProxy)
+
+	t.Run("front-proxy CA is a valid CA certificate", func(t *testing.T) {
+		if !frontProxyCA.IsCA {
+			t.Errorf("front-proxy CA certificate IsCA = false, want true")
+		}
+		if err := verifyAgainstCA(frontProxyCA, frontProxyCA); err != nil {
+			t.Errorf("front-proxy CA does not verify as its own signer: %v", err)
+		}
+	})
+
+	t.Run("front-proxy client certificate is signed by the front-proxy CA", func(t *testing.T) {
+		if err := verifyAgainstCA(frontProxyCert, frontProxyCA); err != nil {
+			t.Errorf("front-proxy certificate does not verify against the front-proxy CA: %v", err)
+		}
+	})
+
+	t.Run("front-proxy CA is distinct from the cluster CA", func(t *testing.T) {
+		if bytes.Equal(pk.FrontProxyCA, pk.CA) {
+			t.Errorf("front-proxy CA PEM equals the cluster CA PEM, want distinct CAs")
+		}
+		if err := verifyAgainstCA(frontProxyCA, ca); err == nil {
+			t.Errorf("front-proxy CA unexpectedly verifies against the cluster CA")
+		}
+	})
+
+	t.Run("front-proxy client certificate is not signed by the cluster CA", func(t *testing.T) {
+		assertNotSignedBy(t, frontProxyCert, ca)
+	})
+
+	t.Run("not signed by a different cluster's front-proxy CA", func(t *testing.T) {
+		other, err := pki.GenerateClusterPKI(cpIP, cpName)
+		if err != nil {
+			t.Fatalf("GenerateClusterPKI (second cluster) error: %v", err)
+		}
+		assertNotSignedBy(t, frontProxyCert, decodeCert(t, other.FrontProxyCA))
 	})
 }
 
