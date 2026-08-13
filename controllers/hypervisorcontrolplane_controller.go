@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -66,7 +68,7 @@ const (
 // +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=hypervisorcontrolplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=hypervisorcontrolplanes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters,verbs=get;list;watch
-// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachines,verbs=get;list;watch
 // +kubebuilder:rbac:groups=bootstrap.cluster.x-k8s.io,resources=hypervisorconfigs,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
@@ -110,14 +112,16 @@ type HypervisorControlPlaneReconciler struct {
 // bootstrap ref points at a generated HypervisorConfig persisted in the
 // control plane's namespace, and it is owned by the control plane. The
 // cluster-scoped PKI Secret is generated and persisted once on the first
-// replica; later reconciles read the existing Secret. Once the first
-// control-plane Machine's VM reports an address the reconciler polls the
-// workload apiserver, and when healthy renders the admin kubeconfig into the
-// conventional <cluster>-kubeconfig Secret and marks the control plane
-// initialized and ready; a not-yet-healthy apiserver requeues without error.
-// A missing object is a no-op, and a control plane with no linked Cluster is
-// left untouched without error. A failing PKI generation or Machine creation
-// surfaces as a reconcile error that preserves the underlying error.
+// replica; later reconciles read the existing Secret. Machines beyond the
+// desired replica count are deleted, and the replica counters and version are
+// reported on the control plane status. Once the first control-plane Machine's
+// VM reports an address the reconciler polls the workload apiserver, and when
+// healthy renders the admin kubeconfig into the conventional
+// <cluster>-kubeconfig Secret and marks the control plane initialized and
+// ready; a not-yet-healthy apiserver requeues without error. A missing object
+// is a no-op, and a control plane with no linked Cluster is left untouched
+// without error. A failing PKI generation or Machine creation surfaces as a
+// reconcile error that preserves the underlying error.
 func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -175,6 +179,14 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 			r.Recorder.Eventf(cp, corev1.EventTypeWarning, "FailedCreateMachine", "failed to create Machine %q: %v", machineName, err)
 			return ctrl.Result{}, fmt.Errorf("create Machine %q: %w", machineName, err)
 		}
+	}
+
+	if err := r.scaleDownMachines(ctx, cp, cluster, replicas); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.updateScaleStatus(ctx, cp, cluster); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	log.Info("reconciled control-plane Machines", "controlPlane", cp.Name, "replicas", replicas)
@@ -307,6 +319,129 @@ func (r *HypervisorControlPlaneReconciler) machineFor(
 	return machine, nil
 }
 
+// controlPlaneMachines lists the control-plane Machines of the linked Cluster:
+// the Machines in the control plane's namespace carrying the cluster-name and
+// control-plane role labels.
+func (r *HypervisorControlPlaneReconciler) controlPlaneMachines(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	cluster *clusterv1.Cluster,
+) ([]clusterv1.Machine, error) {
+	machines := &clusterv1.MachineList{}
+	if err := r.List(ctx, machines, client.InNamespace(cp.Namespace), client.MatchingLabels(map[string]string{
+		clusterv1.ClusterNameLabel:         cluster.Name,
+		clusterv1.MachineControlPlaneLabel: "",
+	})); err != nil {
+		return nil, fmt.Errorf("list control-plane Machines in %q: %w", cp.Namespace, err)
+	}
+
+	return machines.Items, nil
+}
+
+// controlPlaneMachineIndex parses the deterministic replica index from a
+// Machine name <control-plane-name>-<index> and reports whether the name
+// follows the pattern.
+func controlPlaneMachineIndex(machineName, cpName string) (int32, bool) {
+	prefix := cpName + "-"
+	if !strings.HasPrefix(machineName, prefix) {
+		return 0, false
+	}
+	index, err := strconv.ParseInt(strings.TrimPrefix(machineName, prefix), 10, 32)
+	if err != nil {
+		return 0, false
+	}
+
+	return int32(index), true
+}
+
+// scaleDownMachines deletes the surplus control-plane Machines: every Machine
+// whose deterministic name <control-plane-name>-<index> carries an index at or
+// above the desired replica count. The retained Machines and their bootstrap
+// configs are left untouched.
+func (r *HypervisorControlPlaneReconciler) scaleDownMachines(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	cluster *clusterv1.Cluster,
+	replicas int32,
+) error {
+	machines, err := r.controlPlaneMachines(ctx, cp, cluster)
+	if err != nil {
+		return err
+	}
+	for i := range machines {
+		machine := &machines[i]
+		index, ok := controlPlaneMachineIndex(machine.Name, cp.Name)
+		if !ok || index < replicas {
+			continue
+		}
+		if err := r.Delete(ctx, machine); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete surplus Machine %q: %w", machine.Name, err)
+		}
+		r.Recorder.Eventf(cp, corev1.EventTypeNormal, "DeletedMachine", "deleted surplus Machine %q", machine.Name)
+	}
+
+	return nil
+}
+
+// machineReplicaCounts counts the created control-plane Machines and how many
+// of them are ready: a Machine counts as ready when its linked
+// HypervisorMachine reports the VM ready.
+func (r *HypervisorControlPlaneReconciler) machineReplicaCounts(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	cluster *clusterv1.Cluster,
+) (created, ready int32, err error) {
+	machines, err := r.controlPlaneMachines(ctx, cp, cluster)
+	if err != nil {
+		return 0, 0, err
+	}
+	created = int32(len(machines))
+	for i := range machines {
+		hm := &infrastructurev1alpha1.HypervisorMachine{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: machines[i].Name}, hm); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return 0, 0, fmt.Errorf("get HypervisorMachine %q: %w", machines[i].Name, err)
+		}
+		if hm.Status.Ready {
+			ready++
+		}
+	}
+
+	return created, ready, nil
+}
+
+// updateScaleStatus reports the control-plane replica counters and version on
+// the control plane status: status.replicas and status.updatedReplicas equal
+// the created Machine count, status.readyReplicas equals the count of Machines
+// whose linked VM is ready, status.unavailableReplicas equals the difference,
+// and status.version mirrors spec.version. The write is idempotent across
+// reconciles and re-pins after a scale-down.
+func (r *HypervisorControlPlaneReconciler) updateScaleStatus(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	cluster *clusterv1.Cluster,
+) error {
+	created, ready, err := r.machineReplicaCounts(ctx, cp, cluster)
+	if err != nil {
+		return err
+	}
+
+	version := cp.Spec.Version
+	cp.Status.Replicas = created
+	cp.Status.UpdatedReplicas = created
+	cp.Status.ReadyReplicas = ready
+	cp.Status.UnavailableReplicas = created - ready
+	cp.Status.Version = &version
+
+	if err := r.Status().Update(ctx, cp); err != nil {
+		return fmt.Errorf("update HypervisorControlPlane scale status: %w", err)
+	}
+
+	return nil
+}
+
 // SetupWithManager sets up the controller with the Manager, watching the
 // primary HypervisorControlPlane kind, the Machines it owns, and the CAPI
 // Cluster objects that link to control planes. The optional controller
@@ -434,21 +569,18 @@ func (r *HypervisorControlPlaneReconciler) firstControlPlaneMachine(
 	cp *controlplanev1alpha1.HypervisorControlPlane,
 	cluster *clusterv1.Cluster,
 ) (*clusterv1.Machine, error) {
-	machines := &clusterv1.MachineList{}
-	if err := r.List(ctx, machines, client.InNamespace(cp.Namespace), client.MatchingLabels(map[string]string{
-		clusterv1.ClusterNameLabel:         cluster.Name,
-		clusterv1.MachineControlPlaneLabel: "",
-	})); err != nil {
-		return nil, fmt.Errorf("list control-plane Machines in %q: %w", cp.Namespace, err)
+	machines, err := r.controlPlaneMachines(ctx, cp, cluster)
+	if err != nil {
+		return nil, err
 	}
-	if len(machines.Items) == 0 {
+	if len(machines) == 0 {
 		return nil, nil
 	}
-	sort.Slice(machines.Items, func(i, j int) bool {
-		return machines.Items[i].Name < machines.Items[j].Name
+	sort.Slice(machines, func(i, j int) bool {
+		return machines[i].Name < machines[j].Name
 	})
 
-	return &machines.Items[0], nil
+	return &machines[0], nil
 }
 
 // internalIPAddress returns the first InternalIP machine address, or "" when

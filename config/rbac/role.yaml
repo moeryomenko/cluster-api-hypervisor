@@ -50,6 +50,7 @@ rules:
   - machines
   verbs:
   - create
+  - delete
   - get
   - list
   - watch
