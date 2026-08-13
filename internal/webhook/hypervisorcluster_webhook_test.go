@@ -1,9 +1,15 @@
 // Contract tests for the HypervisorCluster defaulting and validation webhook.
 //
-// Source of truth: spec REQ-011 (webhooks) and VC-06 (webhooks reject invalid
-// objects); plan task 16. This file is the red phase: it fails to compile
-// until internal/webhook provides HypervisorClusterWebhook with the pinned
-// method signatures below.
+// This file pins the exact behavior the webhook in this package must
+// implement. Defaulting fills an empty network CIDR with the lab subnet, an
+// empty bridge name with the standard lab bridge, and an empty NAT table with
+// the standard lab table, while leaving user-supplied values and the optional
+// gateway and DNS fields untouched. Validation accepts only parseable IPv4
+// CIDRs and an optional gateway that is a plain IPv4 address, applies the
+// same rules on create and update, and always permits deletion. The
+// compile-time pins below force the webhook type to implement the
+// controller-runtime defaulter and validator interfaces with the exact method
+// signatures this file calls.
 
 package webhook_test
 
