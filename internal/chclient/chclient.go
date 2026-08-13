@@ -97,8 +97,12 @@ func (c *VMClient) EnsureRunning(ctx context.Context) error {
 	return c.client.Boot(ctx)
 }
 
-// Shutdown asks the VM to shut down gracefully through the API.
+// Shutdown asks the VM to shut down gracefully through the API. When the VM
+// is absent, the socket does not exist and Shutdown returns ErrNotFound.
 func (c *VMClient) Shutdown(ctx context.Context) error {
+	if _, err := os.Stat(c.socket); errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	}
 	return c.client.Shutdown(ctx)
 }
 
