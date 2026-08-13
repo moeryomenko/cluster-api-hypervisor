@@ -87,6 +87,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
@@ -1301,4 +1302,334 @@ func TestMachineVMNotReadyWhenNotRunning(t *testing.T) {
 			}
 		})
 	}
+}
+
+// HypervisorMachine controller contract, part 3: deletion and teardown
+// (reconcile step 9).
+//
+// This section pins the contract the machine controller's deletion step
+// implements over the same envtest harness and recording fakes. A machine
+// whose deletion has begun — the deletion timestamp set and the machine
+// finalizer still holding the object — is torn down instead of provisioned:
+//
+//   - Graceful shutdown: the VM is asked to shut down through the
+//     cloud-hypervisor client (VM.Shutdown).
+//   - Process teardown: the cloud-hypervisor process is stopped (VM.Stop),
+//     after the graceful shutdown.
+//   - TAP removal: the machine TAP k8s-<machine> is deleted through the
+//     networking manager.
+//   - Disk removal: the root disk <vm-disks>/<name>-root.qcow2 and the
+//     confext data-disk artifacts (<vm-disks>/<name>-data) are removed from
+//     the configured VM disk directory, unless spec.retainDiskOnDelete keeps
+//     them in place while the rest of the teardown still completes.
+//   - IP release: the static IP a deleted machine held is freed, so the next
+//     machine in the same cluster receives it. The allocator is constructed
+//     fresh per reconcile and seeded only from the status of the machines
+//     that still exist, so once the deleted machine is reclaimed the freed
+//     address is the first free address again.
+//   - Finalizer removal: the teardown drops the machine finalizer so the
+//     object is reclaimed by the API server.
+//   - A VM that is already absent (the client reports ErrNotFound from
+//     Shutdown or Stop) is tolerated: teardown completes without error.
+const (
+	// machineDeleteFinalizer is the finalizer the machine carries when its
+	// deletion begins; the teardown step must drop it so the object is
+	// reclaimed. The name mirrors the cluster-side finalizer convention
+	// <kind>.<group>.
+	machineDeleteFinalizer = "hypervisormachine.infrastructure.cluster.x-k8s.io"
+)
+
+// Compile-time pin for the TAP removal seam the deletion step drives: the
+// reconciler's Net field removes a machine TAP through DeleteTap.
+var _ func(*networking.Manager, string) error = (*networking.Manager).DeleteTap
+
+// markMachineForDeletion arms the deletion contract on the machine: it adds
+// the machine finalizer, deletes the object through the API, and verifies
+// the deletion timestamp is set with the finalizer still holding the object
+// in the store.
+func markMachineForDeletion(t *testing.T, c client.Client, hm *infrastructurev1alpha1.HypervisorMachine) {
+	t.Helper()
+	ctx := t.Context()
+
+	fresh := getMachine(t, c, hm)
+	fresh.Finalizers = append(fresh.Finalizers, machineDeleteFinalizer)
+	if err := c.Update(ctx, fresh); err != nil {
+		t.Fatalf("add machine finalizer: %v", err)
+	}
+	if err := c.Delete(ctx, fresh); err != nil {
+		t.Fatalf("delete HypervisorMachine: %v", err)
+	}
+
+	pending := getMachine(t, c, hm)
+	if pending.DeletionTimestamp.IsZero() {
+		t.Fatal("deletion timestamp not set after Delete with a finalizer present")
+	}
+}
+
+// assertMachineReclaimed fails the test unless the machine has been fully
+// deleted: a Get must report NotFound, which the API server does only after
+// every finalizer is dropped.
+func assertMachineReclaimed(t *testing.T, c client.Client, hm *infrastructurev1alpha1.HypervisorMachine) {
+	t.Helper()
+
+	got := &infrastructurev1alpha1.HypervisorMachine{}
+	err := c.Get(t.Context(), client.ObjectKeyFromObject(hm), got)
+	if apierrors.IsNotFound(err) {
+		return
+	}
+	if err != nil {
+		t.Fatalf("Get HypervisorMachine after teardown: %v", err)
+	}
+	t.Errorf("machine not reclaimed after teardown: still present with finalizers %v", got.Finalizers)
+}
+
+// writeMachineRootDisk writes a real root disk file for the machine under the
+// fixture's VM disk directory, standing in for the qemu-img output the
+// provisioning seam only simulates. The returned path is the file written.
+func writeMachineRootDisk(t *testing.T, vmDisksDir, name string) string {
+	t.Helper()
+
+	path := filepath.Join(vmDisksDir, name+"-root.qcow2")
+	if err := os.WriteFile(path, []byte("fixture root disk"), 0o644); err != nil {
+		t.Fatalf("write root disk %q: %v", path, err)
+	}
+
+	return path
+}
+
+// writeMachineConfextDisk writes a real confext data-disk artifact for the
+// machine under the fixture's VM disk directory, standing in for the
+// mksquashfs output the packager seam only simulates. The returned path is
+// the .raw image written inside the <name>-data directory.
+func writeMachineConfextDisk(t *testing.T, vmDisksDir, name string) string {
+	t.Helper()
+
+	dir := filepath.Join(vmDisksDir, name+"-data")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create confext data dir %q: %v", dir, err)
+	}
+	path := filepath.Join(dir, "z-kubelet-node1.raw")
+	if err := os.WriteFile(path, []byte("fixture confext image"), 0o644); err != nil {
+		t.Fatalf("write confext image %q: %v", path, err)
+	}
+
+	return path
+}
+
+// assertPathRemoved fails the test when the path still exists.
+func assertPathRemoved(t *testing.T, path string) {
+	t.Helper()
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("path %q still exists after teardown (stat error %v)", path, err)
+	}
+}
+
+// assertPathExists fails the test when the path does not exist.
+func assertPathExists(t *testing.T, path string) {
+	t.Helper()
+
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("path %q missing after teardown: %v", path, err)
+	}
+}
+
+// wantVMCallOrder fails the test unless the recorded VM client call log
+// contains the wanted operations, each strictly after the previous one.
+// Calls outside the wanted set are allowed: the contract pins the presence
+// and the order of the teardown operations, not that nothing else runs.
+func wantVMCallOrder(t *testing.T, calls []string, want ...string) {
+	t.Helper()
+
+	last := -1
+	for _, w := range want {
+		found := -1
+		for i, call := range calls {
+			if call == w {
+				found = i
+				break
+			}
+		}
+		if found == -1 {
+			t.Fatalf("VM client calls %v do not contain %q", calls, w)
+		}
+		if found <= last {
+			t.Fatalf("VM client calls %v: %q is not strictly after the previously wanted call", calls, w)
+		}
+		last = found
+	}
+}
+
+// wantLinkCall fails the test unless the recorded link-op log contains the
+// wanted call.
+func wantLinkCall(t *testing.T, f *recordingLinkOps, want linkOpCall) {
+	t.Helper()
+
+	for _, call := range f.calls {
+		if call == want {
+			return
+		}
+	}
+	t.Fatalf("link call log %v does not contain %+v", f.calls, want)
+}
+
+// TestMachineDeleteTearsDownStack pins the teardown stack contract: deleting
+// the machine shuts the VM down gracefully through the client, tears the
+// process down, removes the machine TAP, removes the root disk, and drops
+// the finalizer so the object is reclaimed.
+func TestMachineDeleteTearsDownStack(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	vmDisksDir := fx.r.Config.VMDiskDir
+	lc := newLinkedCluster(t, c, "machine-delete-teardown", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", false)
+
+	// Provision the machine first so the VM is running and the TAP exists,
+	// then write the real root disk artifact qemu-img would have produced.
+	fx.vm.State = ch.VMState("Running")
+	fx.reconcileMachine(t, lm.hm)
+	rootDisk := writeMachineRootDisk(t, vmDisksDir, lm.name)
+	wantTap := machineTapPrefix + lm.name
+
+	markMachineForDeletion(t, c, lm.hm)
+	fx.reconcileMachine(t, lm.hm)
+
+	// Graceful shutdown, then process teardown, in that order.
+	wantVMCallOrder(t, fx.vm.Calls, "Shutdown", "Stop")
+
+	// The machine TAP is deleted and gone from the fake's link table.
+	wantLinkCall(t, fx.net, linkOpCall{op: opDel, name: wantTap})
+	if _, err := fx.net.LinkByName(wantTap); !errors.Is(err, networking.ErrLinkNotFound) {
+		t.Errorf("TAP %q still present after teardown (link error %v), want %v", wantTap, err, networking.ErrLinkNotFound)
+	}
+
+	// The root disk is removed.
+	assertPathRemoved(t, rootDisk)
+
+	// The finalizer is dropped and the object is reclaimed.
+	assertMachineReclaimed(t, c, lm.hm)
+}
+
+// TestMachineDeleteRetainsDisks pins the retain contract: with
+// spec.retainDiskOnDelete set, the disk artifacts survive the deletion while
+// the rest of the teardown (VM shutdown, process stop, TAP removal,
+// finalizer drop) still completes.
+func TestMachineDeleteRetainsDisks(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	vmDisksDir := fx.r.Config.VMDiskDir
+	lc := newLinkedCluster(t, c, "machine-delete-retain", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", false)
+
+	lm.hm.Spec.RetainDiskOnDelete = true
+	if err := c.Update(t.Context(), lm.hm); err != nil {
+		t.Fatalf("set spec.retainDiskOnDelete: %v", err)
+	}
+
+	fx.vm.State = ch.VMState("Running")
+	fx.reconcileMachine(t, lm.hm)
+	rootDisk := writeMachineRootDisk(t, vmDisksDir, lm.name)
+	confextDisk := writeMachineConfextDisk(t, vmDisksDir, lm.name)
+	wantTap := machineTapPrefix + lm.name
+
+	markMachineForDeletion(t, c, lm.hm)
+	fx.reconcileMachine(t, lm.hm)
+
+	// The teardown otherwise completes.
+	wantVMCallOrder(t, fx.vm.Calls, "Shutdown", "Stop")
+	wantLinkCall(t, fx.net, linkOpCall{op: opDel, name: wantTap})
+	assertMachineReclaimed(t, c, lm.hm)
+
+	// The disk artifacts survive.
+	assertPathExists(t, rootDisk)
+	assertPathExists(t, confextDisk)
+}
+
+// TestMachineDeleteToleratesMissingVM pins the absent-VM contract: a client
+// that reports ErrNotFound from the graceful shutdown and the process
+// teardown — the VM was never booted or is already gone — does not abort the
+// teardown. The reconcile completes without error, the disks are removed,
+// and the finalizer is dropped.
+func TestMachineDeleteToleratesMissingVM(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	vmDisksDir := fx.r.Config.VMDiskDir
+	lc := newLinkedCluster(t, c, "machine-delete-missingvm", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", false)
+
+	fx.vm.State = ch.VMState("Running")
+	fx.reconcileMachine(t, lm.hm)
+	rootDisk := writeMachineRootDisk(t, vmDisksDir, lm.name)
+
+	// The VM is absent from this point on.
+	fx.vm.ShutdownErr = chclient.ErrNotFound
+	fx.vm.StopErr = chclient.ErrNotFound
+
+	markMachineForDeletion(t, c, lm.hm)
+	fx.reconcileMachine(t, lm.hm)
+
+	assertPathRemoved(t, rootDisk)
+	assertMachineReclaimed(t, c, lm.hm)
+}
+
+// TestMachineDeleteReleasesIP pins the address-release contract: the static
+// IP a deleted machine held is freed and the next machine in the same
+// cluster receives it.
+//
+// The allocator is constructed fresh per reconcile and seeded only from the
+// status of the machines that still exist, so the reuse is observable even
+// though the deletion step never shares the per-reconcile allocator: once
+// the deleted machine is reclaimed, its recorded address stops seeding the
+// next allocator and becomes the first free address again. The per-reconcile
+// allocator is a concrete type with no recording seam, so the Release call
+// itself is not directly observable; the next-allocation reuse is the
+// contract's observable effect.
+func TestMachineDeleteReleasesIP(t *testing.T) {
+	c := mustReconcileClient(t)
+	lc := newLinkedCluster(t, c, "machine-delete-iprelease", "capi-cluster")
+	fx := newMachineFixture(t, c)
+
+	first := newLinkedMachine(t, c, lc, "node-1", false)
+	fx.reconcileMachine(t, first.hm)
+
+	freed := statusInternalIP(getMachine(t, c, first.hm))
+	if freed != testPoolStart {
+		t.Fatalf("first machine address = %q, want the pool start %q", freed, testPoolStart)
+	}
+
+	markMachineForDeletion(t, c, first.hm)
+	fx.reconcileMachine(t, first.hm)
+	assertMachineReclaimed(t, c, first.hm)
+
+	// The next machine in the cluster receives the freed address.
+	second := newLinkedMachine(t, c, lc, "node-2", false)
+	fx.reconcileMachine(t, second.hm)
+	if got := statusInternalIP(getMachine(t, c, second.hm)); got != freed {
+		t.Errorf("second machine address = %q, want the freed %q", got, freed)
+	}
+}
+
+// TestMachineDeleteRemovesConfextDisk pins the confext data-disk removal
+// contract: the <name>-data directory holding the packaged .raw images is
+// removed with the machine.
+func TestMachineDeleteRemovesConfextDisk(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	vmDisksDir := fx.r.Config.VMDiskDir
+	lc := newLinkedCluster(t, c, "machine-delete-confext", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+	// Provisioning materializes the staging tree and the data-disk output
+	// directory for real; the mksquashfs seam does not produce the .raw
+	// image, so the test writes one by hand to represent the packaged
+	// artifact.
+	fx.vm.State = ch.VMState("Running")
+	fx.reconcileMachine(t, lm.hm)
+	confextDisk := writeMachineConfextDisk(t, vmDisksDir, lm.name)
+
+	markMachineForDeletion(t, c, lm.hm)
+	fx.reconcileMachine(t, lm.hm)
+
+	assertPathRemoved(t, filepath.Dir(confextDisk))
+	assertMachineReclaimed(t, c, lm.hm)
 }
