@@ -1,0 +1,153 @@
+/*
+Copyright 2026 The cluster-api-hypervisor Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controlplanev1alpha1
+
+import (
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+)
+
+// HypervisorControlPlaneSpec defines the desired state of
+// HypervisorControlPlane.
+type HypervisorControlPlaneSpec struct {
+	// Replicas is the number of desired control-plane machines. Defaults to 1.
+	// +optional
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// Version is the desired Kubernetes version for the control plane. It is
+	// informational and matches the k8labs version pins.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// MachineTemplate contains information about how the control-plane
+	// Machines should be shaped when creating or updating the control plane.
+	MachineTemplate HypervisorControlPlaneMachineTemplate `json:"machineTemplate"`
+}
+
+// HypervisorControlPlaneMachineTemplate defines the template for Machines in
+// a HypervisorControlPlane object.
+type HypervisorControlPlaneMachineTemplate struct {
+	// InfrastructureRef is a required reference to a custom resource offered
+	// by an infrastructure provider, here a HypervisorMachineTemplate.
+	InfrastructureRef corev1.ObjectReference `json:"infrastructureRef"`
+
+	// Metadata is the standard object's metadata of the machines created from
+	// this template.
+	// +optional
+	Metadata clusterv1.ObjectMeta `json:"metadata,omitempty"`
+}
+
+// HypervisorControlPlaneStatus defines the observed state of
+// HypervisorControlPlane.
+type HypervisorControlPlaneStatus struct {
+	// Ready denotes that the HypervisorControlPlane API Server became ready
+	// during initial provisioning to receive requests.
+	// NOTE: this field is part of the Cluster API contract and it is used to
+	// orchestrate provisioning.
+	Ready bool `json:"ready"`
+
+	// Initialized denotes that the HypervisorControlPlane API Server is
+	// initialized and thus it can accept requests.
+	// NOTE: this field is part of the Cluster API contract and it is used to
+	// orchestrate provisioning.
+	Initialized bool `json:"initialized"`
+
+	// Selector is the label selector in string format to avoid introspection
+	// by clients, and is used to provide the CRD-based integration for the
+	// scale subresource and additional integrations for things like kubectl
+	// describe. The string will be in the same format as the query-param
+	// syntax.
+	// More info about label selectors:
+	// http://kubernetes.io/docs/user-guide/labels#label-selectors
+	// +optional
+	Selector string `json:"selector,omitempty"`
+
+	// Version represents the minimum Kubernetes version for the control plane
+	// machines in the cluster.
+	// +optional
+	Version *string `json:"version,omitempty"`
+
+	// Replicas is the total number of non-terminated machines targeted by
+	// this control plane (their labels match the selector).
+	Replicas int32 `json:"replicas"`
+
+	// UpdatedReplicas is the total number of non-terminated machines targeted
+	// by this control plane that have the desired template spec.
+	UpdatedReplicas int32 `json:"updatedReplicas"`
+
+	// ReadyReplicas is the total number of fully running and ready control
+	// plane machines.
+	ReadyReplicas int32 `json:"readyReplicas"`
+
+	// UnavailableReplicas is the total number of unavailable machines targeted
+	// by this control plane. This is the total number of machines that are
+	// still required for the deployment to have 100% available capacity. They
+	// may either be machines that are running but not yet ready or machines
+	// that still have not been created.
+	UnavailableReplicas int32 `json:"unavailableReplicas"`
+
+	// FailureReason indicates that there is a terminal problem reconciling the
+	// state, and will be set to a token value suitable for programmatic
+	// interpretation.
+	// +optional
+	FailureReason string `json:"failureReason,omitempty"`
+
+	// FailureMessage indicates that there is a terminal problem reconciling
+	// the state, and will be set to a descriptive error message.
+	// +optional
+	FailureMessage string `json:"failureMessage,omitempty"`
+
+	// Conditions defines current service state of the HypervisorControlPlane.
+	// +optional
+	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+
+// HypervisorControlPlane is the Schema for the hypervisorcontrolplanes API.
+type HypervisorControlPlane struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   HypervisorControlPlaneSpec   `json:"spec,omitempty"`
+	Status HypervisorControlPlaneStatus `json:"status,omitempty"`
+}
+
+// GetConditions returns the status conditions of the control plane.
+func (c *HypervisorControlPlane) GetConditions() clusterv1.Conditions {
+	return c.Status.Conditions
+}
+
+// SetConditions sets the status conditions of the control plane.
+func (c *HypervisorControlPlane) SetConditions(conditions clusterv1.Conditions) {
+	c.Status.Conditions = conditions
+}
+
+// +kubebuilder:object:root=true
+
+// HypervisorControlPlaneList contains a list of HypervisorControlPlane.
+type HypervisorControlPlaneList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []HypervisorControlPlane `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&HypervisorControlPlane{}, &HypervisorControlPlaneList{})
+}
