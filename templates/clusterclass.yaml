@@ -1,0 +1,48 @@
+# ClusterClass for cluster-api-hypervisor.
+#
+# The topology-driven example Cluster (cluster-example.yaml) references this
+# class by name. All template references resolve to the committed API kinds of
+# this repository:
+#
+#   - infrastructure.cluster.x-k8s.io/v1alpha1: HypervisorCluster,
+#     HypervisorMachineTemplate
+#   - controlplane.cluster.x-k8s.io/v1alpha1: HypervisorControlPlane
+#   - bootstrap.cluster.x-k8s.io/v1alpha1: HypervisorConfig
+#
+# Control-plane bootstrap is not referenced here: the v1beta1 ControlPlaneClass
+# has no bootstrap template field. The HypervisorControlPlane controller
+# generates the HypervisorConfig for control-plane Machines at runtime.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: ClusterClass
+metadata:
+  name: hypervisor-cluster-template
+spec:
+  infrastructure:
+    ref:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+      kind: HypervisorCluster
+      name: hypervisor-cluster-template
+  controlPlane:
+    ref:
+      apiVersion: controlplane.cluster.x-k8s.io/v1alpha1
+      kind: HypervisorControlPlane
+      name: hypervisor-control-plane
+    machineInfrastructure:
+      ref:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+        kind: HypervisorMachineTemplate
+        name: hypervisor-control-plane-machine-template
+  workers:
+    machineDeployments:
+      - class: default-worker
+        template:
+          bootstrap:
+            ref:
+              apiVersion: bootstrap.cluster.x-k8s.io/v1alpha1
+              kind: HypervisorConfig
+              name: hypervisor-worker-bootstrap
+          infrastructure:
+            ref:
+              apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+              kind: HypervisorMachineTemplate
+              name: hypervisor-worker-machine-template

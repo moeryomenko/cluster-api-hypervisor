@@ -1,0 +1,21 @@
+# Example topology-driven Cluster for cluster-api-hypervisor.
+#
+# Uses the ClusterClass hypervisor-cluster-template (clusterclass.yaml).
+# Defaults mirror the k8labs lab: single control-plane machine (cp1) and three
+# worker machines (w1, w2, w3), running the pinned Kubernetes version.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: k8labs
+  namespace: default
+spec:
+  topology:
+    class: hypervisor-cluster-template
+    version: v1.32.13
+    controlPlane:
+      replicas: 1
+    workers:
+      machineDeployments:
+        - name: md-0
+          class: default-worker
+          replicas: 3
