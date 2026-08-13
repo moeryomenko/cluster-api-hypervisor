@@ -59,6 +59,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -67,6 +68,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -77,6 +79,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/yaml"
 
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
@@ -366,6 +369,19 @@ func mustReconcileClient(t *testing.T) client.Client {
 // contract reads (Cluster and Machine). The provider CRDs are already
 // installed by the harness; the cluster-api CRDs ship in the module cache of
 // the pinned cluster-api version, resolved through `go list -m`.
+//
+// The Machine CRD is installed with only its v1beta1 version served and
+// stored. The cluster-api v1.13.x Machine CRD serves v1beta1 and v1beta2 with
+// v1beta2 as the storage version and no conversion webhook; the built-in
+// field-name conversion between the two drops apiVersion and namespace from
+// the corev1.ObjectReference fields (spec.infrastructureRef and
+// spec.bootstrap.configRef) on read-back, so the control-plane machine
+// assertions on those fields could never pass. The v1beta1-only CRD
+// round-trips those fields losslessly through the provider's clusterv1
+// (v1beta1) scheme. The Cluster CRD is installed as shipped: its v1beta2
+// storage version prunes the same fields, but the reconcilers treat empty
+// ref namespaces as "same namespace as the object", so the contract is
+// unaffected.
 func installCAPICoreCRDs(t *testing.T, cfg *rest.Config) {
 	t.Helper()
 
@@ -373,13 +389,55 @@ func installCAPICoreCRDs(t *testing.T, cfg *rest.Config) {
 	if err != nil {
 		t.Fatalf("resolve cluster-api module directory: %v", err)
 	}
-	paths := []string{
-		filepath.Join(dir, "cluster.x-k8s.io_clusters.yaml"),
-		filepath.Join(dir, "cluster.x-k8s.io_machines.yaml"),
-	}
-	if _, err := envtest.InstallCRDs(cfg, envtest.CRDInstallOptions{Paths: paths}); err != nil {
+	clusterCRD := loadCRD(t, filepath.Join(dir, "cluster.x-k8s.io_clusters.yaml"))
+	machineCRD := v1beta1OnlyCRD(t, loadCRD(t, filepath.Join(dir, "cluster.x-k8s.io_machines.yaml")))
+
+	if _, err := envtest.InstallCRDs(cfg, envtest.CRDInstallOptions{
+		CRDs: []*apiextensionsv1.CustomResourceDefinition{clusterCRD, machineCRD},
+	}); err != nil {
 		t.Fatalf("install cluster-api core CRDs: %v", err)
 	}
+}
+
+// loadCRD decodes one CRD manifest from the cluster-api module cache into its
+// typed CustomResourceDefinition.
+func loadCRD(t *testing.T, path string) *apiextensionsv1.CustomResourceDefinition {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read CRD manifest %q: %v", path, err)
+	}
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	if err := yaml.Unmarshal(data, crd); err != nil {
+		t.Fatalf("decode CRD manifest %q: %v", path, err)
+	}
+
+	return crd
+}
+
+// v1beta1OnlyCRD returns the CRD with every version but v1beta1 removed and
+// v1beta1 marked served and stored. See installCAPICoreCRDs for why the
+// cluster-api Machine CRD is installed this way.
+func v1beta1OnlyCRD(t *testing.T, crd *apiextensionsv1.CustomResourceDefinition) *apiextensionsv1.CustomResourceDefinition {
+	t.Helper()
+
+	versions := make([]apiextensionsv1.CustomResourceDefinitionVersion, 0, 1)
+	for i := range crd.Spec.Versions {
+		if crd.Spec.Versions[i].Name != "v1beta1" {
+			continue
+		}
+		v := crd.Spec.Versions[i]
+		v.Served = true
+		v.Storage = true
+		versions = append(versions, v)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("CRD %s has %d v1beta1 versions, want 1", crd.Name, len(versions))
+	}
+	crd.Spec.Versions = versions
+
+	return crd
 }
 
 // capiCRDDirectory resolves the CRD manifest directory of the pinned

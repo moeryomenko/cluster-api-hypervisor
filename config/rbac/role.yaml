@@ -20,6 +20,7 @@ rules:
   resources:
   - hypervisorconfigs
   verbs:
+  - create
   - get
   - list
   - patch
@@ -38,9 +39,17 @@ rules:
   resources:
   - clusters
   - clusters/status
-  - machines
   - machines/status
   verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - machines
+  verbs:
+  - create
   - get
   - list
   - watch
@@ -52,6 +61,14 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - controlplane.cluster.x-k8s.io
+  resources:
+  - hypervisorcontrolplanes/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - infrastructure.cluster.x-k8s.io
   resources:
