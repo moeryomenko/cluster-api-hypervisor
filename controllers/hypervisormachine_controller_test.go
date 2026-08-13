@@ -73,6 +73,8 @@ package controllers
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -280,7 +282,10 @@ func (r *recordingCIDATARender) render(d cloudinit.Data) (map[string][]byte, err
 // machineBootstrapTree mirrors the role-split tree set the bootstrap side
 // renders for a worker node: the node kubelet config plus the etcd and
 // control-plane confexts a full tree carries. Keys are slash-separated paths
-// whose first segment is the confext name.
+// whose first segment is the confext name. This is the decoded form the
+// machine controller hands to the confext packager; the bootstrap Secret
+// carries the same tree encoded as the tree.json blob of
+// machineBootstrapSecretData.
 func machineBootstrapTree() map[string][]byte {
 	return map[string][]byte{
 		"z-etcd/etc/etcd/etcd.conf.yml":                           []byte("etcd config"),
@@ -289,6 +294,27 @@ func machineBootstrapTree() map[string][]byte {
 		"z-kubernetes-cp/etc/kubernetes/pki/ca.pem":               []byte("ca cert"),
 		"z-kubelet-node1/etc/kubernetes/kubelet.conf":             []byte("kubelet config"),
 	}
+}
+
+// machineBootstrapSecretData wraps machineBootstrapTree as the bootstrap
+// Secret payload: a single tree.json key whose value is a JSON object
+// mapping every tree path to its base64-encoded content. Kubernetes Secret
+// data keys cannot contain "/", so the slash-separated tree paths cannot be
+// stored as literal Secret keys; the machine controller decodes the blob
+// back into the path-to-content map before packaging.
+func machineBootstrapSecretData(t *testing.T) map[string][]byte {
+	t.Helper()
+
+	encoded := make(map[string]string, len(machineBootstrapTree()))
+	for path, content := range machineBootstrapTree() {
+		encoded[path] = base64.StdEncoding.EncodeToString(content)
+	}
+	blob, err := json.Marshal(encoded)
+	if err != nil {
+		t.Fatalf("encode bootstrap tree: %v", err)
+	}
+
+	return map[string][]byte{"tree.json": blob}
 }
 
 // linkedMachine is the CAPI linkage the machine controller resolves: the
@@ -337,7 +363,7 @@ func newLinkedMachine(t *testing.T, c client.Client, lc *linkedCluster, name str
 
 		lm.secret = &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: name + "-data", Namespace: lc.namespace},
-			Data:       machineBootstrapTree(),
+			Data:       machineBootstrapSecretData(t),
 		}
 		if err := c.Create(ctx, lm.secret); err != nil {
 			t.Fatalf("create bootstrap Secret: %v", err)
@@ -906,8 +932,8 @@ func TestMachineDisksConfextPackaging(t *testing.T) {
 			t.Errorf("confext output dir %q is not under the VM disk dir %q", outDir, vmDisksDir)
 		}
 
-		// The Secret tree was materialized through the packager with the
-		// exact contents of the bootstrap Secret.
+		// The decoded Secret tree was materialized through the packager with
+		// the exact contents of the bootstrap Secret.
 		for key, content := range machineBootstrapTree() {
 			path := filepath.Join(staging, filepath.FromSlash(key))
 			got, err := os.ReadFile(path)
