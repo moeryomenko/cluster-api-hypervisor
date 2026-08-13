@@ -270,7 +270,10 @@ func TestEnsureBridgeCreatesWhenAbsent(t *testing.T) {
 		t.Fatalf("EnsureBridge(%q) error: %v", bridgeName, err)
 	}
 
-	wantCalls(t, f, fakeCall{op: opAdd, kind: kindBridge, name: bridgeName})
+	wantCalls(t, f,
+		fakeCall{op: opByName, name: bridgeName},
+		fakeCall{op: opAdd, kind: kindBridge, name: bridgeName},
+	)
 
 	// The fake now reports the bridge as existing, with the right kind and
 	// no master.
@@ -322,6 +325,7 @@ func TestEnsureTapCreatesAndEnslaves(t *testing.T) {
 	}
 
 	wantCalls(t, f,
+		fakeCall{op: opByName, name: tapName},
 		fakeCall{op: opAdd, kind: kindTap, name: tapName},
 		fakeCall{op: opSetMaster, name: tapName, master: bridgeName},
 	)
