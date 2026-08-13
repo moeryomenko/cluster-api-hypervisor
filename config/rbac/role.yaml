@@ -5,6 +5,22 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - bootstrap.cluster.x-k8s.io
+  resources:
+  - hypervisorconfigs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - cluster.x-k8s.io
   resources:
   - clusters
@@ -27,6 +43,7 @@ rules:
   - infrastructure.cluster.x-k8s.io
   resources:
   - hypervisorclusters
+  - hypervisormachines
   verbs:
   - create
   - delete
@@ -39,21 +56,15 @@ rules:
   - infrastructure.cluster.x-k8s.io
   resources:
   - hypervisorclusters/finalizers
+  - hypervisormachines/finalizers
   verbs:
   - update
 - apiGroups:
   - infrastructure.cluster.x-k8s.io
   resources:
   - hypervisorclusters/status
+  - hypervisormachines/status
   verbs:
   - get
   - patch
   - update
-- apiGroups:
-  - infrastructure.cluster.x-k8s.io
-  resources:
-  - hypervisormachines
-  verbs:
-  - get
-  - list
-  - watch
