@@ -116,26 +116,6 @@ const (
 	testFixtureKubeletKey  = "fixture kubelet key"
 )
 
-// The reconciler's injectable dependency shapes. The tests build each one
-// over a recording seam; the fixture's composite literal pins the exact
-// fields of HypervisorConfigReconciler.
-type (
-	// buildTreeFunc renders the role-split confext tree for one node. The
-	// kubeconfigs map holds the rendered kubeconfig documents keyed by role
-	// ("admin", "controller-manager", "scheduler", "kubelet"); the
-	// encryptionConfig is the control-plane encryption configuration.
-	buildTreeFunc func(role, cpIP, nodeName string, pk pki.ClusterPKI, kubeletCert, kubeletKey []byte, kubeconfigs map[string][]byte, encryptionConfig []byte) (map[string][]byte, error)
-	// generateClusterPKIFunc generates the cluster-scoped PKI for one
-	// cluster; cpIP and cpName are the apiserver certificate SAN inputs.
-	generateClusterPKIFunc func(cpIP, cpName string) (pki.ClusterPKI, error)
-	// generateKubeletCertFunc generates one node's kubelet certificate and
-	// key signed by the cluster PKI.
-	generateKubeletCertFunc func(pk pki.ClusterPKI, nodeName string) (certPEM, keyPEM []byte, err error)
-	// renderKubeconfigFunc renders a kubeconfig document from PEM material
-	// with the given server URL and user name.
-	renderKubeconfigFunc func(caPEM []byte, serverURL, user string, clientCert, clientKey []byte) ([]byte, error)
-)
-
 // Compile-time pin for the reconciler shape the implementation must expose:
 // the Reconcile signature. Until the reconciler type exists the package does
 // not compile — that is the intended red phase.
