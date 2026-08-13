@@ -1002,7 +1002,7 @@ func newControlPlaneInfraMachine(t *testing.T, c client.Client, lcp *linkedContr
 // wantRequeue fails the test unless the reconcile result requests a retry.
 func wantRequeue(t *testing.T, res ctrl.Result) {
 	t.Helper()
-	if !res.Requeue && res.RequeueAfter <= 0 {
+	if res.RequeueAfter <= 0 {
 		t.Errorf("Reconcile result %+v does not requeue, want a requeue", res)
 	}
 }
