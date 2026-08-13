@@ -43,6 +43,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -50,11 +51,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
 	"github.com/moeryomenko/cluster-api-hypervisor/test/helpers"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
 // runningManager is a started provider binary process with its output
@@ -363,5 +374,426 @@ func writeFile(t *testing.T, path string, data []byte) {
 
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// Infra-controller wiring contract (test-first): the single manager built
+// from this package must register the two infrastructure controllers,
+// HypervisorCluster and HypervisorMachine, in addition to the five webhooks,
+// and must accept one concurrency flag per controller.
+//
+// The pinned contract, in prose:
+//
+//   - The binary documents --hypervisorcluster-concurrency and
+//     --hypervisormachine-concurrency in its --help output. Both are integer
+//     flags that default to 1, and both reject a non-integer value at
+//     startup with a flag parse error.
+//   - Started against the envtest control plane with a kubeconfig and a
+//     webhook certificate directory, the manager accepts both concurrency
+//     flags and runs. The controller-runtime metrics endpoint (the manager
+//     does not configure one, so it binds the standard :8080) then exposes,
+//     per controller, a controller_runtime_max_concurrent_reconciles series
+//     valued at the concurrency flag of that controller. That series is the
+//     registration proof: a registered controller announces itself through
+//     the metric, and its value proves the flag is plumbed into the
+//     controller options. The proof needs no host operation.
+//   - Both controllers engage on the test objects without host operations:
+//     each records a successful reconcile (controller_runtime_reconcile_total
+//     with result "success"). The HypervisorCluster controller reconciles the
+//     paused object and honors the paused gate; the HypervisorMachine
+//     controller reconciles an unowned machine and stops at owner
+//     resolution.
+//   - The paused gate holds at the manager level: a HypervisorCluster
+//     carrying the standard paused annotation, linked to a CAPI Cluster
+//     through the infrastructure reference, the owner reference, and the
+//     clusterName link, is left untouched — same resource version, no
+//     finalizer, not ready, no conditions — across a settle window. The gate
+//     itself is pinned by the controller's own unit suite; this test only
+//     proves the controller is wired into the manager without netlink, nft,
+//     or dnsmasq state.
+//   - The HypervisorMachine controller is registered too, proven without any
+//     host operation: a machine with no owning CAPI Machine and no cluster
+//     link engages the controller, which stops at owner resolution before
+//     any host-side step, leaving the object untouched.
+//
+// While the manager does not yet wire the controllers, the
+// --hypervisormachine-concurrency flag is missing: the binary exits on
+// startup with an unknown-flag error and --help does not document the flag,
+// so this suite fails (red phase).
+
+// infraConcurrencyFlags are the per-controller concurrency flags the manager
+// must document and accept: one for the HypervisorCluster controller, one
+// for the HypervisorMachine controller.
+var infraConcurrencyFlags = []string{
+	"hypervisorcluster-concurrency",
+	"hypervisormachine-concurrency",
+}
+
+// TestMainInfraControllerFlags runs the provider binary with --help and
+// asserts that both per-controller concurrency flags are documented as
+// integer flags defaulting to 1, and that the binary rejects a non-integer
+// value for each flag at startup.
+func TestMainInfraControllerFlags(t *testing.T) {
+	bin := buildManagerBinary(t)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin, "--help")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("manager --help exited with an error: %v (stderr: %s)", err, stderr.String())
+	}
+	output := stdout.String() + stderr.String()
+
+	for _, flag := range infraConcurrencyFlags {
+		t.Run(flag, func(t *testing.T) {
+			// The flag is documented with the integer type.
+			intFlag := regexp.MustCompile(`(?m)--` + flag + `\s+int\b`)
+			if !intFlag.MatchString(output) {
+				t.Errorf("manager --help does not document --%s as an int flag", flag)
+			}
+
+			// The documented default is 1.
+			defaultOne := regexp.MustCompile(`(?m)--` + flag + `[^\n]*\(default 1\)`)
+			if !defaultOne.MatchString(output) {
+				t.Errorf("manager --help does not document --%s with default 1", flag)
+			}
+
+			// A non-integer value is rejected as a flag parse error, which
+			// proves the flag is parsed as an integer at runtime rather than
+			// accepted as an opaque string.
+			reject := exec.CommandContext(ctx, bin, "--"+flag+"=not-an-int")
+			var rejectOut, rejectErr bytes.Buffer
+			reject.Stdout = &rejectOut
+			reject.Stderr = &rejectErr
+			if err := reject.Run(); err == nil {
+				t.Fatalf("manager accepted --%s=not-an-int, want a flag parse error", flag)
+			}
+			if msg := rejectErr.String(); !strings.Contains(msg, "invalid argument") {
+				t.Errorf("manager rejected --%s=not-an-int with %q, want an invalid-argument parse error", flag, msg)
+			}
+		})
+	}
+}
+
+// TestMainInfraControllersRegistered starts the provider binary against the
+// envtest control plane with both per-controller concurrency flags set to a
+// non-default value and asserts the wiring contract: the manager runs, the
+// metrics endpoint exposes one max-concurrent-reconciles series per
+// infrastructure controller carrying the flag value, both controllers record
+// a successful reconcile on the test objects without host operations, a
+// paused HypervisorCluster linked to a CAPI Cluster stays untouched, and a
+// HypervisorMachine without an owning Machine stays untouched.
+func TestMainInfraControllersRegistered(t *testing.T) {
+	envTest, err := helpers.StartEnvTest(t)
+	if err != nil {
+		t.Fatalf("helpers.StartEnvTest: %v", err)
+	}
+	installCAPICoreCRDs(t, envTest.Env.Config)
+
+	// The test client is built over the manager's own package-level scheme,
+	// so it understands exactly the types the manager registers at startup.
+	c, err := client.New(envTest.Env.Config, client.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatalf("create envtest client: %v", err)
+	}
+
+	const (
+		namespace   = "main-infra-wiring"
+		clusterName = "paused-capi-cluster"
+		machineName = "unowned-machine"
+	)
+
+	createInfraNamespace(t, c, namespace)
+	cluster := newCAPIInfrastructureCluster(t, c, namespace, clusterName)
+	pausedHC := newPausedHypervisorCluster(t, c, namespace, cluster)
+	baselineResourceVersion := pausedHC.ResourceVersion
+	newBareHypervisorMachine(t, c, namespace, machineName)
+
+	kubeconfigPath := writeEnvTestKubeconfig(t, envTest.Env.KubeConfig)
+
+	certDir := t.TempDir()
+	_, serverCertPEM, serverKeyPEM := generateWebhookCerts(t)
+	writeFile(t, filepath.Join(certDir, "tls.crt"), serverCertPEM)
+	writeFile(t, filepath.Join(certDir, "tls.key"), serverKeyPEM)
+
+	// The concurrency flags are passed at their non-default value 2, so the
+	// metrics series values prove the flags are plumbed into the controller
+	// options and not merely accepted.
+	mgr := startManager(t,
+		"--kubeconfig", kubeconfigPath,
+		"--webhook-cert-dir", certDir,
+		"--webhook-port", "9443",
+		"--health-addr", ":9440",
+		"--hypervisorcluster-concurrency", "2",
+		"--hypervisormachine-concurrency", "2",
+	)
+
+	waitForHealthz(t, mgr, "http://127.0.0.1:9440/healthz", 30*time.Second)
+
+	// Registration proof without host operations: the metrics endpoint
+	// exposes a max-concurrent-reconciles series per infrastructure
+	// controller carrying the concurrency flag value, and both controllers
+	// record a successful reconcile on the test objects. A reconcile that
+	// attempted host work would surface as an error result instead.
+	waitForControllerConcurrency(t, mgr, "hypervisorcluster", 2, 30*time.Second)
+	waitForControllerConcurrency(t, mgr, "hypervisormachine", 2, 30*time.Second)
+	waitForControllerReconcileSuccess(t, mgr, "hypervisorcluster", 30*time.Second)
+	waitForControllerReconcileSuccess(t, mgr, "hypervisormachine", 30*time.Second)
+
+	// The paused gate holds at the manager level: the paused
+	// HypervisorCluster is never modified — same resource version, no
+	// finalizer, not ready, no conditions — across a settle window.
+	pausedKey := client.ObjectKey{Namespace: namespace, Name: clusterName}
+	assertPausedClusterUntouched(t, c, pausedKey, baselineResourceVersion)
+
+	// The machine controller stops at owner resolution: the unowned machine
+	// gains no finalizer, no status, and no provider ID.
+	machineKey := client.ObjectKey{Namespace: namespace, Name: machineName}
+	hm := &infrastructurev1alpha1.HypervisorMachine{}
+	if err := c.Get(t.Context(), machineKey, hm); err != nil {
+		t.Fatalf("Get HypervisorMachine: %v", err)
+	}
+	if len(hm.Finalizers) != 0 || hm.Status.Ready || len(hm.Status.Addresses) != 0 || hm.Status.ProviderID != nil {
+		t.Errorf("unowned HypervisorMachine modified: finalizers=%v ready=%v addresses=%v providerID=%v",
+			hm.Finalizers, hm.Status.Ready, hm.Status.Addresses, hm.Status.ProviderID)
+	}
+
+	mgr.stop(t)
+}
+
+// createInfraNamespace creates the namespace the infra wiring objects live
+// in and schedules its removal on cleanup.
+func createInfraNamespace(t *testing.T, c client.Client, name string) {
+	t.Helper()
+
+	if err := c.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}); err != nil {
+		t.Fatalf("create namespace %q: %v", name, err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = c.Delete(cleanupCtx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}})
+	})
+}
+
+// newCAPIInfrastructureCluster creates a CAPI Cluster whose
+// infrastructureRef names the HypervisorCluster with the same name, exactly
+// as the CAPI topology links the two objects.
+func newCAPIInfrastructureCluster(t *testing.T, c client.Client, namespace, name string) *clusterv1.Cluster {
+	t.Helper()
+
+	cluster := &clusterv1.Cluster{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: clusterv1.ClusterSpec{
+			InfrastructureRef: &corev1.ObjectReference{
+				APIVersion: infrastructurev1alpha1.GroupVersion.String(),
+				Kind:       "HypervisorCluster",
+				Name:       name,
+				Namespace:  namespace,
+			},
+		},
+	}
+	if err := c.Create(t.Context(), cluster); err != nil {
+		t.Fatalf("create Cluster %q: %v", name, err)
+	}
+	return cluster
+}
+
+// newPausedHypervisorCluster creates the HypervisorCluster for cluster,
+// linked back through the owner reference and the clusterName link, and
+// carries the standard paused annotation so a registered cluster controller
+// must skip it. The freshly created object is returned so the test can pin
+// its resource version as the untouched baseline.
+func newPausedHypervisorCluster(t *testing.T, c client.Client, namespace string, cluster *clusterv1.Cluster) *infrastructurev1alpha1.HypervisorCluster {
+	t.Helper()
+
+	hc := &infrastructurev1alpha1.HypervisorCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cluster.Name,
+			Namespace: namespace,
+			Annotations: map[string]string{
+				clusterv1.PausedAnnotation: "true",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: clusterv1.GroupVersion.String(),
+					Kind:       "Cluster",
+					Name:       cluster.Name,
+					UID:        cluster.UID,
+				},
+			},
+		},
+		Spec: infrastructurev1alpha1.HypervisorClusterSpec{
+			ClusterName: cluster.Name,
+			Network: infrastructurev1alpha1.HypervisorClusterNetworkSpec{
+				CIDR:       "192.168.124.0/24",
+				Gateway:    "192.168.124.1",
+				DNSIP:      "192.168.124.1",
+				BridgeName: "k8sbr0",
+				NATTable:   "k8slab",
+			},
+		},
+	}
+	if err := c.Create(t.Context(), hc); err != nil {
+		t.Fatalf("create paused HypervisorCluster %q: %v", cluster.Name, err)
+	}
+	return hc
+}
+
+// newBareHypervisorMachine creates a HypervisorMachine with no owning CAPI
+// Machine and no cluster link. A registered HypervisorMachine controller
+// engages on the object and stops at owner resolution, before any host-side
+// step.
+func newBareHypervisorMachine(t *testing.T, c client.Client, namespace, name string) {
+	t.Helper()
+
+	hm := &infrastructurev1alpha1.HypervisorMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+	}
+	if err := c.Create(t.Context(), hm); err != nil {
+		t.Fatalf("create HypervisorMachine %q: %v", name, err)
+	}
+}
+
+// installCAPICoreCRDs installs the cluster-api core CRDs (Cluster and
+// Machine) into the envtest control plane. The provider CRDs are already
+// installed by the committed harness; the cluster-api CRDs ship in the module
+// cache of the pinned cluster-api version.
+func installCAPICoreCRDs(t *testing.T, cfg *rest.Config) {
+	t.Helper()
+
+	dir, err := capiCRDDirectory()
+	if err != nil {
+		t.Fatalf("resolve cluster-api module directory: %v", err)
+	}
+	paths := []string{
+		filepath.Join(dir, "cluster.x-k8s.io_clusters.yaml"),
+		filepath.Join(dir, "cluster.x-k8s.io_machines.yaml"),
+	}
+	if _, err := envtest.InstallCRDs(cfg, envtest.CRDInstallOptions{Paths: paths}); err != nil {
+		t.Fatalf("install cluster-api core CRDs: %v", err)
+	}
+}
+
+// capiCRDDirectory resolves the CRD manifest directory of the pinned
+// sigs.k8s.io/cluster-api module.
+func capiCRDDirectory() (string, error) {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "sigs.k8s.io/cluster-api").Output()
+	if err != nil {
+		return "", fmt.Errorf("go list -m sigs.k8s.io/cluster-api: %w", err)
+	}
+	return filepath.Join(strings.TrimSpace(string(out)), "config", "crd", "bases"), nil
+}
+
+// scrapeMetrics performs one GET of the manager metrics endpoint and returns
+// the body on a 200 response. The manager binds the metrics server to the
+// controller-runtime default address :8080.
+func scrapeMetrics(mgr *runningManager) (string, error) {
+	httpClient := &http.Client{Timeout: 2 * time.Second}
+	resp, err := httpClient.Get("http://127.0.0.1:8080/metrics")
+	if err != nil {
+		return "", err
+	}
+	_ = resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("metrics endpoint status %d", resp.StatusCode)
+	}
+	return string(body), nil
+}
+
+// waitForControllerConcurrency polls the manager metrics endpoint until the
+// named controller reports the expected max-concurrent-reconciles value.
+func waitForControllerConcurrency(t *testing.T, mgr *runningManager, controller string, want int, timeout time.Duration) {
+	t.Helper()
+
+	re := regexp.MustCompile(`controller_runtime_max_concurrent_reconciles\{controller="` + controller + `"\} (\d+)`)
+	deadline := time.Now().Add(timeout)
+	var lastBody string
+	for {
+		if !mgr.alive() {
+			t.Fatalf("manager exited while waiting for controller %q concurrency; stderr:\n%s", controller, mgr.stderr.String())
+		}
+		body, err := scrapeMetrics(mgr)
+		if err == nil {
+			lastBody = body
+			if m := re.FindStringSubmatch(body); m != nil {
+				if got, err := strconv.Atoi(m[1]); err == nil && got == want {
+					return
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("controller %q never reported max-concurrent-reconciles %d (metrics body:\n%s)", controller, want, lastBody)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// waitForControllerReconcileSuccess polls the manager metrics endpoint until
+// the named controller records at least one successful reconcile. A
+// registered controller that engaged on the test objects without a host
+// operation records a success; a controller that attempted host work and
+// failed records an error result instead, which the failure message
+// surfaces.
+func waitForControllerReconcileSuccess(t *testing.T, mgr *runningManager, controller string, timeout time.Duration) {
+	t.Helper()
+
+	re := regexp.MustCompile(`controller_runtime_reconcile_total\{controller="` + controller + `",result="success"\} (\d+)`)
+	deadline := time.Now().Add(timeout)
+	var lastBody string
+	for {
+		if !mgr.alive() {
+			t.Fatalf("manager exited while waiting for controller %q reconcile; stderr:\n%s", controller, mgr.stderr.String())
+		}
+		body, err := scrapeMetrics(mgr)
+		if err == nil {
+			lastBody = body
+			if m := re.FindStringSubmatch(body); m != nil {
+				if n, err := strconv.Atoi(m[1]); err == nil && n >= 1 {
+					return
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("controller %q never reported a successful reconcile (metrics body:\n%s)", controller, lastBody)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// assertPausedClusterUntouched polls the paused HypervisorCluster for a
+// settle window, failing as soon as the object deviates from its creation
+// baseline: resource version, finalizers, readiness, and conditions must all
+// stay as created.
+func assertPausedClusterUntouched(t *testing.T, c client.Client, key client.ObjectKey, baselineResourceVersion string) {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		hc := &infrastructurev1alpha1.HypervisorCluster{}
+		if err := c.Get(t.Context(), key, hc); err != nil {
+			t.Fatalf("Get paused HypervisorCluster: %v", err)
+		}
+		if hc.ResourceVersion != baselineResourceVersion {
+			t.Fatalf("paused HypervisorCluster modified: resourceVersion %s -> %s", baselineResourceVersion, hc.ResourceVersion)
+		}
+		if len(hc.Finalizers) != 0 {
+			t.Fatalf("paused HypervisorCluster gained finalizers %v", hc.Finalizers)
+		}
+		if hc.Status.Ready || len(hc.Status.Conditions) != 0 {
+			t.Fatalf("paused HypervisorCluster status changed: ready=%v conditions=%v", hc.Status.Ready, hc.Status.Conditions)
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
 }
