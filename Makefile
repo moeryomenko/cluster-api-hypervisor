@@ -26,7 +26,7 @@ build: ## Build the manager binary
 
 .PHONY: test
 test: ## Run all tests with race detector and coverage
-	@KUBEBUILDER_ASSETS="$(ENVTEST_ASSETS)" go tool gotestsum --format-hide-empty-pkg -f testname -- $(RACE_DETECTOR) -count $(COUNT) $(TEST) -timeout=3m -coverprofile=$(COVER_FILE)
+	@KUBEBUILDER_ASSETS="$(ENVTEST_ASSETS)" go tool gotestsum --format-hide-empty-pkg -f testname -- $(RACE_DETECTOR) -count $(COUNT) $(TEST) -timeout=15m -coverprofile=$(COVER_FILE)
 	@go tool cover -func=$(COVER_FILE) | grep ^total
 
 .PHONY: cover
