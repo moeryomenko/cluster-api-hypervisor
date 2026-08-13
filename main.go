@@ -16,17 +16,25 @@ limitations under the License.
 
 // Package main is the entry point for the cluster-api-hypervisor provider
 // manager. It wires the scheme, the manager (webhook server, health probes,
-// event broadcaster), the two infrastructure controllers, and the five
-// admission webhooks, then runs until a shutdown signal arrives.
+// event broadcaster), the four controllers (the two infrastructure
+// controllers plus the bootstrap and control-plane controllers), and the
+// five admission webhooks, then runs until a shutdown signal arrives.
 package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
+	"time"
 
 	"github.com/spf13/pflag"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -34,6 +42,7 @@ import (
 	cgrecord "k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -45,12 +54,14 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/chclient"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/confexttree"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/dnsmasq"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/ipam"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/networking"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/nft"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
 	providerwebhook "github.com/moeryomenko/cluster-api-hypervisor/internal/webhook"
 	"github.com/moeryomenko/cluster-api-hypervisor/version"
 )
@@ -77,6 +88,27 @@ const (
 	// defaultGateway is the lab bridge address: the default gateway of the
 	// cluster VMs and the address the dnsmasq forwarder binds and answers on.
 	defaultGateway = "192.168.124.1"
+
+	// controlPlaneRole is the node role the bootstrap data of a control-plane
+	// Machine is rendered for.
+	controlPlaneRole = "control-plane"
+
+	// workloadAPIServerPort is the port the workload apiserver serves on and
+	// the readiness healthz poller targets.
+	workloadAPIServerPort = 6443
+
+	// apiserverHealthzTimeout bounds one apiserver healthz request of the
+	// control-plane readiness poller.
+	apiserverHealthzTimeout = 10 * time.Second
+
+	// defaultControlPlanePKIIP and defaultControlPlanePKIName are the fixed
+	// apiserver certificate SAN inputs of the cluster PKI the control-plane
+	// controller generates on the first replica. The generation seam carries
+	// no control-plane identity, so the SANs are pinned to the first
+	// control-plane Machine's conventional identity: the first static IP of
+	// the default lab pool and the control-plane role name.
+	defaultControlPlanePKIIP   = "192.168.124.20"
+	defaultControlPlanePKIName = "control-plane"
 )
 
 var (
@@ -91,12 +123,14 @@ var (
 	// owns the logging.
 	setupLog = ctrl.Log.WithName("setup")
 
-	kubeconfig                   string
-	webhookCertDir               string
-	webhookPort                  int
-	healthAddr                   string
-	hypervisorClusterConcurrency int
-	hypervisorMachineConcurrency int
+	kubeconfig                        string
+	webhookCertDir                    string
+	webhookPort                       int
+	healthAddr                        string
+	hypervisorClusterConcurrency      int
+	hypervisorMachineConcurrency      int
+	hypervisorConfigConcurrency       int
+	hypervisorControlPlaneConcurrency int
 )
 
 // init registers the scheme: the client-go core types, the CAPI core types
@@ -149,6 +183,18 @@ func initFlags(fs *pflag.FlagSet) {
 		"hypervisormachine-concurrency",
 		1,
 		"Number of HypervisorMachines to process simultaneously",
+	)
+	fs.IntVar(
+		&hypervisorConfigConcurrency,
+		"hypervisorconfig-concurrency",
+		1,
+		"Number of HypervisorConfigs to process simultaneously",
+	)
+	fs.IntVar(
+		&hypervisorControlPlaneConcurrency,
+		"hypervisorcontrolplane-concurrency",
+		1,
+		"Number of HypervisorControlPlanes to process simultaneously",
 	)
 }
 
@@ -217,6 +263,8 @@ func main() {
 		"health-addr", healthAddr,
 		"hypervisorcluster-concurrency", hypervisorClusterConcurrency,
 		"hypervisormachine-concurrency", hypervisorMachineConcurrency,
+		"hypervisorconfig-concurrency", hypervisorConfigConcurrency,
+		"hypervisorcontrolplane-concurrency", hypervisorControlPlaneConcurrency,
 	)
 
 	// Setup the context that is used for the manager and cancelled on a
@@ -276,11 +324,14 @@ func addHealthChecks(mgr ctrl.Manager) error {
 	return nil
 }
 
-// setupControllers constructs the two infrastructure controllers with their
-// host-side seams and registers them with the manager, each running at the
+// setupControllers constructs the four controllers with their host-side and
+// PKI seams and registers them with the manager, each running at the
 // concurrency of its flag. The HypervisorCluster controller owns the cluster
 // network stack (bridge, dnsmasq, nftables); the HypervisorMachine controller
-// drives one cloud-hypervisor VM per machine.
+// drives one cloud-hypervisor VM per machine; the HypervisorConfig controller
+// renders the role-split bootstrap confext trees into the conventional data
+// Secret; and the HypervisorControlPlane controller manages the control-plane
+// Machine set and polls the workload apiserver for readiness.
 func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
 	allocator := ipam.NewAllocator
 
@@ -316,6 +367,119 @@ func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
 		DeriveMAC:       mac.Derive,
 	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: hypervisorMachineConcurrency}); err != nil {
 		return fmt.Errorf("unable to set up HypervisorMachine controller: %w", err)
+	}
+
+	if err := (&controllers.HypervisorConfigReconciler{
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		Recorder:            mgr.GetEventRecorderFor("hypervisorconfig-controller"),
+		BuildTree:           buildConfextTree,
+		GenerateClusterPKI:  pki.GenerateClusterPKI,
+		GenerateKubeletCert: pki.GenerateKubeletCert,
+		RenderKubeconfig:    pki.RenderKubeconfig,
+	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: hypervisorConfigConcurrency}); err != nil {
+		return fmt.Errorf("unable to set up HypervisorConfig controller: %w", err)
+	}
+
+	if err := (&controllers.HypervisorControlPlaneReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("hypervisorcontrolplane-controller"),
+		NewConfig: func(cp *controlplanev1alpha1.HypervisorControlPlane, machineName string) *bootstrapv1alpha1.HypervisorConfig {
+			return &bootstrapv1alpha1.HypervisorConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      machineName + "-config",
+					Namespace: cp.Namespace,
+				},
+				Spec: bootstrapv1alpha1.HypervisorConfigSpec{
+					Role: controlPlaneRole,
+				},
+			}
+		},
+		CreateMachine: func(ctx context.Context, machine *clusterv1.Machine) (client.Object, error) {
+			if err := mgr.GetClient().Create(ctx, machine); err != nil {
+				return nil, err
+			}
+			return machine, nil
+		},
+		GeneratePKI: func() (pki.ClusterPKI, error) {
+			return pki.GenerateClusterPKI(defaultControlPlanePKIIP, defaultControlPlanePKIName)
+		},
+		CheckAPIServerHealth: checkAPIServerHealth,
+	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: hypervisorControlPlaneConcurrency}); err != nil {
+		return fmt.Errorf("unable to set up HypervisorControlPlane controller: %w", err)
+	}
+
+	return nil
+}
+
+// buildConfextTree renders the role-split confext tree for one node through
+// the confexttree builders: the control-plane tree set (z-etcd,
+// z-kubernetes-cp, z-kubelet-<node>) for a control-plane node, and the
+// kubelet-only tree otherwise. The kubeconfigs map holds the rendered
+// documents keyed by role ("kubelet", "admin", "controller-manager",
+// "scheduler").
+func buildConfextTree(
+	role, cpIP, nodeName string,
+	pk pki.ClusterPKI,
+	kubeletCert, kubeletKey []byte,
+	kubeconfigs map[string][]byte,
+	encryptionConfig []byte,
+) (map[string][]byte, error) {
+	if role == controlPlaneRole {
+		return confexttree.BuildControlPlane(
+			cpIP, nodeName, pk, kubeletCert, kubeletKey,
+			kubeconfigs["kubelet"],
+			kubeconfigs["admin"],
+			kubeconfigs["controller-manager"],
+			kubeconfigs["scheduler"],
+			encryptionConfig,
+		)
+	}
+	return confexttree.BuildWorker(nodeName, pk, kubeletCert, kubeletKey, kubeconfigs["kubelet"])
+}
+
+// checkAPIServerHealth polls the workload apiserver healthz endpoint at
+// https://cpIP:6443 with an HTTP client that trusts caCert and authenticates
+// with the clientCert/clientKey pair, returning nil exactly when the apiserver
+// answers 200 OK. The cluster CA doubles as the client certificate in the
+// control-plane readiness flow, mirroring the KTHW apiserver client-ca-file
+// authentication.
+func checkAPIServerHealth(ctx context.Context, cpIP string, clientCert, clientKey, caCert []byte) error {
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caCert) {
+		return fmt.Errorf("cluster CA bytes are not a PEM certificate")
+	}
+	cert, err := tls.X509KeyPair(clientCert, clientKey)
+	if err != nil {
+		return fmt.Errorf("build apiserver health client certificate: %w", err)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs:      caPool,
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS12,
+			},
+		},
+		Timeout: apiserverHealthzTimeout,
+	}
+
+	url := "https://" + net.JoinHostPort(cpIP, strconv.Itoa(workloadAPIServerPort)) + "/healthz"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("build apiserver healthz request for %q: %w", url, err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("apiserver healthz answered %s", resp.Status)
 	}
 
 	return nil
