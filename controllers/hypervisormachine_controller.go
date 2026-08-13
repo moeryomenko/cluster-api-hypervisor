@@ -34,6 +34,7 @@ import (
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 
 	"github.com/go-logr/logr"
 
@@ -784,9 +785,16 @@ func (r *HypervisorMachineReconciler) bootstrapDataSecretName(
 }
 
 // SetupWithManager sets up the controller with the Manager, watching the
-// primary HypervisorMachine kind.
-func (r *HypervisorMachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+// primary HypervisorMachine kind. The optional controller options are applied
+// to the underlying controller in order, so a caller can tune e.g. the
+// maximum concurrent reconciles.
+func (r *HypervisorMachineReconciler) SetupWithManager(mgr ctrl.Manager, opts ...controller.Options) error {
+	builder := ctrl.NewControllerManagedBy(mgr)
+	for _, options := range opts {
+		builder = builder.WithOptions(options)
+	}
+
+	return builder.
 		For(&infrastructurev1alpha1.HypervisorMachine{}).
 		Complete(r)
 }

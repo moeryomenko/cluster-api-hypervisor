@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/cluster-api/util/predicates"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -353,11 +354,18 @@ func (r *HypervisorClusterReconciler) getLinkedCluster(
 
 // SetupWithManager sets up the controller with the Manager, watching the
 // primary HypervisorCluster kind and the CAPI Cluster and HypervisorMachine
-// objects that drive cluster-level reconciles.
-func (r *HypervisorClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+// objects that drive cluster-level reconciles. The optional controller
+// options are applied to the underlying controller in order, so a caller can
+// tune e.g. the maximum concurrent reconciles.
+func (r *HypervisorClusterReconciler) SetupWithManager(mgr ctrl.Manager, opts ...controller.Options) error {
 	log := ctrl.Log.WithName("hypervisorcluster-controller")
 
-	return ctrl.NewControllerManagedBy(mgr).
+	builder := ctrl.NewControllerManagedBy(mgr)
+	for _, options := range opts {
+		builder = builder.WithOptions(options)
+	}
+
+	return builder.
 		For(&infrastructurev1alpha1.HypervisorCluster{}).
 		WithEventFilter(predicates.ResourceNotPausedAndHasFilterLabel(mgr.GetScheme(), log, "")).
 		Watches(

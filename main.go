@@ -16,13 +16,15 @@ limitations under the License.
 
 // Package main is the entry point for the cluster-api-hypervisor provider
 // manager. It wires the scheme, the manager (webhook server, health probes,
-// event broadcaster), and the five admission webhooks, then runs until a
-// shutdown signal arrives.
+// event broadcaster), the two infrastructure controllers, and the five
+// admission webhooks, then runs until a shutdown signal arrives.
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 
 	"github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,12 +34,23 @@ import (
 	cgrecord "k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
 	infrav1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
+	"github.com/moeryomenko/cluster-api-hypervisor/controllers"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/chclient"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/dnsmasq"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/ipam"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/networking"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/nft"
 	providerwebhook "github.com/moeryomenko/cluster-api-hypervisor/internal/webhook"
 	"github.com/moeryomenko/cluster-api-hypervisor/version"
 )
@@ -54,9 +67,23 @@ const (
 	// recorder spam filter; a higher burst size ensures all events are
 	// recorded and submitted to the API.
 	defaultEventBurstSize = 100
+
+	// defaultBridgeName is the lab bridge the provider owns on the host and
+	// the bridge the nftables rules and the dnsmasq forwarder operate on.
+	defaultBridgeName = "k8sbr0"
+	// defaultNATTable is the nftables inet table that carries the cluster
+	// NAT and forwarding rules.
+	defaultNATTable = "k8slab"
+	// defaultGateway is the lab bridge address: the default gateway of the
+	// cluster VMs and the address the dnsmasq forwarder binds and answers on.
+	defaultGateway = "192.168.124.1"
 )
 
 var (
+	// defaultUpstreamResolvers are the upstream DNS resolvers the forwarder
+	// pins, matching the lab network defaults.
+	defaultUpstreamResolvers = []string{"1.1.1.1", "8.8.8.8"}
+
 	// scheme is the runtime scheme shared by the manager, the clients, and
 	// the webhook builders.
 	scheme = runtime.NewScheme()
@@ -69,6 +96,7 @@ var (
 	webhookPort                  int
 	healthAddr                   string
 	hypervisorClusterConcurrency int
+	hypervisorMachineConcurrency int
 )
 
 // init registers the scheme: the client-go core types, the CAPI core types
@@ -116,6 +144,12 @@ func initFlags(fs *pflag.FlagSet) {
 		1,
 		"Number of HypervisorClusters to process simultaneously",
 	)
+	fs.IntVar(
+		&hypervisorMachineConcurrency,
+		"hypervisormachine-concurrency",
+		1,
+		"Number of HypervisorMachines to process simultaneously",
+	)
 }
 
 func main() {
@@ -125,6 +159,15 @@ func main() {
 	restConfig, err := managerRestConfig()
 	if err != nil {
 		setupLog.Error(err, "unable to load the management cluster config")
+		os.Exit(1)
+	}
+
+	// Resolve the provider configuration from the environment before any
+	// controller is constructed: the infra controllers consume the host
+	// paths and binaries it locates.
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		setupLog.Error(err, "unable to load the provider configuration")
 		os.Exit(1)
 	}
 
@@ -163,11 +206,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := setupControllers(mgr, cfg); err != nil {
+		setupLog.Error(err, "failed to add controllers")
+		os.Exit(1)
+	}
+
 	setupLog.Info("starting manager",
 		"version", version.Get().String(),
 		"webhook-port", webhookPort,
 		"health-addr", healthAddr,
 		"hypervisorcluster-concurrency", hypervisorClusterConcurrency,
+		"hypervisormachine-concurrency", hypervisorMachineConcurrency,
 	)
 
 	// Setup the context that is used for the manager and cancelled on a
@@ -224,5 +273,50 @@ func addHealthChecks(mgr ctrl.Manager) error {
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		return fmt.Errorf("unable to add readyz check: %w", err)
 	}
+	return nil
+}
+
+// setupControllers constructs the two infrastructure controllers with their
+// host-side seams and registers them with the manager, each running at the
+// concurrency of its flag. The HypervisorCluster controller owns the cluster
+// network stack (bridge, dnsmasq, nftables); the HypervisorMachine controller
+// drives one cloud-hypervisor VM per machine.
+func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
+	allocator := ipam.NewAllocator
+
+	if err := (&controllers.HypervisorClusterReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("hypervisorcluster-controller"),
+		Net:      networking.NewManager(networking.NewNetlinkOps()),
+		Nft:      nft.NewManager(defaultBridgeName, defaultNATTable, nil),
+		Dnsmasq: dnsmasq.NewManager(dnsmasq.Config{
+			BridgeName:    defaultBridgeName,
+			ListenAddress: defaultGateway,
+			Upstream:      defaultUpstreamResolvers,
+		}, nil, cfg.StateDir),
+		NewAllocator: allocator,
+	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: hypervisorClusterConcurrency}); err != nil {
+		return fmt.Errorf("unable to set up HypervisorCluster controller: %w", err)
+	}
+
+	if err := (&controllers.HypervisorMachineReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("hypervisormachine-controller"),
+		Config:   cfg,
+		VM:       chclient.NewVMClient(cfg.SocketDir, cfg.CHBinary),
+		Net:      networking.NewManager(networking.NewNetlinkOps()),
+		QemuImg: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return exec.CommandContext(ctx, name, args...).CombinedOutput()
+		},
+		Confext:         confext.NewPackager(),
+		RenderCloudInit: cloudinit.Render,
+		NewAllocator:    allocator,
+		DeriveMAC:       mac.Derive,
+	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: hypervisorMachineConcurrency}); err != nil {
+		return fmt.Errorf("unable to set up HypervisorMachine controller: %w", err)
+	}
+
 	return nil
 }
