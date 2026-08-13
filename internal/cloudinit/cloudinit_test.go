@@ -53,7 +53,7 @@ func TestRenderProducesCompleteCIDATA(t *testing.T) {
 		t.Fatalf("Render with valid data returned error: %v", err)
 	}
 
-	wantKeys := []string{"user-data", "meta-data", "network-config"}
+	wantKeys := []string{"meta-data", "network-config", "user-data"}
 	if got := keysOf(parts); !equalStrings(got, wantKeys) {
 		t.Fatalf("Render produced parts %v, want exactly %v", got, wantKeys)
 	}
