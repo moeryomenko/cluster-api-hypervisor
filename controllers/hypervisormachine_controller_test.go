@@ -728,9 +728,13 @@ func TestMachineIdentityStaticIPAllocatedAndStable(t *testing.T) {
 			testCIDR, testGateway, testPoolStart, testPoolEnd)
 	}
 
-	// Part 1 stops before the VM lifecycle: no VM client calls.
-	if len(fx.vm.Calls) != 0 {
-		t.Errorf("reconcile touched the VM client: %v", fx.vm.Calls)
+	// The VM lifecycle runs on every reconcile: the first reconcile boots
+	// the VM through the client and re-checks its state, and the second
+	// reconcile only re-checks the state (the boot is skipped once the
+	// provider ID is recorded).
+	wantVMCalls := []string{"EnsureRunning", "Info", "Info"}
+	if !reflect.DeepEqual(fx.vm.Calls, wantVMCalls) {
+		t.Errorf("VM client calls = %v, want %v", fx.vm.Calls, wantVMCalls)
 	}
 }
 
