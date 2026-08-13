@@ -951,14 +951,16 @@ func TestMainBootstrapControllersRegistered(t *testing.T) {
 }
 
 // assertNoControllerReconciles polls the manager metrics endpoint for a
-// settle window and fails as soon as the named controller records any
-// reconcile, regardless of the result. A registered controller with no
-// objects to reconcile records nothing; the absence of the series is the
-// zero-side-effect proof.
+// settle window and fails as soon as the named controller records a
+// reconcile, proven by a controller_runtime_reconcile_total series whose
+// count is above 0. controller-runtime pre-creates the reconcile_total
+// series at value 0 when a controller starts (Controller.Start's
+// initMetrics), so series presence alone is not a side effect; a reconcile
+// that ran carries a count above 0 and fails the assertion.
 func assertNoControllerReconciles(t *testing.T, mgr *runningManager, controller string, timeout time.Duration) {
 	t.Helper()
 
-	re := regexp.MustCompile(`controller_runtime_reconcile_total\{controller="` + controller + `"`)
+	re := regexp.MustCompile(`controller_runtime_reconcile_total\{controller="` + controller + `"(?:,[^}]*)?\} (\d+)`)
 	deadline := time.Now().Add(timeout)
 	for {
 		if !mgr.alive() {
@@ -966,8 +968,14 @@ func assertNoControllerReconciles(t *testing.T, mgr *runningManager, controller 
 		}
 		body, err := scrapeMetrics(mgr)
 		if err == nil {
-			if m := re.FindString(body); m != "" {
-				t.Fatalf("controller %q recorded an unexpected reconcile: %s", controller, m)
+			for _, m := range re.FindAllStringSubmatch(body, -1) {
+				n, err := strconv.Atoi(m[1])
+				if err != nil {
+					t.Fatalf("controller %q reconcile_total series has non-integer value %q: %s", controller, m[1], m[0])
+				}
+				if n > 0 {
+					t.Fatalf("controller %q recorded an unexpected reconcile count %d: %s", controller, n, m[0])
+				}
 			}
 		}
 		if time.Now().After(deadline) {
