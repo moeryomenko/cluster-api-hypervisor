@@ -55,7 +55,7 @@ tidy: ## Tidy go module dependencies
 .PHONY: generate
 generate: ## Run controller-gen codegen (deepcopy, CRDs, RBAC, webhook manifests)
 	@go tool controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
-	@go tool controller-gen crd:crdVersions=v1 rbac:roleName=manager-role webhook paths="./api/..." paths="./internal/webhook/..." \
+	@go tool controller-gen crd:crdVersions=v1 rbac:roleName=manager-role webhook paths="./api/..." paths="./controllers/..." paths="./internal/webhook/..." \
 		output:crd:artifacts:config=config/crd/bases \
 		output:rbac:artifacts:config=config/rbac \
 		output:webhook:artifacts:config=config/webhook
