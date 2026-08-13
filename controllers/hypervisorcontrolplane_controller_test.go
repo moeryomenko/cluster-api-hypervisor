@@ -1193,3 +1193,285 @@ func TestControlPlaneReadinessKubeconfigContent(t *testing.T) {
 		t.Errorf("kubeconfig certificate-authority-data does not match the cluster PKI CA")
 	}
 }
+
+// Scale contract (test-first, red).
+//
+// This section pins the control-plane scale contract: bumping spec.replicas
+// creates the surplus Machines, reducing it deletes the surplus Machines, the
+// replica counters in status track the created Machine set, and spec.version
+// is propagated to status.version. The reconciler is exercised through the
+// same envtest fixture and recording seams as the machine-creation suite; the
+// scale assertions read the API store and the control plane status after
+// direct Reconcile calls.
+//
+// The contract, in prose:
+//
+//   - Scale-up: after a reconcile with replicas 1, bumping spec.replicas to 2
+//     and reconciling again creates exactly one additional Machine, named
+//     <control-plane-name>-1, carrying the same labels, infrastructure ref,
+//     and bootstrap wiring as the first replica (its configRef names the
+//     generated <machine-name>-config HypervisorConfig, which exists in the
+//     API store). A further reconcile converges: no additional Machine and no
+//     additional creation-seam invocation.
+//   - Scale-down: after a reconcile with replicas 2, reducing spec.replicas to
+//     1 and reconciling again deletes the surplus Machine (the one beyond the
+//     desired count, <control-plane-name>-1) so the API store holds exactly
+//     the retained Machines. The retained Machine keeps its bootstrap ref and
+//     the referenced config still exists, and the scale-down reconcile creates
+//     nothing.
+//   - Replica counters: status.replicas equals the number of created Machines,
+//     status.updatedReplicas equals the same number (every Machine in this lab
+//     carries the current template), status.readyReplicas equals the number of
+//     Machines whose linked VM is ready (none in this suite, which never boots
+//     a VM), and status.unavailableReplicas equals
+//     status.replicas - status.readyReplicas. The counters are idempotent
+//     across reconciles and re-pin after a scale-down.
+//   - Version: status.version is the spec.version value, propagated on
+//     reconcile and kept in sync when spec.version changes.
+//
+// updateControlPlaneSpec applies mutate to a fresh copy of the control plane
+// and persists it, returning the updated object for the caller to reconcile
+// against.
+func updateControlPlaneSpec(
+	t *testing.T,
+	c client.Client,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	mutate func(*controlplanev1alpha1.HypervisorControlPlane),
+) *controlplanev1alpha1.HypervisorControlPlane {
+	t.Helper()
+	got := getControlPlane(t, c, cp)
+	mutate(got)
+	if err := c.Update(t.Context(), got); err != nil {
+		t.Fatalf("update HypervisorControlPlane %s: %v", client.ObjectKeyFromObject(cp), err)
+	}
+
+	return got
+}
+
+// wantMachineGone fails the test unless no Machine with the given name exists
+// in the namespace.
+func wantMachineGone(t *testing.T, c client.Client, namespace, name string) {
+	t.Helper()
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &clusterv1.Machine{}); err == nil {
+		t.Errorf("Machine %s/%s exists, want it deleted", namespace, name)
+	} else if !apierrors.IsNotFound(err) {
+		t.Fatalf("Get Machine %s/%s: %v", namespace, name, err)
+	}
+}
+
+// wantBootstrapConfigExists fails the test unless the HypervisorConfig with
+// the given name exists in the namespace.
+func wantBootstrapConfigExists(t *testing.T, c client.Client, namespace, name string) {
+	t.Helper()
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &bootstrapv1alpha1.HypervisorConfig{}); err != nil {
+		t.Errorf("HypervisorConfig %s/%s missing: %v", namespace, name, err)
+	}
+}
+
+// wantControlPlaneScaleStatus fails the test unless the control plane reports
+// the pinned scale counters for a created Machine set: status.replicas and
+// status.updatedReplicas equal created, status.readyReplicas equals ready
+// (the number of Machines whose linked VM is ready), and
+// status.unavailableReplicas equals created - ready.
+func wantControlPlaneScaleStatus(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane, created, ready int32) {
+	t.Helper()
+	if cp.Status.Replicas != created {
+		t.Errorf("status.replicas = %d, want %d", cp.Status.Replicas, created)
+	}
+	if cp.Status.UpdatedReplicas != created {
+		t.Errorf("status.updatedReplicas = %d, want %d", cp.Status.UpdatedReplicas, created)
+	}
+	if cp.Status.ReadyReplicas != ready {
+		t.Errorf("status.readyReplicas = %d, want %d", cp.Status.ReadyReplicas, ready)
+	}
+	if want := created - ready; cp.Status.UnavailableReplicas != want {
+		t.Errorf("status.unavailableReplicas = %d, want %d", cp.Status.UnavailableReplicas, want)
+	}
+}
+
+// wantControlPlaneVersion fails the test unless the control plane reports the
+// given status.version value.
+func wantControlPlaneVersion(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane, want string) {
+	t.Helper()
+	if cp.Status.Version == nil {
+		t.Errorf("status.version is nil, want %q", want)
+		return
+	}
+	if *cp.Status.Version != want {
+		t.Errorf("status.version = %q, want %q", *cp.Status.Version, want)
+	}
+}
+
+// TestControlPlaneScaleUp pins the scale-up contract: bumping spec.replicas
+// from 1 to 2 creates exactly one additional Machine with the deterministic
+// name pattern and the same bootstrap wiring as the first replica, and a
+// further reconcile converges instead of duplicating.
+func TestControlPlaneScaleUp(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newControlPlaneFixture(t, c)
+	lc := newLinkedCluster(t, c, "cp-scale-up", "capi-cluster")
+	lcp := newLinkedControlPlane(t, c, lc, lc.name+"-cp", 1, nil)
+
+	fx.reconcileControlPlane(t, lcp.cp)
+
+	if machines := listControlPlaneMachines(t, c, lc.namespace, lc.name); len(machines) != 1 {
+		t.Fatalf("created %d Machines before scale-up, want 1 (names %v)", len(machines), machineNamesOf(machines))
+	}
+
+	lcp.cp = updateControlPlaneSpec(t, c, lcp.cp, func(cp *controlplanev1alpha1.HypervisorControlPlane) {
+		cp.Spec.Replicas = 2
+	})
+	fx.reconcileControlPlane(t, lcp.cp)
+
+	machines := listControlPlaneMachines(t, c, lc.namespace, lc.name)
+	if len(machines) != 2 {
+		t.Fatalf("created %d Machines after scale-up, want 2 (names %v)", len(machines), machineNamesOf(machines))
+	}
+	want := []string{lcp.name + "-0", lcp.name + "-1"}
+	if !sameStringSet(machineNamesOf(machines), want) {
+		t.Errorf("Machine names after scale-up = %v, want %v", machineNamesOf(machines), want)
+	}
+
+	var second *clusterv1.Machine
+	for i := range machines {
+		m := &machines[i]
+		wantMachineLabels(t, m, lc.name, nil)
+		if m.Name != lcp.name+"-1" {
+			continue
+		}
+		second = m
+	}
+	if second == nil {
+		t.Fatal("scale-up did not create Machine " + lcp.name + "-1")
+	}
+	if second.Spec.Bootstrap.ConfigRef == nil {
+		t.Fatal("scale-up Machine spec.bootstrap.configRef is nil")
+	}
+	ref := second.Spec.Bootstrap.ConfigRef
+	wantConfigName := machineConfigName(second.Name)
+	if ref.Name != wantConfigName || ref.Kind != "HypervisorConfig" || ref.Namespace != lc.namespace {
+		t.Errorf("scale-up Machine configRef = %+v, want HypervisorConfig %q in %q", ref, wantConfigName, lc.namespace)
+	}
+	wantBootstrapConfigExists(t, c, lc.namespace, wantConfigName)
+
+	if len(fx.createMachine.calls) != 2 {
+		t.Errorf("CreateMachine called %d times across scale-up, want 2", len(fx.createMachine.calls))
+	}
+
+	// A further reconcile converges: no duplicate Machine, no extra creation.
+	fx.reconcileControlPlane(t, lcp.cp)
+	if got := listControlPlaneMachines(t, c, lc.namespace, lc.name); len(got) != 2 {
+		t.Errorf("reconcile after scale-up produced %d Machines, want 2 (names %v)", len(got), machineNamesOf(got))
+	}
+	if len(fx.createMachine.calls) != 2 {
+		t.Errorf("CreateMachine called %d times across three reconciles, want 2", len(fx.createMachine.calls))
+	}
+}
+
+// TestControlPlaneScaleDown pins the scale-down contract: reducing
+// spec.replicas from 2 to 1 deletes the surplus Machine so the API store
+// holds exactly the retained set, the retained Machine keeps its bootstrap
+// ref and config, and the scale-down reconcile creates nothing.
+func TestControlPlaneScaleDown(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newControlPlaneFixture(t, c)
+	lc := newLinkedCluster(t, c, "cp-scale-down", "capi-cluster")
+	lcp := newLinkedControlPlane(t, c, lc, lc.name+"-cp", 2, nil)
+
+	fx.reconcileControlPlane(t, lcp.cp)
+
+	machines := listControlPlaneMachines(t, c, lc.namespace, lc.name)
+	if len(machines) != 2 {
+		t.Fatalf("created %d Machines before scale-down, want 2 (names %v)", len(machines), machineNamesOf(machines))
+	}
+
+	lcp.cp = updateControlPlaneSpec(t, c, lcp.cp, func(cp *controlplanev1alpha1.HypervisorControlPlane) {
+		cp.Spec.Replicas = 1
+	})
+	fx.reconcileControlPlane(t, lcp.cp)
+
+	wantMachineGone(t, c, lc.namespace, lcp.name+"-1")
+
+	machines = listControlPlaneMachines(t, c, lc.namespace, lc.name)
+	if len(machines) != 1 {
+		t.Fatalf("%d Machines after scale-down, want 1 (names %v)", len(machines), machineNamesOf(machines))
+	}
+	retained := machines[0]
+	if retained.Name != lcp.name+"-0" {
+		t.Errorf("retained Machine = %q, want %q", retained.Name, lcp.name+"-0")
+	}
+	if retained.Spec.Bootstrap.ConfigRef == nil {
+		t.Fatal("retained Machine spec.bootstrap.configRef is nil after scale-down")
+	}
+	ref := retained.Spec.Bootstrap.ConfigRef
+	if ref.Name != machineConfigName(retained.Name) || ref.Kind != "HypervisorConfig" || ref.Namespace != lc.namespace {
+		t.Errorf("retained Machine configRef = %+v, want HypervisorConfig %q in %q", ref, machineConfigName(retained.Name), lc.namespace)
+	}
+	wantBootstrapConfigExists(t, c, lc.namespace, machineConfigName(retained.Name))
+
+	// The scale-down reconcile creates nothing: the retained Machine already
+	// exists and the surplus one is deleted, so the creation seam is not
+	// invoked again.
+	if len(fx.createMachine.calls) != 2 {
+		t.Errorf("CreateMachine called %d times across scale-down, want 2", len(fx.createMachine.calls))
+	}
+}
+
+// TestControlPlaneScaleCounters pins the replica counter contract at the
+// creation level: status.replicas and status.updatedReplicas equal the number
+// of created Machines, status.readyReplicas is zero because no VM in this
+// suite ever boots, and status.unavailableReplicas equals the difference. The
+// counters are idempotent across reconciles and re-pin after a scale-down.
+func TestControlPlaneScaleCounters(t *testing.T) {
+	c := mustReconcileClient(t)
+
+	t.Run("counters track the created machines", func(t *testing.T) {
+		fx := newControlPlaneFixture(t, c)
+		lc := newLinkedCluster(t, c, "cp-scale-counters", "capi-cluster")
+		lcp := newLinkedControlPlane(t, c, lc, lc.name+"-cp", 3, nil)
+
+		fx.reconcileControlPlane(t, lcp.cp)
+
+		wantControlPlaneScaleStatus(t, getControlPlane(t, c, lcp.cp), 3, 0)
+
+		// A second reconcile converges: the counters are written again with
+		// the same values.
+		fx.reconcileControlPlane(t, lcp.cp)
+		wantControlPlaneScaleStatus(t, getControlPlane(t, c, lcp.cp), 3, 0)
+	})
+
+	t.Run("counters re-pin after scale-down", func(t *testing.T) {
+		fx := newControlPlaneFixture(t, c)
+		lc := newLinkedCluster(t, c, "cp-scale-counters-down", "capi-cluster")
+		lcp := newLinkedControlPlane(t, c, lc, lc.name+"-cp", 2, nil)
+
+		fx.reconcileControlPlane(t, lcp.cp)
+		wantControlPlaneScaleStatus(t, getControlPlane(t, c, lcp.cp), 2, 0)
+
+		lcp.cp = updateControlPlaneSpec(t, c, lcp.cp, func(cp *controlplanev1alpha1.HypervisorControlPlane) {
+			cp.Spec.Replicas = 1
+		})
+		fx.reconcileControlPlane(t, lcp.cp)
+
+		wantControlPlaneScaleStatus(t, getControlPlane(t, c, lcp.cp), 1, 0)
+	})
+}
+
+// TestControlPlaneScaleVersion pins the version propagation contract:
+// status.version carries the spec.version value after reconcile and follows
+// spec.version when it changes.
+func TestControlPlaneScaleVersion(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newControlPlaneFixture(t, c)
+	lc := newLinkedCluster(t, c, "cp-scale-version", "capi-cluster")
+	lcp := newLinkedControlPlane(t, c, lc, lc.name+"-cp", 1, nil)
+
+	fx.reconcileControlPlane(t, lcp.cp)
+	wantControlPlaneVersion(t, getControlPlane(t, c, lcp.cp), "v1.35.4")
+
+	lcp.cp = updateControlPlaneSpec(t, c, lcp.cp, func(cp *controlplanev1alpha1.HypervisorControlPlane) {
+		cp.Spec.Version = "v1.36.0"
+	})
+	fx.reconcileControlPlane(t, lcp.cp)
+	wantControlPlaneVersion(t, getControlPlane(t, c, lcp.cp), "v1.36.0")
+}
