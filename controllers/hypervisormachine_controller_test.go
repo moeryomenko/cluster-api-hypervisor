@@ -1319,9 +1319,11 @@ func TestMachineVMNotReadyWhenNotRunning(t *testing.T) {
 //   - TAP removal: the machine TAP k8s-<machine> is deleted through the
 //     networking manager.
 //   - Disk removal: the root disk <vm-disks>/<name>-root.qcow2 and the
-//     confext data-disk artifacts (<vm-disks>/<name>-data) are removed from
-//     the configured VM disk directory, unless spec.retainDiskOnDelete keeps
-//     them in place while the rest of the teardown still completes.
+//     confext data-disk artifacts — the packaged .raw output directory
+//     (<vm-disks>/<name>-data) and the staging tree
+//     (<vm-disks>/<name>-confext-staging) — are removed from the configured
+//     VM disk directory, unless spec.retainDiskOnDelete keeps them in place
+//     while the rest of the teardown still completes.
 //   - IP release: the static IP a deleted machine held is freed, so the next
 //     machine in the same cluster receives it. The allocator is constructed
 //     fresh per reconcile and seeded only from the status of the machines
@@ -1416,6 +1418,25 @@ func writeMachineConfextDisk(t *testing.T, vmDisksDir, name string) string {
 	return path
 }
 
+// writeMachineConfextStaging writes a real confext staging tree for the
+// machine under the fixture's VM disk directory, standing in for the tree the
+// packager seam only materializes in memory. The returned path is the staging
+// directory written.
+func writeMachineConfextStaging(t *testing.T, vmDisksDir, name string) string {
+	t.Helper()
+
+	dir := filepath.Join(vmDisksDir, name+"-confext-staging")
+	treeFile := filepath.Join(dir, "z-kubelet-node1", "etc", "kubernetes", "kubelet.conf")
+	if err := os.MkdirAll(filepath.Dir(treeFile), 0o755); err != nil {
+		t.Fatalf("create confext staging dir %q: %v", dir, err)
+	}
+	if err := os.WriteFile(treeFile, []byte("fixture staging tree"), 0o644); err != nil {
+		t.Fatalf("write staging tree file %q: %v", treeFile, err)
+	}
+
+	return dir
+}
+
 // assertPathRemoved fails the test when the path still exists.
 func assertPathRemoved(t *testing.T, path string) {
 	t.Helper()
@@ -1475,8 +1496,8 @@ func wantLinkCall(t *testing.T, f *recordingLinkOps, want linkOpCall) {
 
 // TestMachineDeleteTearsDownStack pins the teardown stack contract: deleting
 // the machine shuts the VM down gracefully through the client, tears the
-// process down, removes the machine TAP, removes the root disk, and drops
-// the finalizer so the object is reclaimed.
+// process down, removes the machine TAP, removes the root disk and the
+// confext staging tree, and drops the finalizer so the object is reclaimed.
 func TestMachineDeleteTearsDownStack(t *testing.T) {
 	c := mustReconcileClient(t)
 	fx := newMachineFixture(t, c)
@@ -1489,6 +1510,10 @@ func TestMachineDeleteTearsDownStack(t *testing.T) {
 	fx.vm.State = ch.VMState("Running")
 	fx.reconcileMachine(t, lm.hm)
 	rootDisk := writeMachineRootDisk(t, vmDisksDir, lm.name)
+	// The machine has no bootstrap data, so no staging tree was materialized
+	// during provisioning; write one by hand to represent the confext staging
+	// tree a bootstrap machine would carry.
+	stagingDir := writeMachineConfextStaging(t, vmDisksDir, lm.name)
 	wantTap := machineTapPrefix + lm.name
 
 	markMachineForDeletion(t, c, lm.hm)
@@ -1505,6 +1530,9 @@ func TestMachineDeleteTearsDownStack(t *testing.T) {
 
 	// The root disk is removed.
 	assertPathRemoved(t, rootDisk)
+
+	// The confext staging tree is removed.
+	assertPathRemoved(t, stagingDir)
 
 	// The finalizer is dropped and the object is reclaimed.
 	assertMachineReclaimed(t, c, lm.hm)
@@ -1530,6 +1558,7 @@ func TestMachineDeleteRetainsDisks(t *testing.T) {
 	fx.reconcileMachine(t, lm.hm)
 	rootDisk := writeMachineRootDisk(t, vmDisksDir, lm.name)
 	confextDisk := writeMachineConfextDisk(t, vmDisksDir, lm.name)
+	stagingDir := writeMachineConfextStaging(t, vmDisksDir, lm.name)
 	wantTap := machineTapPrefix + lm.name
 
 	markMachineForDeletion(t, c, lm.hm)
@@ -1543,6 +1572,7 @@ func TestMachineDeleteRetainsDisks(t *testing.T) {
 	// The disk artifacts survive.
 	assertPathExists(t, rootDisk)
 	assertPathExists(t, confextDisk)
+	assertPathExists(t, stagingDir)
 }
 
 // TestMachineDeleteToleratesMissingVM pins the absent-VM contract: a client
