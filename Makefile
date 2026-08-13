@@ -7,6 +7,16 @@ TEST ?= $(shell go list ./...)
 IMPORT_PATH := $(shell go list -m -f {{.Path}} | head -1)
 ENVTEST_K8S_VERSION ?= 1.35.0
 
+# ENVTEST_ASSETS resolves the envtest binary directory used by the test
+# targets. A pre-set KUBEBUILDER_ASSETS wins; otherwise setup-envtest returns
+# (downloading on first use) the binary directory for the pinned Kubernetes
+# version. The version is passed positionally because setup-envtest ignores
+# the KUBEBUILDER_ENVTEST_KUBERNETES_VERSION env var and would otherwise
+# select the latest release (observed 1.36.2) instead of the 1.35.x series
+# the envtest harness targets. Recursive expansion defers setup-envtest until
+# a recipe actually needs the path.
+ENVTEST_ASSETS = $(if $(KUBEBUILDER_ASSETS),$(KUBEBUILDER_ASSETS),$(shell go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path))
+
 .PHONY: default
 default: help
 
@@ -16,7 +26,7 @@ build: ## Build the manager binary
 
 .PHONY: test
 test: ## Run all tests with race detector and coverage
-	@go tool gotestsum --format-hide-empty-pkg -f testname -- $(RACE_DETECTOR) -count $(COUNT) $(TEST) -timeout=3m -coverprofile=$(COVER_FILE)
+	@KUBEBUILDER_ASSETS="$(ENVTEST_ASSETS)" go tool gotestsum --format-hide-empty-pkg -f testname -- $(RACE_DETECTOR) -count $(COUNT) $(TEST) -timeout=3m -coverprofile=$(COVER_FILE)
 	@go tool cover -func=$(COVER_FILE) | grep ^total
 
 .PHONY: cover
@@ -57,8 +67,8 @@ generate-check: ## Fail if a second generate changes tracked files
 	@git diff --no-ext-diff --exit-code
 
 .PHONY: envtest
-envtest: ## Download envtest binaries for the target Kubernetes version
-	@KUBEBUILDER_ENVTEST_KUBERNETES_VERSION=$(ENVTEST_K8S_VERSION) go tool setup-envtest use -p path
+envtest: ## Run the envtest suite (controllers CRD contract + helpers) against the pinned k8s binaries
+	@KUBEBUILDER_ASSETS="$(ENVTEST_ASSETS)" go tool gotestsum --format-hide-empty-pkg -f testname -- $(RACE_DETECTOR) -count $(COUNT) ./controllers/... ./test/helpers/... -timeout=3m
 
 .PHONY: image
 image: ## Build container image (stub; implemented in a later phase)
