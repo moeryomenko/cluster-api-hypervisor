@@ -698,8 +698,8 @@ func scrapeMetrics(mgr *runningManager) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	_ = resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
 	if err != nil {
 		return "", err
 	}
