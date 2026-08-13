@@ -407,7 +407,7 @@ func (r *requestRecorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	w.WriteHeader(r.status)
 	if r.payload != "" {
-		fmt.Fprint(w, r.payload)
+		_, _ = fmt.Fprint(w, r.payload)
 	}
 }
 
