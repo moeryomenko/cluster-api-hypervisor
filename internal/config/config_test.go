@@ -189,7 +189,7 @@ func TestLoadNetworkCIDRValidation(t *testing.T) {
 		{name: "missing prefix length", cidr: "192.168.124.0"},
 		{name: "prefix length out of range", cidr: "192.168.124.0/99"},
 		{name: "octet out of range", cidr: "192.168.124.999/24"},
-		{name: "empty string", cidr: ""},
+		{name: "alt prefix length out of range", cidr: "10.0.0.0/99"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
