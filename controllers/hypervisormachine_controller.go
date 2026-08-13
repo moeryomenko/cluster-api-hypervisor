@@ -20,7 +20,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,6 +34,8 @@ import (
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/go-logr/logr"
 
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
 	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
@@ -110,15 +114,19 @@ type HypervisorMachineReconciler struct {
 }
 
 // Reconcile moves the current state of the HypervisorMachine towards the
-// desired state. It resolves the object, the owning CAPI Machine, and the
-// linked Cluster first: a missing object, a machine with no owning Machine,
-// and a machine whose Cluster or infrastructure Cluster is missing are all
-// no-ops, not errors, and no dependency is touched. On a normal reconcile it
-// ensures the machine identity, provisions the root disk, packages the
-// bootstrap data into confext raws, renders the CIDATA parts, and drives the
-// VM lifecycle: the machine TAP, the VM boot through the client, the provider
-// ID, the provisioning condition, and readiness. The deletion step is out of
-// this phase's scope.
+// desired state. It resolves the object first; a missing object is a no-op.
+// When the object is being deleted (the deletion timestamp is set and a
+// finalizer still holds it), it tears the machine down instead of
+// provisioning it: graceful VM shutdown, process stop, TAP removal, disk
+// removal unless the spec retains the disks, static IP release, and finalizer
+// removal. On a normal reconcile it resolves the owning CAPI Machine, the
+// linked Cluster, and the infrastructure Cluster: a machine with no owning
+// Machine, or whose Cluster or infrastructure Cluster is missing, is a no-op,
+// not an error, and no dependency is touched. Then it ensures the machine
+// identity, provisions the root disk, packages the bootstrap data into
+// confext raws, renders the CIDATA parts, and drives the VM lifecycle: the
+// machine TAP, the VM boot through the client, the provider ID, the
+// provisioning condition, and readiness.
 func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -128,6 +136,13 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("get HypervisorMachine %q: %w", req.NamespacedName, err)
+	}
+
+	// The deletion branch runs before any owner or cluster resolution: a
+	// real CAPI teardown deletes the owning Machine at the same time, so
+	// teardown must not depend on the owner link surviving.
+	if !hm.DeletionTimestamp.IsZero() && len(hm.Finalizers) > 0 {
+		return r.reconcileDelete(ctx, log, hm)
 	}
 
 	machine, ok, err := r.getOwnerMachine(ctx, hm)
@@ -179,6 +194,133 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// reconcileDelete tears the machine's host-side stack down and drops its
+// finalizers so the object is reclaimed. The VM is shut down gracefully
+// through the client and the cloud-hypervisor process is stopped, in that
+// order; a VM that is already absent (the client reports ErrNotFound from
+// Shutdown or Stop) is tolerated. The machine TAP is deleted, and the root
+// disk and the confext data disk artifacts are removed from the VM disk
+// directory unless spec.retainDiskOnDelete keeps them in place. The static IP
+// the machine holds is released back to the cluster pool. Every step is
+// idempotent, so a repeated delete reconcile adds no further host calls.
+func (r *HypervisorMachineReconciler) reconcileDelete(
+	ctx context.Context,
+	log logr.Logger,
+	hm *infrastructurev1alpha1.HypervisorMachine,
+) (ctrl.Result, error) {
+	if err := r.VM.Shutdown(ctx); err != nil && !errors.Is(err, chclient.ErrNotFound) {
+		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to shut down VM for %q: %v", hm.Name, err)
+		return ctrl.Result{}, fmt.Errorf("shut down VM for %q: %w", hm.Name, err)
+	}
+	if err := r.VM.Stop(ctx); err != nil && !errors.Is(err, chclient.ErrNotFound) {
+		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to stop VM for %q: %v", hm.Name, err)
+		return ctrl.Result{}, fmt.Errorf("stop VM for %q: %w", hm.Name, err)
+	}
+
+	tapName := defaultMachineTapPrefix + hm.Name
+	if err := r.Net.DeleteTap(tapName); err != nil {
+		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to delete TAP %q: %v", tapName, err)
+		return ctrl.Result{}, fmt.Errorf("delete TAP %q: %w", tapName, err)
+	}
+
+	if !hm.Spec.RetainDiskOnDelete {
+		if err := removeMachineDisks(r.Config.VMDiskDir, hm.Name); err != nil {
+			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to remove machine disks: %v", err)
+			return ctrl.Result{}, fmt.Errorf("remove disks for %q: %w", hm.Name, err)
+		}
+	}
+
+	if err := r.releaseMachineIP(ctx, log, hm); err != nil {
+		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to release static IP: %v", err)
+		return ctrl.Result{}, fmt.Errorf("release static IP for %q: %w", hm.Name, err)
+	}
+
+	hm.Finalizers = nil
+	if err := r.Update(ctx, hm); err != nil {
+		return ctrl.Result{}, fmt.Errorf("remove finalizers from HypervisorMachine %q: %w", hm.Name, err)
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// releaseMachineIP frees the static IP the machine holds back to the cluster
+// pool. The per-reconcile allocator is constructed from the linked cluster's
+// network config, seeded from the addresses recorded in the status of the
+// cluster's surviving machines, and the machine's address is released, so the
+// freed address is the next one handed out. The release is best-effort: when
+// the owning Machine or the linked Cluster is already gone (as during a real
+// CAPI teardown) the address is freed automatically once the object is
+// reclaimed, because the fresh allocator of the next reconcile seeds only
+// from surviving machines.
+func (r *HypervisorMachineReconciler) releaseMachineIP(
+	ctx context.Context,
+	log logr.Logger,
+	hm *infrastructurev1alpha1.HypervisorMachine,
+) error {
+	machine, ok, err := r.getOwnerMachine(ctx, hm)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		log.Info("no owning Machine, skipping static IP release during teardown")
+		return nil
+	}
+
+	cluster, err := r.getLinkedCluster(ctx, machine)
+	if err != nil {
+		return err
+	}
+	if cluster == nil {
+		log.Info("linked Cluster not found, skipping static IP release during teardown")
+		return nil
+	}
+
+	hc, err := r.getLinkedHypervisorCluster(ctx, cluster)
+	if err != nil {
+		return err
+	}
+	if hc == nil {
+		log.Info("linked HypervisorCluster not found, skipping static IP release during teardown")
+		return nil
+	}
+
+	allocator, err := r.NewAllocator(hc.Spec.Network.CIDR, hc.Spec.Network.Gateway, defaultPoolStart, defaultPoolEnd)
+	if err != nil {
+		return fmt.Errorf("construct ipam allocator: %w", err)
+	}
+
+	if err := r.reassertClusterAddresses(ctx, allocator, machine); err != nil {
+		return err
+	}
+
+	allocator.Release(client.ObjectKeyFromObject(hm).String())
+
+	return nil
+}
+
+// removeMachineDisks removes the machine's root disk and the confext data
+// disk artifacts — the packaged .raw output directory and the staging tree —
+// from the VM disk directory. Missing artifacts are tolerated so teardown is
+// idempotent.
+func removeMachineDisks(vmDisksDir, name string) error {
+	rootDisk := filepath.Join(vmDisksDir, name+"-root.qcow2")
+	if err := os.Remove(rootDisk); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove root disk %q: %w", rootDisk, err)
+	}
+
+	dataDir := filepath.Join(vmDisksDir, name+"-data")
+	if err := os.RemoveAll(dataDir); err != nil {
+		return fmt.Errorf("remove confext data dir %q: %w", dataDir, err)
+	}
+
+	stagingDir := filepath.Join(vmDisksDir, name+"-confext-staging")
+	if err := os.RemoveAll(stagingDir); err != nil {
+		return fmt.Errorf("remove confext staging dir %q: %w", stagingDir, err)
+	}
+
+	return nil
 }
 
 // getOwnerMachine resolves the CAPI Machine that owns hm through the owner
