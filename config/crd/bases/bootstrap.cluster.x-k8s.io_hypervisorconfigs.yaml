@@ -14,7 +14,7 @@ spec:
     singular: hypervisorconfig
   scope: Namespaced
   versions:
-  - name: bootstrapv1alpha1
+  - name: v1alpha1
     schema:
       openAPIV3Schema:
         description: HypervisorConfig is the Schema for the hypervisorconfigs API.

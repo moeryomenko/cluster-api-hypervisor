@@ -19,6 +19,12 @@ limitations under the License.
 //
 // +kubebuilder:object:generate=true
 // +groupName=bootstrap.cluster.x-k8s.io
+// +versionName=v1alpha1
+//
+// The versionName marker overrides the CRD served version, which
+// controller-gen would otherwise derive from the Go package name
+// (bootstrapv1alpha1). The CRDs must serve the v1alpha1 version to match the
+// REST contract used by the Go clients in later phases.
 package bootstrapv1alpha1
 
 import (
