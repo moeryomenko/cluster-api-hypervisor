@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
@@ -34,11 +35,13 @@ import (
 
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
 	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/ch"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/chclient"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/ipam"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/networking"
 )
 
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachines,verbs=get;list;watch;create;update;patch;delete
@@ -49,31 +52,46 @@ import (
 // +kubebuilder:rbac:groups=bootstrap.cluster.x-k8s.io,resources=hypervisorconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
-// confextTreeKey is the bootstrap Secret data key that carries the rendered
-// confext tree: a JSON object mapping each slash-separated tree path to its
-// base64-encoded content. Kubernetes Secret data keys cannot contain "/", so
-// the tree paths cannot be stored as literal Secret keys.
-const confextTreeKey = "tree.json"
+const (
+	// confextTreeKey is the bootstrap Secret data key that carries the rendered
+	// confext tree: a JSON object mapping each slash-separated tree path to its
+	// base64-encoded content. Kubernetes Secret data keys cannot contain "/", so
+	// the tree paths cannot be stored as literal Secret keys.
+	confextTreeKey = "tree.json"
+
+	// defaultMachineTapPrefix is the TAP name prefix for a machine TAP:
+	// <tapPrefix>-<machineName>.
+	defaultMachineTapPrefix = "k8s-"
+
+	// vmProvisionedCondition is the condition type reported once the
+	// cloud-hypervisor VM backing the machine is provisioned and running.
+	vmProvisionedCondition = clusterv1.ConditionType("VMProvisioned")
+)
 
 // HypervisorMachineReconciler reconciles a HypervisorMachine object: it
 // resolves the owning CAPI Machine and the linked Cluster, ensures the
 // machine identity (MAC and static IP), provisions the root disk, packages
-// the bootstrap Secret tree into the confext data disk, and renders the
-// cloud-init CIDATA parts. Host-side effects run behind injectable seams
-// (QemuImg, Confext, RenderCloudInit, NewAllocator, DeriveMAC, VM), so the
-// reconcile contract is testable without qemu-img, mksquashfs, or a
-// cloud-hypervisor process.
+// the bootstrap Secret tree into the confext data disk, renders the
+// cloud-init CIDATA parts, ensures the machine TAP, boots the VM through the
+// cloud-hypervisor client, and reports readiness. Host-side effects run
+// behind injectable seams (QemuImg, Confext, RenderCloudInit, NewAllocator,
+// DeriveMAC, VM, Net), so the reconcile contract is testable without
+// qemu-img, mksquashfs, netlink, or a cloud-hypervisor process.
 type HypervisorMachineReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
 	// Config is the provider configuration: BaseImage and VMDiskDir drive
-	// the root disk and confext output paths.
+	// the root disk and confext output paths, and SocketDir is the root the
+	// per-machine VM socket directory derives from.
 	Config config.Config
 
 	// VM drives the machine's cloud-hypervisor VM.
 	VM chclient.Client
+
+	// Net orchestrates the machine TAP and the cluster bridge over netlink.
+	Net *networking.Manager
 
 	// QemuImg executes the qemu-img binary: Run(ctx, name, args...).
 	QemuImg func(ctx context.Context, name string, args ...string) ([]byte, error)
@@ -97,8 +115,10 @@ type HypervisorMachineReconciler struct {
 // and a machine whose Cluster or infrastructure Cluster is missing are all
 // no-ops, not errors, and no dependency is touched. On a normal reconcile it
 // ensures the machine identity, provisions the root disk, packages the
-// bootstrap data into confext raws, and renders the CIDATA parts. The VM
-// lifecycle and deletion steps are out of this phase's scope.
+// bootstrap data into confext raws, renders the CIDATA parts, and drives the
+// VM lifecycle: the machine TAP, the VM boot through the client, the provider
+// ID, the provisioning condition, and readiness. The deletion step is out of
+// this phase's scope.
 func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -151,6 +171,10 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	if err := r.reconcileCIDATA(ctx, hm, machine, hc, ip); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileVMLifecycle(ctx, hm, machine, hc); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -520,6 +544,70 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 	_ = parts
 
 	return nil
+}
+
+// reconcileVMLifecycle drives the machine's VM (reconcile steps 6-8). On the
+// reconcile that first provisions the machine (no provider ID yet) it ensures
+// the machine TAP enslaved to the cluster bridge, boots the VM through the
+// injected client, and records the provider ID; on every reconcile it asks
+// the client for the VM state and reports the VMProvisioned condition and
+// readiness once the VM reports running. A VM that is not running yet, or
+// whose state query fails, is left not ready without error.
+func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
+	ctx context.Context,
+	hm *infrastructurev1alpha1.HypervisorMachine,
+	machine *clusterv1.Machine,
+	hc *infrastructurev1alpha1.HypervisorCluster,
+) error {
+	if hm.Status.ProviderID == nil {
+		tapName := defaultMachineTapPrefix + hm.Name
+		if err := r.Net.EnsureTap(effectiveBridgeName(&hc.Spec.Network), tapName); err != nil {
+			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to ensure TAP %q: %v", tapName, err)
+			return fmt.Errorf("ensure TAP %q: %w", tapName, err)
+		}
+
+		if err := r.VM.EnsureRunning(ctx); err != nil {
+			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to boot VM for %q: %v", machine.Name, err)
+			return fmt.Errorf("boot VM for %q: %w", machine.Name, err)
+		}
+
+		providerID := fmt.Sprintf("hypervisor://%s/%s", hm.Spec.ClusterName, hm.Name)
+		hm.Status.ProviderID = &providerID
+	}
+
+	state, err := r.VM.Info(ctx)
+	if err == nil && state == ch.VMState("Running") {
+		markVMProvisioned(hm)
+		hm.Status.Ready = true
+	}
+
+	if err := r.Status().Update(ctx, hm); err != nil {
+		return fmt.Errorf("update HypervisorMachine status: %w", err)
+	}
+
+	return nil
+}
+
+// markVMProvisioned upserts the VMProvisioned condition as true on the
+// machine status, preserving any other conditions.
+func markVMProvisioned(hm *infrastructurev1alpha1.HypervisorMachine) {
+	for i := range hm.Status.Conditions {
+		if hm.Status.Conditions[i].Type != vmProvisionedCondition {
+			continue
+		}
+		if hm.Status.Conditions[i].Status == corev1.ConditionTrue {
+			return
+		}
+		hm.Status.Conditions[i].Status = corev1.ConditionTrue
+		hm.Status.Conditions[i].LastTransitionTime = metav1.Now()
+		return
+	}
+
+	hm.Status.Conditions = append(hm.Status.Conditions, clusterv1.Condition{
+		Type:               vmProvisionedCondition,
+		Status:             corev1.ConditionTrue,
+		LastTransitionTime: metav1.Now(),
+	})
 }
 
 // bootstrapDataSecretName resolves the name of the bootstrap Secret of the
