@@ -259,7 +259,7 @@ require (
 	honnef.co/go/tools v0.7.0 // indirect
 	k8s.io/api v0.35.4 // indirect
 	k8s.io/apiextensions-apiserver v0.35.4 // indirect
-	k8s.io/apimachinery v0.36.0 // indirect
+	k8s.io/apimachinery v0.35.4 // indirect
 	k8s.io/code-generator v0.35.4 // indirect
 	k8s.io/gengo/v2 v2.0.0-20250922181213-ec3ebc5fd46b // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
@@ -274,3 +274,14 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+// setup-envtest stays on v0.24.1 (its latest release): the standalone module
+// sigs.k8s.io/controller-runtime/tools/setup-envtest only publishes v0.24.0
+// and v0.24.1 (git tags tools/setup-envtest/v0.24.x); no v0.23.x release
+// exists. Both v0.24.x go.mod files require k8s.io/apimachinery v0.36.0,
+// which would otherwise pull the workspace (and the k8s-0.35-aligned root
+// module: CAPI v1.13.5 / controller-runtime v0.23.3 / k8s.io v0.35.4) up to
+// v0.36.0 via go.work version unification. setup-envtest only imports
+// k8s.io/apimachinery/pkg/util/sets, so excluding v0.36.0 keeps the
+// workspace on k8s.io v0.35.4 without breaking the tool.
+exclude k8s.io/apimachinery v0.36.0
