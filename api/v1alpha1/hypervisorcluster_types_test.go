@@ -14,6 +14,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -138,7 +139,13 @@ func TestHypervisorClusterJSONRoundTrip(t *testing.T) {
 				t.Fatalf("Unmarshal(%s): %v", raw, err)
 			}
 
-			if !reflect.DeepEqual(&got, tt.give) {
+			// reflect.DeepEqual cannot be used here: metav1.Time.UnmarshalJSON
+			// converts the parsed timestamp to time.Local, and DeepEqual on
+			// time.Time compares the *Location pointers, so a UTC fixture is
+			// never deeply equal to the unmarshaled value. apiequality
+			// compares metav1.Time via t.UTC() == t.UTC(), which ignores the
+			// Location and makes the round trip independent of the host TZ.
+			if !apiequality.Semantic.DeepEqual(&got, tt.give) {
 				t.Errorf("round trip mismatch:\nwant: %#v\ngot:  %#v", tt.give, &got)
 			}
 		})
