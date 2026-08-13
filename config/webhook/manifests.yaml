@@ -50,6 +50,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorcontrolplane
+  failurePolicy: Fail
+  name: mhypervisorcontrolplane.kb.io
+  rules:
+  - apiGroups:
+    - controlplane.cluster.x-k8s.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - hypervisorcontrolplanes
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachine
   failurePolicy: Fail
   name: mhypervisormachine.kb.io
@@ -129,6 +149,26 @@ webhooks:
     - UPDATE
     resources:
     - hypervisorconfigs
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorcontrolplane
+  failurePolicy: Fail
+  name: vhypervisorcontrolplane.kb.io
+  rules:
+  - apiGroups:
+    - controlplane.cluster.x-k8s.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - hypervisorcontrolplanes
   sideEffects: None
 - admissionReviewVersions:
   - v1
