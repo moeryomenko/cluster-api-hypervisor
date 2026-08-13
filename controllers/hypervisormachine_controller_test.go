@@ -24,9 +24,11 @@ limitations under the License.
 // disk images, and render the cloud-init CIDATA parts. The reconciler is
 // exercised through the committed envtest harness with recording fakes
 // standing in for every host-side effect, so no real qemu-img, mksquashfs,
-// or cloud-hypervisor process is ever started. The VM-lifecycle and deletion
-// steps are out of this suite's scope; later suites extend this file with
-// their own tests.
+// or cloud-hypervisor process is ever started. Part 2 of this file pins the
+// VM lifecycle steps (reconcile steps 6-8): the machine TAP, the VM boot
+// through the cloud-hypervisor client, providerID, the VMProvisioned
+// condition, and readiness. The deletion step is out of both parts' scope; a
+// later suite extends this file with its own tests.
 //
 // The contract, in prose:
 //
@@ -75,6 +77,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,11 +95,13 @@ import (
 
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
 	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/ch"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/chclient"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/networking"
 )
 
 // Machine contract fixtures: the provider paths, the machine size, and the
@@ -432,13 +437,14 @@ type machineFixture struct {
 	render *recordingCIDATARender
 	alloc  *recordingAllocator
 	vm     *chclient.FakeClient
+	net    *recordingLinkOps
 }
 
 // newMachineFixture builds the reconciler under test over the recording
 // seams. The composite literal pins the exact reconciler shape the
 // implementation must expose: the controller-runtime wiring plus the
-// injectable Config, VM, QemuImg, Confext, RenderCloudInit, NewAllocator,
-// and DeriveMAC dependencies.
+// injectable Config, Net, VM, QemuImg, Confext, RenderCloudInit,
+// NewAllocator, and DeriveMAC dependencies.
 func newMachineFixture(t *testing.T, c client.Client) *machineFixture {
 	t.Helper()
 
@@ -448,6 +454,10 @@ func newMachineFixture(t *testing.T, c client.Client) *machineFixture {
 	render := &recordingCIDATARender{}
 	alloc := &recordingAllocator{}
 	vm := &chclient.FakeClient{}
+	netOps := newRecordingLinkOps()
+	// The cluster controller ensures the bridge before the machine
+	// controller's TAP step; the suite seeds it as pre-existing host state.
+	netOps.links[testBridge] = fakeLink{kind: "bridge"}
 
 	r := &HypervisorMachineReconciler{
 		Client:   c,
@@ -456,8 +466,10 @@ func newMachineFixture(t *testing.T, c client.Client) *machineFixture {
 		Config: config.Config{
 			BaseImage: testBaseImage,
 			VMDiskDir: t.TempDir(),
+			SocketDir: testSocketDir,
 		},
 		VM:              vm,
+		Net:             networking.NewManager(netOps),
 		QemuImg:         qemu.Run,
 		Confext:         confext.NewPackager(confext.WithRunner(pack)),
 		RenderCloudInit: render.render,
@@ -465,7 +477,7 @@ func newMachineFixture(t *testing.T, c client.Client) *machineFixture {
 		DeriveMAC:       derive.derive,
 	}
 
-	return &machineFixture{r: r, qemu: qemu, pack: pack, derive: derive, render: render, alloc: alloc, vm: vm}
+	return &machineFixture{r: r, qemu: qemu, pack: pack, derive: derive, render: render, alloc: alloc, vm: vm, net: netOps}
 }
 
 // statusInternalIP returns the internal IP recorded in the machine status,
@@ -1028,5 +1040,261 @@ func TestMachineCIDATARenderedWithAllocatedIP(t *testing.T) {
 		if len(parts[part]) == 0 {
 			t.Errorf("rendered part %q is empty", part)
 		}
+	}
+}
+
+// HypervisorMachine controller contract, part 2: the VM lifecycle (reconcile
+// steps 6-8).
+//
+// This section pins the contract the machine controller's lifecycle steps
+// implement over the same envtest harness and recording fakes:
+//
+//   - HypervisorMachineReconciler gains a Net field, a *networking.Manager
+//     over the recording LinkOps seam, used to ensure the machine TAP; the
+//     fixture constructs it with a fake LinkOps and seeds the cluster bridge
+//     as pre-existing host state (the cluster controller ensures the bridge
+//     before the machine controller's TAP step).
+//   - Step 6 ensures the TAP: Net.EnsureTap is called with the bridge name
+//     from the linked HypervisorCluster's network spec (default k8sbr0) and
+//     the machine TAP name k8s-<machine>. An absent TAP is created with kind
+//     tuntap and enslaved to the bridge, and an already-enslaved TAP is left
+//     alone on the next reconcile.
+//   - Step 7 boots the VM through the injected chclient.Client: the fake's
+//     call log records one EnsureRunning call followed by an Info state
+//     check. The per-machine socket directory derives from the config's
+//     socket root as <SocketDir>/<cluster>/<machine>; the fixture pins the
+//     documented default socket root /tmp/ch-capi. The socket path itself is
+//     not observable through the fake's call log because the client seam
+//     exposes no path, so this section pins the root the implementation
+//     derives the per-machine directory from. The client's EnsureRunning is
+//     idempotent by contract (a no-op when the VM is already running), so
+//     the controller has no reason to pre-check the state.
+//   - Step 8 reports readiness: status.ready is true exactly when Info
+//     reports the VM running, and stays false when the VM is in a
+//     non-running state or the state query fails; both leave the reconcile
+//     without error.
+//   - The lifecycle steps set status.providerID to
+//     hypervisor://<cluster>/<machine>, set the VMProvisioned condition once
+//     the VM runs, and leave the addresses allocated in part 1 in place.
+const (
+	// testSocketDir is the provider's socket root the fixture config pins;
+	// the VM lifecycle step derives the per-machine socket directory
+	// <SocketDir>/<cluster>/<machine> from it.
+	testSocketDir = "/tmp/ch-capi"
+
+	// machineTapPrefix is the TAP name prefix the lifecycle step uses for a
+	// machine's TAP: <tapPrefix>-<machine>.
+	machineTapPrefix = "k8s-"
+
+	// machineVMProvisionedCondition is the condition type the VM lifecycle
+	// step reports once the cloud-hypervisor VM is provisioned.
+	machineVMProvisionedCondition = clusterv1.ConditionType("VMProvisioned")
+)
+
+// Compile-time pin for the TAP seam the VM lifecycle step drives: the
+// reconciler's Net field is a networking.Manager over the LinkOps seam, and
+// the TAP step drives it through EnsureTap.
+var _ func(*networking.Manager, string, string) error = (*networking.Manager).EnsureTap
+
+// reconcileMachine runs one reconcile of the machine and fails the test on
+// any error.
+func (fx *machineFixture) reconcileMachine(t *testing.T, hm *infrastructurev1alpha1.HypervisorMachine) {
+	t.Helper()
+	if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(hm)}); err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+}
+
+// getMachine reads the machine back from the API store.
+func getMachine(t *testing.T, c client.Client, hm *infrastructurev1alpha1.HypervisorMachine) *infrastructurev1alpha1.HypervisorMachine {
+	t.Helper()
+	got := &infrastructurev1alpha1.HypervisorMachine{}
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(hm), got); err != nil {
+		t.Fatalf("Get HypervisorMachine: %v", err)
+	}
+
+	return got
+}
+
+// machineCondition returns the status condition with the given type, or nil.
+func machineCondition(hm *infrastructurev1alpha1.HypervisorMachine, t clusterv1.ConditionType) *clusterv1.Condition {
+	for i := range hm.Status.Conditions {
+		if hm.Status.Conditions[i].Type == t {
+			return &hm.Status.Conditions[i]
+		}
+	}
+
+	return nil
+}
+
+// TestMachineVMTapCreatedAndEnslaved pins the TAP step contract: the
+// controller drives the networking manager with the bridge name from the
+// linked HypervisorCluster's network spec and the machine TAP name
+// k8s-<machine>. The absent TAP is created with kind tuntap and enslaved to
+// the bridge, in that order, and a second reconcile leaves an already
+// enslaved TAP alone.
+func TestMachineVMTapCreatedAndEnslaved(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	lc := newLinkedCluster(t, c, "machine-vm-tap", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+	fx.reconcileMachine(t, lm.hm)
+
+	wantTap := machineTapPrefix + lm.name
+	wantLinkCalls(t, fx.net,
+		linkOpCall{op: opByName, name: wantTap},
+		linkOpCall{op: opAdd, kind: "tuntap", name: wantTap},
+		linkOpCall{op: opSetMaster, name: wantTap, master: testBridge},
+	)
+
+	// The fake's kernel state confirms the enslavement, not just the call
+	// log.
+	tap, err := fx.net.LinkByName(wantTap)
+	if err != nil {
+		t.Fatalf("LinkByName(%q) error: %v", wantTap, err)
+	}
+	if tap.Kind != "tuntap" || tap.Master != testBridge {
+		t.Errorf("TAP = %+v, want kind tuntap enslaved to %q", tap, testBridge)
+	}
+
+	t.Run("second reconcile does not recreate an enslaved tap", func(t *testing.T) {
+		fx.reconcileMachine(t, lm.hm)
+
+		// The second reconcile finds the TAP already mastered to the bridge
+		// and stops after the lookup.
+		wantLinkCalls(t, fx.net,
+			linkOpCall{op: opByName, name: wantTap},
+			linkOpCall{op: opAdd, kind: "tuntap", name: wantTap},
+			linkOpCall{op: opSetMaster, name: wantTap, master: testBridge},
+			linkOpCall{op: opByName, name: wantTap},
+		)
+	})
+}
+
+// TestMachineVMBootedViaClient pins the boot step contract: the controller
+// drives the injected chclient.Client with a single EnsureRunning call
+// followed by an Info state check, and the fixture config pins the socket
+// root the per-machine socket directory /tmp/ch-capi/<cluster>/<machine>
+// derives from.
+func TestMachineVMBootedViaClient(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	lc := newLinkedCluster(t, c, "machine-vm-boot", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+	fx.vm.State = ch.VMState("Running")
+	fx.reconcileMachine(t, lm.hm)
+
+	wantCalls := []string{"EnsureRunning", "Info"}
+	if !reflect.DeepEqual(fx.vm.Calls, wantCalls) {
+		t.Errorf("VM client calls = %v, want %v", fx.vm.Calls, wantCalls)
+	}
+
+	// The per-machine socket directory is <SocketDir>/<cluster>/<machine>;
+	// the fake client seam exposes no path, so the fixture pins the socket
+	// root the implementation derives it from.
+	if got := fx.r.Config.SocketDir; got != testSocketDir {
+		t.Errorf("Config.SocketDir = %q, want %q", got, testSocketDir)
+	}
+}
+
+// TestMachineVMProviderID pins the provider identity contract: once the VM
+// lifecycle steps run, status.providerID is hypervisor://<cluster>/<machine>
+// and the addresses allocated in part 1 are still in place.
+func TestMachineVMProviderID(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	lc := newLinkedCluster(t, c, "machine-vm-providerid", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+	fx.vm.State = ch.VMState("Running")
+	fx.reconcileMachine(t, lm.hm)
+
+	hm := getMachine(t, c, lm.hm)
+	wantProviderID := fmt.Sprintf("hypervisor://%s/%s", lc.name, lm.name)
+	if hm.Status.ProviderID == nil {
+		t.Fatalf("status.providerID = nil, want %q", wantProviderID)
+	}
+	if *hm.Status.ProviderID != wantProviderID {
+		t.Errorf("status.providerID = %q, want %q", *hm.Status.ProviderID, wantProviderID)
+	}
+
+	if ip := statusInternalIP(hm); ip == "" {
+		t.Error("status.addresses lost the internal IP")
+	}
+	if host := statusHostName(hm); host != lm.name {
+		t.Errorf("status.addresses hostname = %q, want %q", host, lm.name)
+	}
+}
+
+// TestMachineVMProvisionedCondition pins the condition contract: once the VM
+// lifecycle steps run, the VMProvisioned condition is present and true.
+func TestMachineVMProvisionedCondition(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	lc := newLinkedCluster(t, c, "machine-vm-cond", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+	fx.vm.State = ch.VMState("Running")
+	fx.reconcileMachine(t, lm.hm)
+
+	hm := getMachine(t, c, lm.hm)
+	cond := machineCondition(hm, machineVMProvisionedCondition)
+	if cond == nil {
+		t.Fatalf("condition %q missing from status.conditions: %v", machineVMProvisionedCondition, hm.Status.Conditions)
+	}
+	if cond.Status != corev1.ConditionTrue {
+		t.Errorf("condition %q status = %q, want %q", machineVMProvisionedCondition, cond.Status, corev1.ConditionTrue)
+	}
+}
+
+// TestMachineVMReadyWhenRunning pins the readiness contract: when the VM
+// client reports the VM running, status.ready becomes true.
+func TestMachineVMReadyWhenRunning(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	lc := newLinkedCluster(t, c, "machine-vm-ready", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+	fx.vm.State = ch.VMState("Running")
+	fx.reconcileMachine(t, lm.hm)
+
+	if hm := getMachine(t, c, lm.hm); !hm.Status.Ready {
+		t.Error("status.ready = false with the VM running, want true")
+	}
+}
+
+// TestMachineVMNotReadyWhenNotRunning pins the not-ready contract: when the
+// VM client reports a non-running state or the state query fails, status.ready
+// stays false and the reconcile completes without error.
+func TestMachineVMNotReadyWhenNotRunning(t *testing.T) {
+	c := mustReconcileClient(t)
+	errInfo := errors.New("fake: vm info failed")
+
+	tests := []struct {
+		name      string
+		namespace string
+		state     ch.VMState
+		infoErr   error
+	}{
+		{name: "VM reported shut down", namespace: "machine-vm-notready-shutdown", state: ch.VMState("Shutdown")},
+		{name: "VM reported created", namespace: "machine-vm-notready-created", state: ch.VMState("Created")},
+		{name: "VM state query fails", namespace: "machine-vm-notready-infoerr", infoErr: errInfo},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fx := newMachineFixture(t, c)
+			lc := newLinkedCluster(t, c, tt.namespace, "capi-cluster")
+			lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+			fx.vm.State = tt.state
+			fx.vm.InfoErr = tt.infoErr
+			fx.reconcileMachine(t, lm.hm)
+
+			if hm := getMachine(t, c, lm.hm); hm.Status.Ready {
+				t.Error("status.ready = true with the VM not running, want false")
+			}
+		})
 	}
 }
