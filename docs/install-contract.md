@@ -26,8 +26,8 @@ listed so the contract can be re-verified. Source files:
 | Item | Value | Source |
 |---|---|---|
 | Image tag | `cluster-api-hypervisor:dev` | `Makefile:5` (`IMAGE ?= cluster-api-hypervisor:dev`) |
-| Build target | `make image` | `Makefile:76-78` |
-| Build command | `podman build -t cluster-api-hypervisor:dev -f Containerfile .` | `Makefile:78` |
+| Build target | `make image` | `Makefile:107-109` |
+| Build command | `podman build -t cluster-api-hypervisor:dev -f Containerfile .` | `Makefile:109` |
 | Entry point | `/usr/local/bin/cluster-api-hypervisor` | `Containerfile:52-54` |
 | Base image | Alpine edge (digest-pinned) | `Containerfile:35` |
 
@@ -271,7 +271,7 @@ reference script is out of scope here):
 3. **Patch the webhook configurations**: base64-encode `ca.crt` and set it as
    `caBundle` in every entry of the `ValidatingWebhookConfiguration` and
    `MutatingWebhookConfiguration` manifests (generated into `config/webhook`
-   by `make generate`, `Makefile:58-64`). The apiserver uses this bundle to
+   by `make generate`, `Makefile:66-72`). The apiserver uses this bundle to
    verify the webhook's serving certificate.
 4. **Mount and start**: the quadlet bind-mounts the certificate directory into
    the container (section 5.1); the provider starts its webhook server with

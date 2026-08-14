@@ -351,7 +351,7 @@ is external.
 Each scenario script has a contract test that runs without a live cluster.
 The scenario scripts are executed against stub tooling on `PATH` (or, for the
 harness, against a controlled environment) and the tests assert the scripts'
-decisions and aggregate exit codes. All five are plain scripts with no
+decisions and aggregate exit codes. All six are plain scripts with no
 arguments:
 
 ```sh
@@ -360,6 +360,7 @@ test/e2e/harness_test.sh       # run.sh environment contract
 test/e2e/smoke_test.sh         # smoke.sh per-check contract
 test/e2e/scale_test.sh         # scale.sh per-step contract
 test/e2e/delete_test.sh        # delete-cluster.sh per-step contract
+test/e2e/clusterctl_test.sh    # make components release-layout contract
 ```
 
 | Test | What it pins | How it runs without a cluster |
@@ -369,6 +370,7 @@ test/e2e/delete_test.sh        # delete-cluster.sh per-step contract
 | `test/e2e/smoke_test.sh` | Per-check pass/fail semantics of `smoke.sh` (nodes, kube-system, Cilium, Gateway, CoreDNS, DNS regressions) plus the aggregate exit code | Runs `smoke.sh` against a stub `kubectl` on `PATH` that dispatches on its arguments and returns scripted canned outputs; each run is bounded by a 60 s timeout (`smoke_test.sh:7-12`, `smoke_test.sh:63`). |
 | `test/e2e/scale_test.sh` | Per-step contract of `scale.sh` (scale-up, VM boot, node-ready, delete, timeout naming) | Runs `scale.sh` against a stub `kubectl` modeling a timeline (pre-bump baseline, post-bump set, post-delete set) through `STUB_*` variables; success scenarios use a 10 s wait budget, timeout scenarios 3 s (`scale_test.sh:6-11`, `scale_test.sh:73-80`). |
 | `test/e2e/delete_test.sh` | Per-step contract of `delete-cluster.sh` (cluster-delete, machine-teardown, mgmt-down, leftover) | Runs `delete-cluster.sh` against a stub `kubectl` plus stub `ip`/`pgrep`/`nft` and a stub mgmt-down injected through `MGMT_DOWN_SH` (`delete_test.sh:9-15`). |
+| `test/e2e/clusterctl_test.sh` | `make components` release layout: the three provider directories, byte-identical components files, the eleven-object inventory, url-rewritten webhook clientConfigs, and the provider labels | Runs `make components OUT_DIR=<scratch>` from the repo root and asserts the emitted files directly; never starts a cluster, VM, or quadlet (`clusterctl_test.sh:50-52`, `clusterctl_test.sh:368-377`). |
 
 Exit codes are uniform across the contract tests: `0` the script satisfies its
 contract, `1` contract violation (including the script under test being
@@ -376,7 +378,8 @@ absent), `2` prerequisite problem (missing tool, unexpected arguments). The
 contract tests ship under `test/e2e/` and run directly as plain scripts
 (`bash test/e2e/<name>_test.sh`, no arguments); they are not wired into the
 Makefile or CI. They require only the tools the scripts themselves require
-(`kubectl` for the harness and stub-based tests, `openssl` for the mgmt test).
+(`kubectl` for the harness and stub-based tests, `openssl` for the mgmt test,
+`make`/`grep`/`awk`/`cmp` for the clusterctl test).
 
 ## 7. Troubleshooting pointers
 

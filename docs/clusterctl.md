@@ -32,7 +32,7 @@ so the runbook can be re-verified. Source files:
 | What clusterctl does NOT deliver | A manager Deployment — the component set ships no Deployment/Service | contract `test/e2e/clusterctl_test.sh` |
 | Manager runtime | Host quadlet per the install contract (unchanged) | `docs/install-contract.md` §5 |
 | Provider types | Infrastructure, Bootstrap, Control-Plane — one binary, three provider entries | `clusterctl.yaml:26-35` |
-| Contract version | v1beta1 | `metadata.yaml:3-5` |
+| Contract version | v1beta1 | `metadata.yaml:3-6` |
 | Release layout | `{basepath}/{provider-label}/{version}/{components.yaml}` per provider | `Makefile:80-92`, `clusterctl.yaml:26-35` |
 
 `make components` builds the release tree once and writes the identical
@@ -122,7 +122,7 @@ key of the rendered configuration (`clusterctl.yaml:37`).
 The components ship the ten admission webhooks with `failurePolicy: Fail` and
 an empty `caBundle` — the webhook configurations are url-rewritten to
 `https://127.0.0.1:9443/<path>` and the serving certificate is trusted through
-the management CA (`config/release/kustomization.yaml:26-142`). Until the
+the management CA (`config/release/kustomization.yaml:32-144`). Until the
 bundle is set, the first admission of a Hypervisor object fails. After
 `clusterctl init`, patch the management CA into every webhook entry of both
 configurations (the same trust root the webhook serving certs are signed by,
@@ -144,7 +144,7 @@ patching an identical bundle is a no-op, keeping the step idempotent.
 
 The default flavor template (`templates/cluster-template.yaml`) contains a
 ClusterClass document plus a topology Cluster parameterized with `${VARIABLE}`
-markers (`templates/cluster-template.yaml:76-101`). Generate and apply it:
+markers (`templates/cluster-template.yaml:41-101`). Generate and apply it:
 
 ```sh
 clusterctl generate cluster <name> --infrastructure hypervisor \
@@ -193,7 +193,7 @@ Deleting the Cluster object tears down the Machines and, through them, the VMs,
 TAPs, and disks (the reference harness deletes the Cluster on exit,
 `test/e2e/run.sh:423-429`). Do NOT use `clusterctl delete`: the fully-shared
 object set carries only the infrastructure provider label
-(`config/release/kustomization.yaml:7-13`, `config/release/kustomization.yaml:22-24`),
+(`config/release/kustomization.yaml:7-13`, `config/release/kustomization.yaml:22-26`),
 so clusterctl delete of the bootstrap or control-plane providers would find no
 labeled objects; Cluster-object deletion is the supported teardown path.
 
@@ -206,7 +206,7 @@ labeled objects; Cluster-object deletion is the supported teardown path.
   privileged mode, `NET_ADMIN`, KVM access (`/dev/kvm`), and the host bind
   mounts for the base image, firmware, VM disks, state, sockets, webhook certs,
   and kubeconfig (`docs/install-contract.md` §5-§6).
-- **Contract version**: v1beta1, declared in `metadata.yaml:3-5` (clusterctl
+- **Contract version**: v1beta1, declared in `metadata.yaml:3-6` (clusterctl
   1.13 accepts it through the compatibility window).
 - **Fully-shared object labels**: every object in every provider's components
   file carries `cluster.x-k8s.io/provider: infrastructure-hypervisor`; the
