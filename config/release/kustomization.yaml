@@ -19,9 +19,11 @@ resources:
 - ../rbac
 - ../webhook
 
-commonLabels:
-  cluster.x-k8s.io/provider: infrastructure-hypervisor
-  clusterctl.cluster.x-k8s.io: ""
+labels:
+- includeSelectors: false
+  pairs:
+    cluster.x-k8s.io/provider: infrastructure-hypervisor
+    clusterctl.cluster.x-k8s.io: ""
 
 # The webhook server runs on the provider host and is reached directly at the
 # pinned port, so every generated Service-based clientConfig is rewritten to
