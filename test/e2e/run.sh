@@ -38,6 +38,12 @@
 #                          file.
 #   STATE_DIR              provider state directory (default /var/lib/k8slab).
 #                          Must name an existing, writable directory.
+#   OUT_DIR                provider release layout directory (default
+#                          <repo>/out). Must name an existing directory
+#                          containing the three provider release directories
+#                          infrastructure-hypervisor/v0.1.0,
+#                          bootstrap-hypervisor/v0.1.0, and
+#                          control-plane-hypervisor/v0.1.0.
 #   SMOKE                  run the workload smoke checks (test/e2e/smoke.sh)
 #                          after the Machines are Ready; 0 disables them,
 #                          anything else enables them (default 1). When
@@ -72,6 +78,16 @@ readonly STATE_DIR_DEFAULT="/var/lib/k8slab"
 readonly MGMT_STATE_DIR_DEFAULT="/var/lib/k8slab/mgmt"
 readonly MGMT_BOOTSTRAP_DIR="test/e2e/mgmt"
 
+# Provider release layout validated by OUT_DIR (the layout `make components
+# OUT_DIR=` emits; the version directory is pinned by the release contract).
+readonly OUT_DIR_DEFAULT="${REPO_ROOT}/out"
+readonly OUT_PROVIDER_DIRS=(
+  "infrastructure-hypervisor"
+  "bootstrap-hypervisor"
+  "control-plane-hypervisor"
+)
+readonly OUT_PROVIDER_VERSION="v0.1.0"
+
 # The example Cluster (templates/cluster-example.yaml) fixed identity.
 readonly WORKLOAD_CLUSTER="k8labs"
 readonly WORKLOAD_NAMESPACE="default"
@@ -84,13 +100,15 @@ readonly POLL_INTERVAL=5
 # Runtime state resolved by validate_environment and consumed by the
 # orchestration and the cleanup trap. The contract variables themselves
 # (MANAGEMENT_KUBECONFIG, MGMT_STATE_DIR, IMAGE, BASE_IMAGE, FIRMWARE,
-# STATE_DIR, SMOKE, WAIT_TIMEOUT) are deliberately NOT pre-initialized here:
+# STATE_DIR, OUT_DIR, SMOKE, WAIT_TIMEOUT) are deliberately NOT
+# pre-initialized here:
 # a top-level assignment would clobber the value the environment provides.
 MGMT_KUBECONFIG=""
 MGMT_EXTERNAL=false
 BASE_IMAGE_RESOLVED=""
 FIRMWARE_RESOLVED=""
 STATE_DIR_RESOLVED=""
+OUT_DIR_RESOLVED=""
 PLANE_STARTED=false
 CLUSTER_APPLIED=false
 WORKLOAD_KUBECONFIG=""
@@ -144,6 +162,12 @@ Environment:
                          from). Must name an existing, readable, regular file.
   STATE_DIR              provider state directory (default /var/lib/k8slab).
                          Must name an existing, writable directory.
+  OUT_DIR                provider release layout directory (default
+                         <repo>/out). Must name an existing directory
+                         containing the three provider release directories
+                         infrastructure-hypervisor/v0.1.0,
+                         bootstrap-hypervisor/v0.1.0, and
+                         control-plane-hypervisor/v0.1.0.
   SMOKE                  run the workload smoke checks (test/e2e/smoke.sh)
                          after the Machines are Ready; 0 disables them,
                          anything else enables them (default 1). When smoke.sh
@@ -233,7 +257,23 @@ validate_environment() {
     die "STATE_DIR must be writable: ${STATE_DIR_RESOLVED}"
   fi
 
-  log "environment validated: kubeconfig=${MGMT_KUBECONFIG} image=${IMAGE} base_image=${BASE_IMAGE_RESOLVED} firmware=${FIRMWARE_RESOLVED} state_dir=${STATE_DIR_RESOLVED}"
+  # 6. OUT_DIR — existing directory holding the provider release layout (the
+  #    three v0.1.0 provider directories) so `go tool clusterctl generate
+  #    cluster` can resolve the cluster template from the local repository.
+  OUT_DIR_RESOLVED="$(absolute_path "${OUT_DIR:-${OUT_DIR_DEFAULT}}")"
+  if [[ -e "${OUT_DIR_RESOLVED}" && ! -d "${OUT_DIR_RESOLVED}" ]]; then
+    die "OUT_DIR must be a directory, not a regular file: ${OUT_DIR_RESOLVED}"
+  fi
+  if [[ ! -d "${OUT_DIR_RESOLVED}" ]]; then
+    die "OUT_DIR must name an existing directory: ${OUT_DIR_RESOLVED}"
+  fi
+  for provider_dir in "${OUT_PROVIDER_DIRS[@]}"; do
+    if [[ ! -d "${OUT_DIR_RESOLVED}/${provider_dir}/${OUT_PROVIDER_VERSION}" ]]; then
+      die "OUT_DIR incomplete: missing ${OUT_DIR_RESOLVED}/${provider_dir}/${OUT_PROVIDER_VERSION}"
+    fi
+  done
+
+  log "environment validated: kubeconfig=${MGMT_KUBECONFIG} image=${IMAGE} base_image=${BASE_IMAGE_RESOLVED} firmware=${FIRMWARE_RESOLVED} state_dir=${STATE_DIR_RESOLVED} out_dir=${OUT_DIR_RESOLVED}"
 }
 
 # require_cmd <name> — fail with a clear message when a tool the orchestration
@@ -289,15 +329,30 @@ wait_for_provider() {
   log "provider quadlet is active"
 }
 
-# apply_templates — apply the committed ClusterClass + example Cluster to the
-# management cluster. Declarative, so re-running converges.
+# apply_templates — generate the workload Cluster with clusterctl and apply it
+# to the management cluster. clusterctl reads its configuration from
+# $XDG_CONFIG_HOME/cluster-api/clusterctl.yaml; the fallback plane provisioned
+# a hermetic config plus offline core overrides at <state>/clusterctl (see
+# test/e2e/mgmt/apply.sh), so XDG_CONFIG_HOME points there, and with an
+# external plane it points at an OUT_DIR-derived directory (clusterctl still
+# works when the config file is absent). Declarative, so re-running converges.
 apply_templates() {
   CLUSTER_APPLIED=true
-  log "applying the ClusterClass and example Cluster (${WORKLOAD_CLUSTER}) to the management cluster"
-  kubectl apply --kubeconfig="${MGMT_KUBECONFIG}" \
-    -f "${REPO_ROOT}/templates/clusterclass.yaml" \
-    -f "${REPO_ROOT}/templates/cluster-example.yaml"
-  log "ClusterClass and Cluster ${WORKLOAD_CLUSTER} applied"
+  if [[ "${MGMT_EXTERNAL}" == false ]]; then
+    export XDG_CONFIG_HOME="${MGMT_STATE_DIR}/clusterctl"
+  else
+    export XDG_CONFIG_HOME="${OUT_DIR_RESOLVED}/.clusterctl"
+  fi
+  mkdir -p "${XDG_CONFIG_HOME}"
+  log "generating Cluster ${WORKLOAD_CLUSTER} via clusterctl and applying it to the management cluster"
+  go tool clusterctl generate cluster "${WORKLOAD_CLUSTER}" \
+    --namespace "${WORKLOAD_NAMESPACE}" \
+    --infrastructure hypervisor \
+    --kubernetes-version v1.32.13 \
+    --control-plane-machine-count 1 \
+    --worker-machine-count 3 \
+    | kubectl apply --kubeconfig="${MGMT_KUBECONFIG}" -f -
+  log "Cluster ${WORKLOAD_CLUSTER} generated and applied"
 }
 
 # wait_for_machines_ready — poll the management cluster until every workload
@@ -389,8 +444,10 @@ orchestrate() {
   WAIT_TIMEOUT="${WAIT_TIMEOUT:-${MACHINES_READY_TIMEOUT_DEFAULT}}"
   trap cleanup EXIT
 
-  # The body needs kubectl for the management-cluster work; the fallback also
-  # needs the mgmt bootstrap's own tooling (apply.sh checks those itself).
+  # The body needs go for the clusterctl tool (go tool clusterctl) and kubectl
+  # for the management-cluster work; the fallback also needs the mgmt
+  # bootstrap's own tooling (apply.sh checks those itself).
+  require_cmd go
   require_cmd kubectl
   require_cmd base64
   require_cmd mktemp

@@ -1,0 +1,37 @@
+# clusterctl.yaml — clusterctl configuration template for the
+# cluster-api-hypervisor provider repository.
+#
+# This file is the committed template consumed by the management-plane
+# bootstrap (test/e2e/mgmt/apply.sh): apply.sh renders it into the state
+# directory, substituting the placeholder base paths below with the actual
+# provider release layout (OUT_DIR) and the state overrides directory, then
+# drives `go tool clusterctl init` against the management plane. Operators
+# can install this file directly as their clusterctl configuration after the
+# same substitution (see docs/clusterctl.md).
+#
+# The three hypervisor providers (InfrastructureProvider, BootstrapProvider,
+# ControlPlaneProvider) share one repository layout emitted by `make
+# components`: {basepath}/{provider-label}/{version}/{components.yaml}, with
+# each provider type reading its own components file. The base path is a
+# committed absolute placeholder that the bootstrap rewrites; the rendered
+# configuration must keep absolute file:// paths for clusterctl's local
+# repository resolution.
+#
+# overridesFolder is read with clusterctl's flat configuration key and must
+# stay a top-level key: it names the folder where clusterctl looks for local
+# component overrides before consulting the provider repositories. The
+# management-plane bootstrap pre-assembles the core Cluster API override
+# there so the bootstrap never fetches core components from the network.
+
+providers:
+- name: hypervisor
+  type: InfrastructureProvider
+  url: file:///var/lib/k8slab/out/infrastructure-hypervisor/v0.1.0/infrastructure-components.yaml
+- name: hypervisor
+  type: BootstrapProvider
+  url: file:///var/lib/k8slab/out/bootstrap-hypervisor/v0.1.0/bootstrap-components.yaml
+- name: hypervisor
+  type: ControlPlaneProvider
+  url: file:///var/lib/k8slab/out/control-plane-hypervisor/v0.1.0/control-plane-components.yaml
+
+overridesFolder: /var/lib/k8slab/overrides
