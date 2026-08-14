@@ -1,0 +1,101 @@
+# clusterctl default-flavor cluster template for cluster-api-hypervisor.
+#
+# This file is the clusterctl template consumed by `clusterctl generate
+# cluster` (and `go tool clusterctl generate cluster`) to render a Cluster
+# for the hypervisor providers. `make components` copies it into the provider
+# release tree as out/<provider-label>/v0.1.0/cluster-template.yaml.
+#
+# The stream contains exactly two YAML documents:
+#
+#   - document 1: the ClusterClass hypervisor-cluster-template, identical to
+#     the committed templates/clusterclass.yaml
+#   - document 2: a topology Cluster referencing that class, parameterized
+#     with clusterctl-style ${VARIABLE} markers
+#
+# The ${VARIABLE} markers are substituted at generate time. Their literal
+# defaults are documented by the example Cluster templates/cluster-example.yaml
+# (k8labs, namespace default, version v1.32.13, 1 control-plane machine, 3
+# worker machines), the twin of document 2:
+#
+#   clusterctl generate cluster k8labs \
+#     --infrastructure hypervisor \
+#     --kubernetes-version v1.32.13 \
+#     --control-plane-machine-count 1 \
+#     --worker-machine-count 3
+---
+# ClusterClass for cluster-api-hypervisor. Template copy of
+# templates/clusterclass.yaml.
+#
+# The topology-driven Cluster in document 2 of this file references this class
+# by name. All template references resolve to the committed API kinds of this
+# repository:
+#
+#   - infrastructure.cluster.x-k8s.io/v1alpha1: HypervisorCluster,
+#     HypervisorMachineTemplate
+#   - controlplane.cluster.x-k8s.io/v1alpha1: HypervisorControlPlane
+#   - bootstrap.cluster.x-k8s.io/v1alpha1: HypervisorConfig
+#
+# Control-plane bootstrap is not referenced here: the v1beta1 ControlPlaneClass
+# has no bootstrap template field. The HypervisorControlPlane controller
+# generates the HypervisorConfig for control-plane Machines at runtime.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: ClusterClass
+metadata:
+  name: hypervisor-cluster-template
+spec:
+  infrastructure:
+    ref:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+      kind: HypervisorCluster
+      name: hypervisor-cluster-template
+  controlPlane:
+    ref:
+      apiVersion: controlplane.cluster.x-k8s.io/v1alpha1
+      kind: HypervisorControlPlane
+      name: hypervisor-control-plane
+    machineInfrastructure:
+      ref:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+        kind: HypervisorMachineTemplate
+        name: hypervisor-control-plane-machine-template
+  workers:
+    machineDeployments:
+      - class: default-worker
+        template:
+          bootstrap:
+            ref:
+              apiVersion: bootstrap.cluster.x-k8s.io/v1alpha1
+              kind: HypervisorConfig
+              name: hypervisor-worker-bootstrap
+          infrastructure:
+            ref:
+              apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+              kind: HypervisorMachineTemplate
+              name: hypervisor-worker-machine-template
+---
+# Topology Cluster rendered from this template. The ${VARIABLE} markers are
+# substituted by clusterctl at generate time; the literal defaults they stand
+# for are documented by templates/cluster-example.yaml (the twin of this
+# document):
+#
+#   ${CLUSTER_NAME}                -> k8labs
+#   ${NAMESPACE}                   -> default
+#   ${KUBERNETES_VERSION}          -> v1.32.13
+#   ${CONTROL_PLANE_MACHINE_COUNT} -> 1
+#   ${WORKER_MACHINE_COUNT}        -> 3
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  topology:
+    class: hypervisor-cluster-template
+    version: ${KUBERNETES_VERSION}
+    controlPlane:
+      replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+    workers:
+      machineDeployments:
+        - name: md-0
+          class: default-worker
+          replicas: ${WORKER_MACHINE_COUNT}
