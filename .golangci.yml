@@ -33,6 +33,16 @@ linters:
       - linters:
           - staticcheck
         text: 'SA1019: "sigs\.k8s\.io/cluster-api/api/core/v1beta1" is deprecated'
+      # Deliberate use of the deprecated sigs.k8s.io/cluster-api/api/addons/v1beta1
+      # package. CAPI v1.13.5 also defines ClusterResourceSet under the
+      # non-deprecated addons/v1beta2 API, but the CRS contract tests pin the
+      # v1beta1 addons API deliberately because the manifests are written against
+      # the v1beta1 contract, and the package is deprecated, hence this scoped
+      # exclusion. The deprecation warning is expected and safe here; SA1019
+      # stays enabled for every other deprecated API usage.
+      - linters:
+          - staticcheck
+        text: 'SA1019: "sigs\.k8s\.io/cluster-api/api/addons/v1beta1" is deprecated'
 
 run:
   concurrency: 4
