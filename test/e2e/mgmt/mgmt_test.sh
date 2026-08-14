@@ -271,6 +271,40 @@ check_core_marker() {
   return 1
 }
 
+# first_line <file> <pattern> — the 1-based line number of the first
+# non-comment line containing the literal pattern, or empty when the pattern
+# is absent. Comment lines (first non-blank character '#') are skipped so
+# prose about a command never counts as the command itself.
+first_line() {
+  local file="$1"
+  local pattern="$2"
+  awk -v pat="${pattern}" '!/^[[:space:]]*#/ && index($0, pat) { print NR; exit }' "${file}"
+}
+
+# last_line <file> <pattern> — the 1-based line number of the last non-comment
+# line containing the literal pattern, or empty when the pattern is absent.
+last_line() {
+  local file="$1"
+  local pattern="$2"
+  awk -v pat="${pattern}" '!/^[[:space:]]*#/ && index($0, pat) { line = NR } END { if (line) print line }' "${file}"
+}
+
+# command_count <file> <pattern> — the number of non-comment lines containing
+# the literal pattern.
+command_count() {
+  local file="$1"
+  local pattern="$2"
+  awk -v pat="${pattern}" '!/^[[:space:]]*#/ && index($0, pat) { n++ } END { print n + 0 }' "${file}"
+}
+
+# has_command <file> <pattern> — true when a non-comment line contains the
+# literal pattern.
+has_command() {
+  local file="$1"
+  local pattern="$2"
+  awk -v pat="${pattern}" '!/^[[:space:]]*#/ && index($0, pat) { found = 1 } END { exit !found }' "${file}"
+}
+
 # --- test groups ------------------------------------------------------------
 
 test_pki_generation() {
@@ -533,6 +567,76 @@ test_apply_rewire() {
   check_contains "${APPLY_SH}" "caBundle" || :
 }
 
+# test_apply_order — pin the first-time bring-up ordering contract of apply.sh
+# (a live apiserver is not listening until the plane quadlets start, so the
+# core manifests cannot be applied first):
+#
+#   1. the management-plane services (mgmt-etcd, mgmt-kube-apiserver) must be
+#      started before the core manifests are kubectl-applied — the first
+#      `systemctl start` line must precede the first `kubectl apply` line;
+#   2. apply.sh must wait for the management apiserver (poll /readyz via
+#      kubectl, mirroring run.sh's wait_for_apiserver_ready) with a timeout
+#      budget before relying on it;
+#   3. the controller services (mgmt-cluster-api-core,
+#      mgmt-cluster-api-hypervisor) must be started AFTER clusterctl init (the
+#      core CRDs and the provider CRDs/webhooks exist only after init), so the
+#      plane start and the controller start must be separate steps — at least
+#      two `systemctl start` invocations, with the last one following the
+#      `go tool clusterctl init` line.
+#
+# Everything is asserted statically against apply.sh: no live cluster, no VM,
+# and no quadlet is started.
+test_apply_order() {
+  log "test: apply.sh first-time bring-up ordering"
+  if [[ ! -f "${APPLY_SH}" ]]; then
+    return 1
+  fi
+
+  local first_start="" first_apply="" last_start="" init_line="" start_count=0
+  first_start="$(first_line "${APPLY_SH}" "systemctl start")"
+  first_apply="$(first_line "${APPLY_SH}" "kubectl apply")"
+  last_start="$(last_line "${APPLY_SH}" "systemctl start")"
+  init_line="$(first_line "${APPLY_SH}" "go tool clusterctl init")"
+
+  # Edge: plane start precedes the core apply (first-time bring-up has no
+  # apiserver yet, so applying first fails with a connection refused).
+  if [[ -z "${first_start}" ]]; then
+    missing "apply.sh has no 'systemctl start' of the management services"
+  elif [[ -z "${first_apply}" ]]; then
+    missing "apply.sh has no 'kubectl apply' of the core manifests"
+  elif (( first_start > first_apply )); then
+    missing "systemctl start must precede kubectl apply (systemctl start at line ${first_start}, kubectl apply at line ${first_apply})"
+  else
+    ok "management-plane services are started before the core manifests are applied (systemctl start at line ${first_start}, kubectl apply at line ${first_apply})"
+  fi
+
+  # Edge: the management apiserver readiness wait with a timeout budget
+  # (mirrors run.sh's wait_for_apiserver_ready: --raw='/readyz' polled until a
+  # deadline).
+  if has_command "${APPLY_SH}" "--raw='/readyz'" || has_command "${APPLY_SH}" "/readyz"; then
+    if grep -Eiq 'deadline|timeout' "${APPLY_SH}"; then
+      ok "apply.sh waits for the management apiserver with a timeout budget"
+    else
+      missing "apply.sh polls /readyz but lacks a timeout budget (deadline/TIMEOUT marker)"
+    fi
+  else
+    missing "missing readyz wait: apply.sh does not wait for the management apiserver (/readyz marker absent)"
+  fi
+
+  # Edge: the controller services start separately, after clusterctl init has
+  # created the core CRDs and the provider CRDs/webhooks.
+  start_count="$(command_count "${APPLY_SH}" "systemctl start")"
+  if (( start_count < 2 )); then
+    missing "core/provider start must follow clusterctl init (expected separate plane and controller start steps, found ${start_count} 'systemctl start' invocation(s))"
+  elif [[ -z "${init_line}" ]]; then
+    missing "core/provider start must follow clusterctl init (no 'go tool clusterctl init' marker in apply.sh)"
+  elif (( last_start < init_line )); then
+    missing "core/provider start must follow clusterctl init (last 'systemctl start' at line ${last_start} is before 'go tool clusterctl init' at line ${init_line})"
+  else
+    ok "controller services are started after clusterctl init (last systemctl start at line ${last_start}, clusterctl init at line ${init_line})"
+  fi
+}
+
 # --- entry point ------------------------------------------------------------
 
 main() {
@@ -560,6 +664,7 @@ main() {
   test_core_manifests || :
   test_apply_scripts || :
   test_apply_rewire || :
+  test_apply_order || :
 
   if [[ "${problems}" -gt 0 ]]; then
     fail "contract check failed: ${problems} problem(s)" 1
