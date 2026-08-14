@@ -76,8 +76,9 @@ readonly CORE_DIR="${MGMT_DIR}/core"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 readonly REPO_ROOT
 # The committed clusterctl configuration template that apply.sh renders into
-# <state>/clusterctl/clusterctl.yaml with OUT_DIR substituted (clusterctl's
-# own config file name; the same file the test/clusterctl contract pins).
+# <state>/clusterctl/cluster-api/clusterctl.yaml with OUT_DIR substituted
+# (clusterctl's own config file name; the same file the test/clusterctl
+# contract pins).
 CLUSTERCTL_TEMPLATE="${REPO_ROOT}/clusterctl.yaml"
 readonly CLUSTERCTL_TEMPLATE
 
@@ -458,11 +459,11 @@ test_apply_scripts() {
 #
 #   1. validation additionally requires `go` (require_cmd go) so clusterctl
 #      can be driven through `go tool clusterctl`;
-#   2. apply.sh renders <state>/clusterctl/clusterctl.yaml from the committed
-#      template with OUT_DIR substituted (OUT_DIR env, default <repo>/out);
-#      the template pins the rendered-file contract: three provider entries
-#      (infrastructure-, bootstrap-, control-plane-hypervisor) and a
-#      top-level overridesFolder key (clusterctl resolves overridesFolder
+#   2. apply.sh renders <state>/clusterctl/cluster-api/clusterctl.yaml from
+#      the committed template with OUT_DIR substituted (OUT_DIR env, default
+#      <repo>/out); the template pins the rendered-file contract: three
+#      provider entries (infrastructure-, bootstrap-, control-plane-hypervisor)
+#      and a top-level overridesFolder key (clusterctl resolves overridesFolder
 #      with the flat viper key, so it must not live under variables:);
 #   3. apply.sh assembles the CAPI core override at
 #      <state>/clusterctl/overrides/cluster-api/v1.13.5/core-components.yaml

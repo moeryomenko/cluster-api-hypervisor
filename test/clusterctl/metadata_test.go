@@ -35,7 +35,9 @@ limitations under the License.
 //     InfrastructureProvider, one BootstrapProvider, one
 //     ControlPlaneProvider) whose file:// URLs follow the local repository
 //     layout {basepath}/{provider-label}/{version}/{components.yaml}, and a
-//     variables map declaring overridesFolder.
+//     top-level overridesFolder key (clusterctl resolves overridesFolder with
+//     the flat viper key, so the key must sit at the top level, not under a
+//     variables map).
 package clusterctl
 
 import (
