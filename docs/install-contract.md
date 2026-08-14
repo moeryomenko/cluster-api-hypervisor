@@ -84,6 +84,13 @@ read from `main.go:82-90` and `main.go:117`): the provider-owned bridge is
 `k8sbr0`, the nftables table is `inet k8slab`, the lab gateway/DNS address is
 `192.168.124.1`, and dnsmasq forwards to `1.1.1.1`/`8.8.8.8`.
 
+The CRDs, RBAC, and webhook configurations the controllers need can
+alternatively be delivered by `clusterctl init` using the committed
+`clusterctl.yaml` and the `make components` output instead of manual kubectl
+apply of generated manifests; the quadlet of section 5 remains the manager
+runtime either way (see [docs/clusterctl.md](clusterctl.md) for the clusterctl
+runbook).
+
 ---
 
 ## 3. Environment variables (`HYPERVISOR_*`)
@@ -274,3 +281,14 @@ reference script is out of scope here):
 After provisioning, the install contract is satisfied when the provider
 quadlet starts against the bare management apiserver, the CRDs reconcile, and
 the webhook endpoints answer with the provisioned certificate.
+
+### 7.1 clusterctl delivery path
+
+When the webhook configurations are delivered by `clusterctl init` instead of
+kubectl apply of generated manifests, the components ship the webhooks with
+`failurePolicy: Fail` and an empty `caBundle` (url-rewritten to
+`https://127.0.0.1:9443/<path>`; see [docs/clusterctl.md](clusterctl.md)). The
+step 3 caBundle patch above is then performed after `clusterctl init`, patching
+the management CA into every webhook entry of both configurations — the
+reference management-plane bootstrap does exactly this
+(`test/e2e/mgmt/apply.sh:207-228`).
