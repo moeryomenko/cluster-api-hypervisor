@@ -1,0 +1,16 @@
+# Keep the build context lean: exclude VCS metadata, spec/plan/agent
+# artifacts, and build outputs. The Go build needs the module manifests and
+# the Go sources; everything else stays out of the context.
+.git
+.specs
+.plans
+.agent
+bin
+coverage.out
+*.sock
+*.test
+*.out
+.idea
+.vscode
+*.swp
+.DS_Store

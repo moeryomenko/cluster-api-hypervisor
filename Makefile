@@ -1,5 +1,8 @@
 NAME := cluster-api-hypervisor
 BINARY := $(NAME)
+# IMAGE is a literal tag (no make functions) so the image content contract
+# test (test/image_contract.sh) can resolve it directly.
+IMAGE ?= cluster-api-hypervisor:dev
 COVER_FILE ?= coverage.out
 RACE_DETECTOR ?= -race
 COUNT ?= 1
@@ -71,8 +74,8 @@ envtest: ## Run the envtest suite (controllers CRD contract + helpers) against t
 	@KUBEBUILDER_ASSETS="$(ENVTEST_ASSETS)" go tool gotestsum --format-hide-empty-pkg -f testname -- $(RACE_DETECTOR) -count $(COUNT) ./controllers/... ./test/helpers/... -timeout=15m
 
 .PHONY: image
-image: ## Build container image (stub; implemented in a later phase)
-	@echo "image build not implemented yet"
+image: ## Build the provider container image with podman
+	@podman build -t $(IMAGE) -f Containerfile .
 
 .PHONY: clean
 clean: ## Remove build artifacts and coverage output
