@@ -291,4 +291,4 @@ kubectl apply of generated manifests, the components ship the webhooks with
 step 3 caBundle patch above is then performed after `clusterctl init`, patching
 the management CA into every webhook entry of both configurations — the
 reference management-plane bootstrap does exactly this
-(`test/e2e/mgmt/apply.sh:207-228`).
+(`test/e2e/mgmt/apply.sh:277-298`).

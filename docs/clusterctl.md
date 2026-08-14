@@ -18,8 +18,10 @@ so the runbook can be re-verified. Source files:
   shared component set.
 - `templates/cluster-template.yaml` — the default-flavor cluster template.
 - `test/e2e/mgmt/apply.sh` — the reference management-plane bootstrap that
-  renders the configuration, assembles the offline core override, initializes
-  the providers, and patches the webhook CA bundles.
+  starts the plane quadlets, waits for the apiserver, applies the core
+  manifests, renders the configuration, assembles the offline core override,
+  initializes the providers, patches the webhook CA bundles, and starts the
+  controller quadlets.
 - `test/e2e/run.sh` — the reference full-lab harness that generates and applies
   the workload Cluster.
 - `tools/go.mod` — the Go `tool` directives for `clusterctl` and `kustomize`.
@@ -95,7 +97,7 @@ The rendered URLs must stay absolute: clusterctl resolves local repositories as
 `{basepath}/{provider-label}/{version}/{components.yaml}` with `file://` URLs
 (`clusterctl.yaml:26-37`). The management-plane bootstrap performs the same
 substitution when rendering into its hermetic state directory
-(`test/e2e/mgmt/apply.sh:149-166`).
+(`test/e2e/mgmt/apply.sh:219-236`).
 
 ## 5. Initialize the providers
 
@@ -107,14 +109,14 @@ The three hypervisor providers register from the local repositories of your
 configuration; `--skip-cert-manager` keeps the bootstrap offline (the webhook
 certificates are static, provisioned per `docs/install-contract.md` §7, so no
 cert-manager is involved). The repository drives the same command through
-`go tool clusterctl init` (`test/e2e/mgmt/apply.sh:197-205`).
+`go tool clusterctl init` (`test/e2e/mgmt/apply.sh:267-275`).
 
 The core Cluster API provider is initialized by default. To stay fully
 offline, pin the core version and pre-assemble a local override so clusterctl
 never fetches the upstream core components: the reference bootstrap assembles
 `<state>/clusterctl/overrides/cluster-api/v1.13.5/core-components.yaml` from the
 committed core manifests and passes `--core cluster-api:v1.13.5`
-(`test/e2e/mgmt/apply.sh:168-205`); the same files feed the `overridesFolder`
+(`test/e2e/mgmt/apply.sh:238-275`); the same files feed the `overridesFolder`
 key of the rendered configuration (`clusterctl.yaml:37`).
 
 ## 6. Patch the webhook CA bundles
@@ -137,7 +139,7 @@ kubectl patch validating-webhook-configuration --type=json \
 ```
 
 The reference bootstrap builds the per-index JSON patch for every webhook of
-both configurations from `<state>/pki/ca.pem` (`test/e2e/mgmt/apply.sh:207-228`);
+both configurations from `<state>/pki/ca.pem` (`test/e2e/mgmt/apply.sh:277-298`);
 patching an identical bundle is a no-op, keeping the step idempotent.
 
 ## 7. Create a cluster
@@ -215,5 +217,5 @@ labeled objects; Cluster-object deletion is the supported teardown path.
   Cluster-object deletion rather than clusterctl delete (§9).
 - **Offline e2e reference**: the full-lab harness provisions the plane with
   `clusterctl init` against locally assembled core overrides and never touches
-  the network (`test/e2e/mgmt/apply.sh:168-205`); the runbook's §5 init shows
+  the network (`test/e2e/mgmt/apply.sh:238-275`); the runbook's §5 init shows
   the same flags without the offline scaffolding.
