@@ -72,6 +72,15 @@ readonly DOWN_SH="${MGMT_DIR}/down.sh"
 readonly UNITS_DIR="${MGMT_DIR}/units"
 readonly CORE_DIR="${MGMT_DIR}/core"
 
+# Repository root (three levels up from test/e2e/mgmt/).
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+readonly REPO_ROOT
+# The committed clusterctl configuration template that apply.sh renders into
+# <state>/clusterctl/clusterctl.yaml with OUT_DIR substituted (clusterctl's
+# own config file name; the same file the test/clusterctl contract pins).
+CLUSTERCTL_TEMPLATE="${REPO_ROOT}/clusterctl.yaml"
+readonly CLUSTERCTL_TEMPLATE
+
 # Management endpoint advertised in every generated kubeconfig (the bare
 # apiserver quadlet listens on the host loopback).
 readonly MGMT_SERVER_URL="https://127.0.0.1:6443"
@@ -444,6 +453,85 @@ test_apply_scripts() {
   fi
 }
 
+# test_apply_rewire — pin the clusterctl rewire contract that apply.sh does
+# not implement yet (these assertions are red until the flow lands):
+#
+#   1. validation additionally requires `go` (require_cmd go) so clusterctl
+#      can be driven through `go tool clusterctl`;
+#   2. apply.sh renders <state>/clusterctl/clusterctl.yaml from the committed
+#      template with OUT_DIR substituted (OUT_DIR env, default <repo>/out);
+#      the template pins the rendered-file contract: three provider entries
+#      (infrastructure-, bootstrap-, control-plane-hypervisor) and a
+#      top-level overridesFolder key (clusterctl resolves overridesFolder
+#      with the flat viper key, so it must not live under variables:);
+#   3. apply.sh assembles the CAPI core override at
+#      <state>/clusterctl/overrides/cluster-api/v1.13.5/core-components.yaml
+#      from the committed core/ sources and copies core/metadata.yaml
+#      alongside;
+#   4. apply.sh invokes `go tool clusterctl init` with XDG_CONFIG_HOME
+#      pointing at <state>/clusterctl and exactly the hypervisor provider
+#      flag set;
+#   5. apply.sh patches the management CA bundle (ca.pem) into the admission
+#      webhook configurations via kubectl patch;
+#   6. the quadlet install/start steps stay unchanged (the existing
+#      kubectl apply / systemctl daemon-reload checks keep guarding them);
+#      the new steps are idempotent by construction (clusterctl init
+#      converges, kubectl patch of an identical caBundle is a no-op).
+#
+# Everything is asserted statically against apply.sh and the committed
+# template: no live cluster, no VM, and no quadlet is started.
+test_apply_rewire() {
+  log "test: apply.sh clusterctl rewire contract (pending)"
+  if [[ ! -f "${APPLY_SH}" ]]; then
+    return 1
+  fi
+
+  # Edge: validation requires `go` alongside kubectl/systemctl/podman.
+  check_contains "${APPLY_SH}" "require_cmd go" || :
+
+  # Edge: apply.sh renders the clusterctl config with OUT_DIR substituted.
+  check_contains "${APPLY_SH}" "clusterctl.yaml" || :
+  check_contains "${APPLY_SH}" "OUT_DIR" || :
+
+  # Edge: the committed template carries the three provider entries and a
+  # top-level overridesFolder key (flat key for clusterctl's viper lookup).
+  if check_file "${CLUSTERCTL_TEMPLATE}"; then
+    check_contains "${CLUSTERCTL_TEMPLATE}" "infrastructure-hypervisor" || :
+    check_contains "${CLUSTERCTL_TEMPLATE}" "bootstrap-hypervisor" || :
+    check_contains "${CLUSTERCTL_TEMPLATE}" "control-plane-hypervisor" || :
+    check_contains "${CLUSTERCTL_TEMPLATE}" "overridesFolder" || :
+    if grep -Eq '^overridesFolder:' "${CLUSTERCTL_TEMPLATE}"; then
+      ok "clusterctl template declares a top-level overridesFolder key"
+    else
+      missing "clusterctl template lacks a top-level overridesFolder key (flat key, not under variables:)"
+    fi
+  fi
+
+  # Edge: apply.sh assembles the CAPI core override and copies the metadata
+  # marker alongside.
+  check_contains "${APPLY_SH}" "overrides/cluster-api" || :
+  check_contains "${APPLY_SH}" "v1.13.5" || :
+  check_contains "${APPLY_SH}" "core-components.yaml" || :
+  check_contains "${APPLY_SH}" "metadata.yaml" || :
+
+  # Edge: clusterctl init runs with XDG_CONFIG_HOME wired to the state dir
+  # and exactly the hypervisor provider flag set.
+  check_contains "${APPLY_SH}" "XDG_CONFIG_HOME" || :
+  check_contains "${APPLY_SH}" "go tool clusterctl init" || :
+  check_contains "${APPLY_SH}" "--core cluster-api" || :
+  check_contains "${APPLY_SH}" "--infrastructure hypervisor" || :
+  check_contains "${APPLY_SH}" "--bootstrap hypervisor" || :
+  check_contains "${APPLY_SH}" "--control-plane hypervisor" || :
+  check_contains "${APPLY_SH}" "--skip-cert-manager" || :
+
+  # Edge: the admission webhook configurations receive the management CA
+  # bundle via kubectl patch (both configuration names).
+  check_contains "${APPLY_SH}" "kubectl patch" || :
+  check_contains "${APPLY_SH}" "mutating-webhook-configuration" || :
+  check_contains "${APPLY_SH}" "validating-webhook-configuration" || :
+  check_contains "${APPLY_SH}" "caBundle" || :
+}
+
 # --- entry point ------------------------------------------------------------
 
 main() {
@@ -470,6 +558,7 @@ main() {
   test_quadlet_units || :
   test_core_manifests || :
   test_apply_scripts || :
+  test_apply_rewire || :
 
   if [[ "${problems}" -gt 0 ]]; then
     fail "contract check failed: ${problems} problem(s)" 1

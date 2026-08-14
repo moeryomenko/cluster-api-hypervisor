@@ -45,7 +45,26 @@
 #      existing, writable directory and must not be a regular file;
 #      otherwise the harness exits 1 with an error naming STATE_DIR.
 #
-#   6. --help and -h — exit 0 and document every variable above, its default,
+#   6. OUT_DIR — the provider release layout directory (the default is
+#      <repo>/out; an explicit value is honored as-is). The resolved path
+#      must be an existing directory containing the three provider release
+#      directories infrastructure-hypervisor/v0.1.0,
+#      bootstrap-hypervisor/v0.1.0, and control-plane-hypervisor/v0.1.0;
+#      otherwise the harness exits 1 with an error naming OUT_DIR.
+#
+#   7. The harness requires the go tool (require_cmd go) before any heavy
+#      work; a missing go is an environment validation failure naming go.
+#
+#   8. apply_templates — the workload Cluster is generated with
+#      `go tool clusterctl generate cluster k8labs --namespace default
+#      --infrastructure hypervisor --kubernetes-version v1.32.13
+#      --control-plane-machine-count 1 --worker-machine-count 3` piped into
+#      `kubectl apply --kubeconfig=<admin> -f -`. The test drives the flow
+#      through a stub go and a stub kubectl on PATH and asserts the exact
+#      generate invocation and that kubectl apply reads the manifest from
+#      stdin; no real cluster is contacted.
+#
+#   9. --help and -h — exit 0 and document every variable above, its default,
 #      and the management-plane bootstrap fallback (test/e2e/mgmt).
 #
 # Exit codes of the harness under test:
@@ -53,11 +72,12 @@
 #   1  environment validation failure (before any heavy work)
 #
 # This test never starts a real cluster or a VM: it exercises the
-# environment-validation entry path only. Each scenario keeps every variable
-# valid except the one under test, so the error must name exactly that
-# variable. The harness is run with a controlled environment (env -i) and a
-# 30s timeout so a harness that skips validation and attempts heavy work is
-# caught instead of hanging the test.
+# environment-validation entry path, plus the apply_templates generation pipe
+# through stubbed go and kubectl binaries on a narrowed PATH. Each scenario
+# keeps every variable valid except the one under test, so the error must
+# name exactly that variable. The harness is run with a controlled
+# environment (env -i) and a 30s timeout so a harness that skips validation
+# and attempts heavy work is caught instead of hanging the test.
 #
 # Exit codes of this test:
 #   0  the harness satisfies the environment contract
@@ -86,6 +106,15 @@ readonly FIRMWARE_DEFAULT="build/CLOUDHV.fd"
 readonly STATE_DIR_DEFAULT="/var/lib/k8slab"
 readonly MGMT_STATE_DIR_DEFAULT="/var/lib/k8slab/mgmt"
 readonly MGMT_BOOTSTRAP_DIR="test/e2e/mgmt"
+
+# OUT_DIR contract: the default provider release layout directory and the
+# three provider release directories (the layout `make components OUT_DIR=`
+# emits; see test/e2e/clusterctl_test.sh). The version directory is pinned
+# by the release contract.
+readonly OUT_DIR_DEFAULT="${REPO_ROOT}/out"
+readonly OUT_VERSION_DIR="v0.1.0"
+# shellcheck disable=SC2034
+readonly OUT_PROVIDERS=$'infrastructure-hypervisor\nbootstrap-hypervisor\ncontrol-plane-hypervisor'
 
 # Timeout for a single harness invocation (seconds). Environment validation
 # must return in milliseconds; a harness that proceeds to heavy work trips
@@ -139,15 +168,19 @@ run_harness() {
 # contains_var_ref <output> <var> — the output mentions the exact variable
 # name as a standalone token. BASE_IMAGE contains IMAGE as a substring, so
 # the bare IMAGE check must not match inside BASE_IMAGE; the token boundary
-# excludes alphanumerics and underscores.
+# excludes alphanumerics and underscores. The two-letter go name gets the
+# same treatment so a stray substring cannot satisfy the requirement.
 contains_var_ref() {
   local out="$1"
   local var="$2"
-  if [[ "${var}" == "IMAGE" ]]; then
-    grep -qE "(^|[^[:alnum:]_])IMAGE([^[:alnum:]_]|$)" <<< "${out}"
-  else
-    grep -Fq -- "${var}" <<< "${out}"
-  fi
+  case "${var}" in
+    IMAGE|go)
+      grep -qE "(^|[^[:alnum:]_])${var}([^[:alnum:]_]|$)" <<< "${out}"
+      ;;
+    *)
+      grep -Fq -- "${var}" <<< "${out}"
+      ;;
+  esac
 }
 
 # expect_early_validation_failure <output> <rc> <var> [<path>] — assert that
@@ -186,14 +219,33 @@ expect_early_validation_failure() {
 # setup_valid_base — create a scratch fixture where every environment
 # variable is valid except the one a test intentionally breaks. The fake
 # kubeconfig, base image, and firmware are non-empty regular files; the state
-# directory exists and is writable. Prints the fixture path.
+# directory exists and is writable; the OUT_DIR provider release layout
+# exists. Prints the fixture path.
 setup_valid_base() {
   local base="${SCRATCH}/valid-base"
+  local provider=""
   mkdir -p "${base}/state"
   printf 'fake management kubeconfig\n' > "${base}/kubeconfig"
   printf 'fake base image\n' > "${base}/base.qcow2"
   printf 'fake firmware\n' > "${base}/firmware.fd"
+  # shellcheck disable=SC2086
+  for provider in ${OUT_PROVIDERS}; do
+    mkdir -p "${base}/out/${provider}/${OUT_VERSION_DIR}"
+  done
   printf '%s' "${base}"
+}
+
+# out_dir_valid <dir> — <dir> is an existing directory containing the three
+# provider release directories the OUT_DIR contract requires.
+out_dir_valid() {
+  local dir="$1"
+  local provider=""
+  [[ -d "${dir}" ]] || return 1
+  # shellcheck disable=SC2086
+  for provider in ${OUT_PROVIDERS}; do
+    [[ -d "${dir}/${provider}/${OUT_VERSION_DIR}" ]] || return 1
+  done
+  return 0
 }
 
 # --- test groups ------------------------------------------------------------
@@ -210,7 +262,8 @@ test_missing_kubeconfig() {
     "IMAGE=${IMAGE_DEFAULT}" \
     "BASE_IMAGE=${base}/base.qcow2" \
     "FIRMWARE=${base}/firmware.fd" \
-    "STATE_DIR=${base}/state")" || rc=$?
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
   expect_early_validation_failure "${out}" "${rc}" "MANAGEMENT_KUBECONFIG" "${missing_kc}" || :
 
   # No explicit kubeconfig and the bootstrap fallback state is not
@@ -223,7 +276,8 @@ test_missing_kubeconfig() {
     "IMAGE=${IMAGE_DEFAULT}" \
     "BASE_IMAGE=${base}/base.qcow2" \
     "FIRMWARE=${base}/firmware.fd" \
-    "STATE_DIR=${base}/state")" || rc=$?
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
   expect_early_validation_failure "${out}" "${rc}" "MANAGEMENT_KUBECONFIG" || :
 
   # Neither variable set: the default bootstrap state is not provisioned.
@@ -238,7 +292,8 @@ test_missing_kubeconfig() {
       "IMAGE=${IMAGE_DEFAULT}" \
       "BASE_IMAGE=${base}/base.qcow2" \
       "FIRMWARE=${base}/firmware.fd" \
-      "STATE_DIR=${base}/state")" || rc=$?
+      "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
     expect_early_validation_failure "${out}" "${rc}" "MANAGEMENT_KUBECONFIG" || :
   fi
 }
@@ -256,7 +311,8 @@ test_invalid_image() {
     "IMAGE=${bad_image}" \
     "BASE_IMAGE=${base}/base.qcow2" \
     "FIRMWARE=${base}/firmware.fd" \
-    "STATE_DIR=${base}/state")" || rc=$?
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
   expect_early_validation_failure "${out}" "${rc}" "IMAGE" || :
 
   # IMAGE unset is accepted (defaults to the Makefile tag), so with the
@@ -268,7 +324,8 @@ test_invalid_image() {
     "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
     "BASE_IMAGE=${missing_base}" \
     "FIRMWARE=${base}/firmware.fd" \
-    "STATE_DIR=${base}/state")" || rc=$?
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
   expect_early_validation_failure "${out}" "${rc}" "BASE_IMAGE" "${missing_base}" || :
 }
 
@@ -285,7 +342,8 @@ test_missing_base_image() {
     "IMAGE=${IMAGE_DEFAULT}" \
     "BASE_IMAGE=${missing_base}" \
     "FIRMWARE=${base}/firmware.fd" \
-    "STATE_DIR=${base}/state")" || rc=$?
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
   expect_early_validation_failure "${out}" "${rc}" "BASE_IMAGE" "${missing_base}" || :
 
   # Unset: the default build/k8labs-base.qcow2 must still resolve to an
@@ -298,7 +356,8 @@ test_missing_base_image() {
       "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
       "IMAGE=${IMAGE_DEFAULT}" \
       "FIRMWARE=${base}/firmware.fd" \
-      "STATE_DIR=${base}/state")" || rc=$?
+      "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
     expect_early_validation_failure "${out}" "${rc}" "BASE_IMAGE" || :
   fi
 }
@@ -316,7 +375,8 @@ test_missing_firmware() {
     "IMAGE=${IMAGE_DEFAULT}" \
     "BASE_IMAGE=${base}/base.qcow2" \
     "FIRMWARE=${missing_fw}" \
-    "STATE_DIR=${base}/state")" || rc=$?
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
   expect_early_validation_failure "${out}" "${rc}" "FIRMWARE" "${missing_fw}" || :
 
   # Unset: the default build/CLOUDHV.fd must still resolve to an existing
@@ -329,7 +389,8 @@ test_missing_firmware() {
       "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
       "IMAGE=${IMAGE_DEFAULT}" \
       "BASE_IMAGE=${base}/base.qcow2" \
-      "STATE_DIR=${base}/state")" || rc=$?
+      "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
     expect_early_validation_failure "${out}" "${rc}" "FIRMWARE" || :
   fi
 }
@@ -347,7 +408,8 @@ test_invalid_state_dir() {
     "IMAGE=${IMAGE_DEFAULT}" \
     "BASE_IMAGE=${base}/base.qcow2" \
     "FIRMWARE=${base}/firmware.fd" \
-    "STATE_DIR=${missing_state}")" || rc=$?
+    "STATE_DIR=${missing_state}" \
+    "OUT_DIR=${base}/out")" || rc=$?
   expect_early_validation_failure "${out}" "${rc}" "STATE_DIR" "${missing_state}" || :
 
   # The state directory must be a directory; a regular file is invalid.
@@ -359,7 +421,8 @@ test_invalid_state_dir() {
     "IMAGE=${IMAGE_DEFAULT}" \
     "BASE_IMAGE=${base}/base.qcow2" \
     "FIRMWARE=${base}/firmware.fd" \
-    "STATE_DIR=${file_state}")" || rc=$?
+    "STATE_DIR=${file_state}" \
+    "OUT_DIR=${base}/out")" || rc=$?
   expect_early_validation_failure "${out}" "${rc}" "STATE_DIR" "${file_state}" || :
 
   # The state directory must be writable. Root bypasses permission checks,
@@ -376,7 +439,8 @@ test_invalid_state_dir() {
       "IMAGE=${IMAGE_DEFAULT}" \
       "BASE_IMAGE=${base}/base.qcow2" \
       "FIRMWARE=${base}/firmware.fd" \
-      "STATE_DIR=${ro_state}")" || rc=$?
+      "STATE_DIR=${ro_state}" \
+      "OUT_DIR=${base}/out")" || rc=$?
     expect_early_validation_failure "${out}" "${rc}" "STATE_DIR" "${ro_state}" || :
   fi
 }
@@ -415,6 +479,228 @@ test_help() {
   out="$(run_harness -h)" || rc=$?
   if [[ "${rc}" -ne 0 ]]; then
     missing "harness -h exited ${rc}; expected 0"
+  fi
+}
+
+test_invalid_out_dir() {
+  log "test: OUT_DIR validation"
+  local base="" provider="" out="" rc=0
+  base="$(setup_valid_base)" || return 1
+
+  # The OUT_DIR scenarios run against a narrowed PATH that lacks kubectl:
+  # today's harness (which does not validate OUT_DIR) must fail fast at the
+  # first required tool instead of hanging on the fake kubeconfig; the
+  # future harness fails at OUT_DIR during validation, before any tool use.
+  # go is present so a future harness that checks go first still reaches the
+  # OUT_DIR check.
+  local outbin="${SCRATCH}/out-dir-bin"
+  mkdir -p "${outbin}"
+  ln -sf "$(command -v timeout)" "${outbin}/timeout"
+  ln -sf "$(command -v env)" "${outbin}/env"
+  ln -sf "$(command -v bash)" "${outbin}/bash"
+  ln -sf "$(command -v dirname)" "${outbin}/dirname"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "${outbin}/go"
+  chmod +x "${outbin}/go"
+
+  # Explicit OUT_DIR that does not exist.
+  local missing_out="${base}/missing-out"
+  rc=0
+  out="$(PATH="${outbin}" run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${base}/base.qcow2" \
+    "FIRMWARE=${base}/firmware.fd" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${missing_out}")" || rc=$?
+  expect_early_validation_failure "${out}" "${rc}" "OUT_DIR" "${missing_out}" || :
+
+  # OUT_DIR must be a directory; a regular file is invalid.
+  local file_out="${base}/out-file"
+  printf 'not a directory\n' > "${file_out}"
+  rc=0
+  out="$(PATH="${outbin}" run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${base}/base.qcow2" \
+    "FIRMWARE=${base}/firmware.fd" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${file_out}")" || rc=$?
+  expect_early_validation_failure "${out}" "${rc}" "OUT_DIR" "${file_out}" || :
+
+  # Existing directory without the three provider release directories.
+  local empty_out="${base}/empty-out"
+  mkdir -p "${empty_out}"
+  rc=0
+  out="$(PATH="${outbin}" run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${base}/base.qcow2" \
+    "FIRMWARE=${base}/firmware.fd" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${empty_out}")" || rc=$?
+  expect_early_validation_failure "${out}" "${rc}" "OUT_DIR" || :
+
+  # The provider release paths must be directories; regular files do not
+  # satisfy the layout.
+  local file_provider_out="${base}/file-provider-out"
+  # shellcheck disable=SC2086
+  for provider in ${OUT_PROVIDERS}; do
+    mkdir -p "${file_provider_out}/${provider}"
+    printf 'not a directory\n' > "${file_provider_out}/${provider}/${OUT_VERSION_DIR}"
+  done
+  rc=0
+  out="$(PATH="${outbin}" run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${base}/base.qcow2" \
+    "FIRMWARE=${base}/firmware.fd" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${file_provider_out}")" || rc=$?
+  expect_early_validation_failure "${out}" "${rc}" "OUT_DIR" || :
+
+  # Unset OUT_DIR: the default <repo>/out must hold the provider release
+  # directories. Skip when a host has already built the default layout.
+  if out_dir_valid "${OUT_DIR_DEFAULT}"; then
+    ok "skipping unset OUT_DIR case: default release layout exists at ${OUT_DIR_DEFAULT}"
+  else
+    rc=0
+    out="$(PATH="${outbin}" run_harness \
+      "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+      "IMAGE=${IMAGE_DEFAULT}" \
+      "BASE_IMAGE=${base}/base.qcow2" \
+      "FIRMWARE=${base}/firmware.fd" \
+      "STATE_DIR=${base}/state")" || rc=$?
+    expect_early_validation_failure "${out}" "${rc}" "OUT_DIR" || :
+  fi
+}
+
+test_requires_go() {
+  log "test: the harness requires the go tool before any heavy work"
+  local base="" tool="" out="" rc=0
+  base="$(setup_valid_base)" || return 1
+
+  # Narrow PATH to a stub bin that provides every tool require_cmd needs
+  # except go: kubectl, base64, mktemp (so a future harness that checks go
+  # after those still fails naming go), plus the tools the test runner
+  # itself resolves (timeout, env, bash). The real go on the host must not
+  # leak into the harness environment.
+  local gobin="${SCRATCH}/go-required-bin"
+  mkdir -p "${gobin}"
+  ln -sf "$(command -v timeout)" "${gobin}/timeout"
+  ln -sf "$(command -v env)" "${gobin}/env"
+  ln -sf "$(command -v bash)" "${gobin}/bash"
+  ln -sf "$(command -v dirname)" "${gobin}/dirname"
+  for tool in kubectl base64 mktemp; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "${gobin}/${tool}"
+    chmod +x "${gobin}/${tool}"
+  done
+
+  rc=0
+  out="$(PATH="${gobin}" run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${base}/base.qcow2" \
+    "FIRMWARE=${base}/firmware.fd" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
+  expect_early_validation_failure "${out}" "${rc}" "go" || :
+}
+
+test_apply_templates_flow() {
+  log "test: apply_templates generates the Cluster via go tool clusterctl and pipes it into kubectl apply"
+  local base="" out="" rc=0
+  base="$(setup_valid_base)" || return 1
+
+  # Stub bin prepended to PATH: a go that records every invocation (and
+  # emits a fake manifest only for the clusterctl generate cluster dispatch)
+  # and a kubectl that satisfies the full-lab flow without a cluster and
+  # captures stdin when an apply reads from -f -.
+  local stubbin="${SCRATCH}/apply-stub-bin"
+  local calls="${SCRATCH}/apply-go-calls.txt"
+  local kube_calls="${SCRATCH}/apply-kubectl-calls.txt"
+  local stdin_rec="${SCRATCH}/apply-kubectl-stdin.txt"
+  mkdir -p "${stubbin}"
+  : > "${calls}"
+  : > "${kube_calls}"
+  : > "${stdin_rec}"
+
+  cat > "${stubbin}/go" <<'STUB'
+#!/usr/bin/env bash
+# go stub: record every invocation; only the clusterctl generate cluster
+# dispatch emits the fake manifest the harness pipes into kubectl apply.
+printf 'go %s\n' "$*" >> "${STUB_GO_CALLS:-/dev/null}"
+if [[ "${1:-}" == "tool" && "${2:-}" == "clusterctl" \
+  && "${3:-}" == "generate" && "${4:-}" == "cluster" ]]; then
+  printf 'apiVersion: cluster.x-k8s.io/v1beta1\nkind: Cluster\nmetadata:\n  name: k8labs\n'
+fi
+exit 0
+STUB
+  chmod +x "${stubbin}/go"
+
+  cat > "${stubbin}/kubectl" <<'STUB'
+#!/usr/bin/env bash
+# kubectl stub: satisfy the full-lab flow without a cluster. The readyz poll
+# succeeds, apply/delete succeed, get machine reports one Ready machine, and
+# an apply reading stdin (-f -) captures the piped manifest for the test.
+printf 'kubectl %s\n' "$*" >> "${STUB_KUBECTL_CALLS:-/dev/null}"
+case "$*" in
+  *--raw=*readyz*) exit 0 ;;
+  apply*)
+    if [[ " $* " == *" -f - "* ]]; then
+      cat > "${STUB_KUBECTL_STDIN:-/dev/null}"
+    fi
+    exit 0 ;;
+  delete*) exit 0 ;;
+  get*)
+    if [[ "$*" == *"metadata.name"* ]]; then
+      printf 'vm-1\n'
+    else
+      printf 'True\n'
+    fi
+    exit 0 ;;
+  *)
+    printf 'kubectl stub: unexpected invocation: %s\n' "$*" >&2
+    exit 1 ;;
+esac
+STUB
+  chmod +x "${stubbin}/kubectl"
+
+  rc=0
+  out="$(PATH="${stubbin}:${PATH}" run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${base}/base.qcow2" \
+    "FIRMWARE=${base}/firmware.fd" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out" \
+    "SMOKE=0" \
+    "STUB_GO_CALLS=${calls}" \
+    "STUB_KUBECTL_CALLS=${kube_calls}" \
+    "STUB_KUBECTL_STDIN=${stdin_rec}")" || rc=$?
+
+  if [[ "${rc}" -ne 0 ]]; then
+    missing "harness did not complete the full-lab flow (exit ${rc}); expected 0 with stubbed go and kubectl: ${out}"
+  fi
+
+  # The apply_templates contract: generate via `go tool clusterctl` with the
+  # pinned cluster identity and flags, piped into `kubectl apply -f -`.
+  local expected="go tool clusterctl generate cluster k8labs --namespace default --infrastructure hypervisor --kubernetes-version v1.32.13 --control-plane-machine-count 1 --worker-machine-count 3"
+  if [[ ! -s "${calls}" ]]; then
+    missing "go tool clusterctl generate cluster was never invoked (no recorded go calls in ${calls})"
+  elif grep -Fq -- "${expected}" "${calls}"; then
+    ok "go tool clusterctl generate cluster invoked with the pinned cluster identity and flags"
+  else
+    missing "go tool clusterctl generate cluster invocation does not match the pinned flags; recorded: $(tr '\n' '|' < "${calls}")"
+  fi
+
+  if [[ -s "${stdin_rec}" ]]; then
+    if grep -Fq -- "apiVersion: cluster.x-k8s.io/v1beta1" "${stdin_rec}"; then
+      ok "kubectl apply received the generated manifest on stdin"
+    else
+      missing "kubectl apply stdin does not carry the generated manifest: $(tr '\n' '|' < "${stdin_rec}")"
+    fi
+  else
+    missing "kubectl apply never read a manifest from stdin (-f -): ${stdin_rec} is empty"
   fi
 }
 
@@ -457,6 +743,9 @@ main() {
   test_missing_base_image || :
   test_missing_firmware || :
   test_invalid_state_dir || :
+  test_invalid_out_dir || :
+  test_requires_go || :
+  test_apply_templates_flow || :
   test_help || :
 
   if [[ "${problems}" -gt 0 ]]; then
