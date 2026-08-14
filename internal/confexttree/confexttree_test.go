@@ -317,10 +317,30 @@ func TestExtensionReleaseMetadata(t *testing.T) {
 		key  string
 		want string
 	}{
-		{name: "z-etcd", tree: cpTree, key: "z-etcd/etc/extension-release.d/extension-release.z-etcd", want: "ID=fedora\nVERSION_ID=44\nKERNEL_VERSION=7.1\nEXTENSION=z-etcd\n"},
-		{name: "z-kubernetes-cp", tree: cpTree, key: "z-kubernetes-cp/etc/extension-release.d/extension-release.z-kubernetes-cp", want: "ID=fedora\nVERSION_ID=44\nKERNEL_VERSION=7.1\nEXTENSION=z-kubernetes-cp\n"},
-		{name: "z-kubelet-cp1", tree: cpTree, key: "z-kubelet-cp1/etc/extension-release.d/extension-release.z-kubelet-cp1", want: "ID=fedora\nVERSION_ID=44\nKERNEL_VERSION=7.1\nEXTENSION=z-kubelet-cp1\n"},
-		{name: "z-kubelet-worker1", tree: workerTree, key: "z-kubelet-worker1/etc/extension-release.d/extension-release.z-kubelet-worker1", want: "ID=fedora\nVERSION_ID=44\nKERNEL_VERSION=7.1\nEXTENSION=z-kubelet-worker1\n"},
+		{
+			name: "z-etcd",
+			tree: cpTree,
+			key:  "z-etcd/etc/extension-release.d/extension-release.z-etcd",
+			want: "ID=fedora\nVERSION_ID=44\nKERNEL_VERSION=7.1\nEXTENSION=z-etcd\n",
+		},
+		{
+			name: "z-kubernetes-cp",
+			tree: cpTree,
+			key:  "z-kubernetes-cp/etc/extension-release.d/extension-release.z-kubernetes-cp",
+			want: "ID=fedora\nVERSION_ID=44\nKERNEL_VERSION=7.1\nEXTENSION=z-kubernetes-cp\n",
+		},
+		{
+			name: "z-kubelet-cp1",
+			tree: cpTree,
+			key:  "z-kubelet-cp1/etc/extension-release.d/extension-release.z-kubelet-cp1",
+			want: "ID=fedora\nVERSION_ID=44\nKERNEL_VERSION=7.1\nEXTENSION=z-kubelet-cp1\n",
+		},
+		{
+			name: "z-kubelet-worker1",
+			tree: workerTree,
+			key:  "z-kubelet-worker1/etc/extension-release.d/extension-release.z-kubelet-worker1",
+			want: "ID=fedora\nVERSION_ID=44\nKERNEL_VERSION=7.1\nEXTENSION=z-kubelet-worker1\n",
+		},
 	}
 	for _, tt := range metadata {
 		t.Run(tt.name, func(t *testing.T) {

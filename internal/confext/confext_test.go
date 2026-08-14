@@ -214,9 +214,28 @@ func TestBuildRawsInvokesMksquashfsPerConfext(t *testing.T) {
 	}
 
 	want := []recordedCall{
-		{name: "mksquashfs", args: []string{filepath.Join(staging, "z-etcd"), filepath.Join(out, "z-etcd.raw"), "-noappend", "-all-root"}},
-		{name: "mksquashfs", args: []string{filepath.Join(staging, "z-kubernetes-cp"), filepath.Join(out, "z-kubernetes-cp.raw"), "-noappend", "-all-root"}},
-		{name: "mksquashfs", args: []string{filepath.Join(staging, "z-kubelet-node1"), filepath.Join(out, "z-kubelet-node1.raw"), "-noappend", "-all-root"}},
+		{
+			name: "mksquashfs",
+			args: []string{filepath.Join(staging, "z-etcd"), filepath.Join(out, "z-etcd.raw"), "-noappend", "-all-root"},
+		},
+		{
+			name: "mksquashfs",
+			args: []string{
+				filepath.Join(staging, "z-kubernetes-cp"),
+				filepath.Join(out, "z-kubernetes-cp.raw"),
+				"-noappend",
+				"-all-root",
+			},
+		},
+		{
+			name: "mksquashfs",
+			args: []string{
+				filepath.Join(staging, "z-kubelet-node1"),
+				filepath.Join(out, "z-kubelet-node1.raw"),
+				"-noappend",
+				"-all-root",
+			},
+		},
 	}
 	// Invocation order is not part of the contract; compare as multisets
 	// keyed by the source tree path.

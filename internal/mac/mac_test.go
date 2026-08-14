@@ -155,7 +155,13 @@ func TestDeriveSetStability(t *testing.T) {
 	for i := range machines {
 		machineName := fmt.Sprintf("worker-%02d", i)
 		if addr := mac.Derive(clusterName, machineName); addr != byMachine[machineName] {
-			t.Errorf("Derive(%q, %q) changed between passes: first %q, second %q", clusterName, machineName, byMachine[machineName], addr)
+			t.Errorf(
+				"Derive(%q, %q) changed between passes: first %q, second %q",
+				clusterName,
+				machineName,
+				byMachine[machineName],
+				addr,
+			)
 		}
 	}
 }

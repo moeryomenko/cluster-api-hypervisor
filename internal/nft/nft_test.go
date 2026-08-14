@@ -238,8 +238,12 @@ func TestDeleteToleratesMissingTable(t *testing.T) {
 		runner *fakeRunner
 	}{
 		{
-			name:   "missing table detail in output",
-			runner: &fakeRunner{out: []byte("Error: Could not process rule: No such file or directory\n"), err: errors.New("exit status 1"), failOn: 1},
+			name: "missing table detail in output",
+			runner: &fakeRunner{
+				out:    []byte("Error: Could not process rule: No such file or directory\n"),
+				err:    errors.New("exit status 1"),
+				failOn: 1,
+			},
 		},
 		{
 			name:   "missing table detail in error",

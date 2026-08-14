@@ -217,11 +217,21 @@ func TestHypervisorMachineValidateUpdate(t *testing.T) {
 	}{
 		{name: "valid to valid", oldObj: validMachine(), newObj: validMachine(), wantErr: false},
 		{name: "valid to malformed mac", oldObj: validMachine(), newObj: withMAC(validMachine(), "not-a-mac"), wantErr: true},
-		{name: "valid to out-of-family mac", oldObj: validMachine(), newObj: withMAC(validMachine(), "00:11:22:33:44:55"), wantErr: true},
+		{
+			name:    "valid to out-of-family mac",
+			oldObj:  validMachine(),
+			newObj:  withMAC(validMachine(), "00:11:22:33:44:55"),
+			wantErr: true,
+		},
 		{name: "valid to zero cpu", oldObj: validMachine(), newObj: withCPU(validMachine(), 0), wantErr: true},
 		{name: "valid to zero ram", oldObj: validMachine(), newObj: withRAM(validMachine(), 0), wantErr: true},
 		{name: "valid to zero disk", oldObj: validMachine(), newObj: withDisk(validMachine(), 0), wantErr: true},
-		{name: "invalid old can be fixed", oldObj: withMAC(validMachine(), "not-a-mac"), newObj: validMachine(), wantErr: false},
+		{
+			name:    "invalid old can be fixed",
+			oldObj:  withMAC(validMachine(), "not-a-mac"),
+			newObj:  validMachine(),
+			wantErr: false,
+		},
 		{name: "wrong new object type", oldObj: validMachine(), newObj: &v1alpha1.HypervisorMachineList{}, wantErr: true},
 		{name: "wrong old object type", oldObj: &v1alpha1.HypervisorMachineList{}, newObj: validMachine(), wantErr: true},
 	}

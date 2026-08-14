@@ -150,7 +150,12 @@ func (r *HypervisorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 	if cluster == nil {
-		return r.recordFailure(ctx, cfg, "ClusterNotFound", fmt.Sprintf("linked Cluster %q not found", machine.Spec.ClusterName))
+		return r.recordFailure(
+			ctx,
+			cfg,
+			"ClusterNotFound",
+			fmt.Sprintf("linked Cluster %q not found", machine.Spec.ClusterName),
+		)
 	}
 
 	role := configRoleWorker
@@ -177,7 +182,12 @@ func (r *HypervisorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	kubeletCert, kubeletKey, err := r.GenerateKubeletCert(pk, nodeName)
 	if err != nil {
-		return r.recordFailureError(ctx, cfg, "KubeletCertGenerationFailed", fmt.Errorf("generate kubelet certificate: %w", err))
+		return r.recordFailureError(
+			ctx,
+			cfg,
+			"KubeletCertGenerationFailed",
+			fmt.Errorf("generate kubelet certificate: %w", err),
+		)
 	}
 
 	serverURL := fmt.Sprintf("https://%s:%d", cpIP, cpPort)
@@ -256,7 +266,10 @@ func (r *HypervisorConfigReconciler) recordFailureError(
 // owningMachine resolves the CAPI Machine that owns the config, through the
 // owner reference of Kind Machine in the cluster-api group. A config with no
 // owning Machine resolves to nil.
-func (r *HypervisorConfigReconciler) owningMachine(ctx context.Context, cfg *bootstrapv1alpha1.HypervisorConfig) (*clusterv1.Machine, error) {
+func (r *HypervisorConfigReconciler) owningMachine(
+	ctx context.Context,
+	cfg *bootstrapv1alpha1.HypervisorConfig,
+) (*clusterv1.Machine, error) {
 	for _, ref := range cfg.OwnerReferences {
 		if ref.Kind != "Machine" {
 			continue
@@ -280,7 +293,10 @@ func (r *HypervisorConfigReconciler) owningMachine(ctx context.Context, cfg *boo
 // linkedCluster resolves the CAPI Cluster the owning Machine belongs to,
 // through machine.spec.clusterName in the machine's namespace. A missing
 // Cluster resolves to nil.
-func (r *HypervisorConfigReconciler) linkedCluster(ctx context.Context, machine *clusterv1.Machine) (*clusterv1.Cluster, error) {
+func (r *HypervisorConfigReconciler) linkedCluster(
+	ctx context.Context,
+	machine *clusterv1.Machine,
+) (*clusterv1.Cluster, error) {
 	if machine.Spec.ClusterName == "" {
 		return nil, nil
 	}
@@ -332,7 +348,10 @@ func (r *HypervisorConfigReconciler) controlPlaneAddress(
 
 // machineInternalIP returns the static internal IP of the HypervisorMachine
 // backing the given CAPI Machine, when the machine holds one.
-func (r *HypervisorConfigReconciler) machineInternalIP(ctx context.Context, machine *clusterv1.Machine) (string, bool, error) {
+func (r *HypervisorConfigReconciler) machineInternalIP(
+	ctx context.Context,
+	machine *clusterv1.Machine,
+) (string, bool, error) {
 	ref := machine.Spec.InfrastructureRef
 	if ref.Kind != "HypervisorMachine" || ref.Name == "" {
 		return "", false, nil
@@ -366,7 +385,10 @@ func (r *HypervisorConfigReconciler) machineInternalIP(ctx context.Context, mach
 // linkedHypervisorCluster resolves the HypervisorCluster of the CAPI Cluster
 // through its infrastructure reference, or nil when the reference is absent
 // or missing.
-func (r *HypervisorConfigReconciler) linkedHypervisorCluster(ctx context.Context, cluster *clusterv1.Cluster) (*infrastructurev1alpha1.HypervisorCluster, error) {
+func (r *HypervisorConfigReconciler) linkedHypervisorCluster(
+	ctx context.Context,
+	cluster *clusterv1.Cluster,
+) (*infrastructurev1alpha1.HypervisorCluster, error) {
 	ref := cluster.Spec.InfrastructureRef
 	if ref == nil || ref.Kind != "HypervisorCluster" || ref.Name == "" {
 		return nil, nil
@@ -415,7 +437,11 @@ func (r *HypervisorConfigReconciler) clusterPKI(
 
 // persistPKISecret stores the cluster PKI in the conventional <cluster>-pki
 // Secret whose data keys are exactly the pki.ClusterPKI field names.
-func (r *HypervisorConfigReconciler) persistPKISecret(ctx context.Context, cfg *bootstrapv1alpha1.HypervisorConfig, pk pki.ClusterPKI) error {
+func (r *HypervisorConfigReconciler) persistPKISecret(
+	ctx context.Context,
+	cfg *bootstrapv1alpha1.HypervisorConfig,
+	pk pki.ClusterPKI,
+) error {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: cfg.Spec.ClusterName + "-pki", Namespace: cfg.Namespace},
 		Data:       clusterPKISecretData(pk),
@@ -478,7 +504,12 @@ func (r *HypervisorConfigReconciler) renderKubeconfigs(
 // persistDataSecret writes the tree.json blob as the single data key of the
 // Secret named name, creating it when absent and updating it in place when it
 // already exists so repeated reconciles never grow the Secret set.
-func (r *HypervisorConfigReconciler) persistDataSecret(ctx context.Context, cfg *bootstrapv1alpha1.HypervisorConfig, name string, blob []byte) error {
+func (r *HypervisorConfigReconciler) persistDataSecret(
+	ctx context.Context,
+	cfg *bootstrapv1alpha1.HypervisorConfig,
+	name string,
+	blob []byte,
+) error {
 	key := client.ObjectKey{Namespace: cfg.Namespace, Name: name}
 	secret := &corev1.Secret{}
 	err := r.Get(ctx, key, secret)
@@ -571,7 +602,11 @@ func decodeClusterPKI(data map[string][]byte) (pki.ClusterPKI, error) {
 
 // markDataSecretAvailable upserts the DataSecretAvailable condition on the
 // config status with the given status, reason, and message.
-func markDataSecretAvailable(cfg *bootstrapv1alpha1.HypervisorConfig, status corev1.ConditionStatus, reason, message string) {
+func markDataSecretAvailable(
+	cfg *bootstrapv1alpha1.HypervisorConfig,
+	status corev1.ConditionStatus,
+	reason, message string,
+) {
 	for i := range cfg.Status.Conditions {
 		if cfg.Status.Conditions[i].Type != dataSecretAvailableCondition {
 			continue
@@ -621,7 +656,10 @@ func (r *HypervisorConfigReconciler) SetupWithManager(mgr ctrl.Manager, opts ...
 // machineToHypervisorConfig maps a CAPI Machine event to the configs it
 // bootstraps: the bootstrap ConfigRef when it names a HypervisorConfig, and
 // the configs that carry the Machine as their owner reference as a fallback.
-func (r *HypervisorConfigReconciler) machineToHypervisorConfig(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *HypervisorConfigReconciler) machineToHypervisorConfig(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
 	machine, ok := obj.(*clusterv1.Machine)
 	if !ok {
 		return nil

@@ -93,13 +93,15 @@ func TestHypervisorClusterDefaulting(t *testing.T) {
 		},
 		{
 			name: "user values are preserved",
-			give: &v1alpha1.HypervisorCluster{Spec: v1alpha1.HypervisorClusterSpec{Network: v1alpha1.HypervisorClusterNetworkSpec{
-				CIDR:       "10.0.0.0/16",
-				Gateway:    "10.0.0.1",
-				DNSIP:      "10.0.0.1",
-				BridgeName: "br-lab",
-				NATTable:   "lab-nat",
-			}}},
+			give: &v1alpha1.HypervisorCluster{
+				Spec: v1alpha1.HypervisorClusterSpec{Network: v1alpha1.HypervisorClusterNetworkSpec{
+					CIDR:       "10.0.0.0/16",
+					Gateway:    "10.0.0.1",
+					DNSIP:      "10.0.0.1",
+					BridgeName: "br-lab",
+					NATTable:   "lab-nat",
+				}},
+			},
 			want: v1alpha1.HypervisorClusterNetworkSpec{
 				CIDR:       "10.0.0.0/16",
 				Gateway:    "10.0.0.1",
@@ -110,9 +112,11 @@ func TestHypervisorClusterDefaulting(t *testing.T) {
 		},
 		{
 			name: "only the missing fields are defaulted",
-			give: &v1alpha1.HypervisorCluster{Spec: v1alpha1.HypervisorClusterSpec{Network: v1alpha1.HypervisorClusterNetworkSpec{
-				CIDR: "172.16.0.0/12",
-			}}},
+			give: &v1alpha1.HypervisorCluster{
+				Spec: v1alpha1.HypervisorClusterSpec{Network: v1alpha1.HypervisorClusterNetworkSpec{
+					CIDR: "172.16.0.0/12",
+				}},
+			},
 			want: v1alpha1.HypervisorClusterNetworkSpec{
 				CIDR:       "172.16.0.0/12",
 				BridgeName: "k8sbr0",
@@ -121,10 +125,12 @@ func TestHypervisorClusterDefaulting(t *testing.T) {
 		},
 		{
 			name: "gateway and dnsIP have no defaults",
-			give: &v1alpha1.HypervisorCluster{Spec: v1alpha1.HypervisorClusterSpec{Network: v1alpha1.HypervisorClusterNetworkSpec{
-				BridgeName: "br-x",
-				NATTable:   "nat-x",
-			}}},
+			give: &v1alpha1.HypervisorCluster{
+				Spec: v1alpha1.HypervisorClusterSpec{Network: v1alpha1.HypervisorClusterNetworkSpec{
+					BridgeName: "br-x",
+					NATTable:   "nat-x",
+				}},
+			},
 			want: v1alpha1.HypervisorClusterNetworkSpec{
 				CIDR:       "192.168.124.0/24",
 				BridgeName: "br-x",
@@ -171,7 +177,11 @@ func TestHypervisorClusterValidateCreate(t *testing.T) {
 		{name: "gateway is not an ip", give: withGateway(validCluster(), "gateway"), wantErr: true},
 		{name: "gateway is a cidr not an ip", give: withGateway(validCluster(), "10.0.0.0/24"), wantErr: true},
 		{name: "gateway octet out of range", give: withGateway(validCluster(), "999.1.1.1"), wantErr: true},
-		{name: "invalid cidr and gateway combined", give: withGateway(withCIDR(validCluster(), "not-a-cidr"), "gateway"), wantErr: true},
+		{
+			name:    "invalid cidr and gateway combined",
+			give:    withGateway(withCIDR(validCluster(), "not-a-cidr"), "gateway"),
+			wantErr: true,
+		},
 		{name: "wrong object type", give: &v1alpha1.HypervisorClusterList{}, wantErr: true},
 		{name: "nil object", give: nil, wantErr: true},
 	}
@@ -206,11 +216,31 @@ func TestHypervisorClusterValidateUpdate(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "valid to valid", oldObj: validCluster(), newObj: validCluster(), wantErr: false},
-		{name: "valid to invalid cidr", oldObj: validCluster(), newObj: withCIDR(validCluster(), "not-a-cidr"), wantErr: true},
-		{name: "valid to bad gateway", oldObj: validCluster(), newObj: withGateway(validCluster(), "10.0.0.0/24"), wantErr: true},
+		{
+			name:    "valid to invalid cidr",
+			oldObj:  validCluster(),
+			newObj:  withCIDR(validCluster(), "not-a-cidr"),
+			wantErr: true,
+		},
+		{
+			name:    "valid to bad gateway",
+			oldObj:  validCluster(),
+			newObj:  withGateway(validCluster(), "10.0.0.0/24"),
+			wantErr: true,
+		},
 		{name: "valid to empty gateway", oldObj: validCluster(), newObj: withGateway(validCluster(), ""), wantErr: false},
-		{name: "invalid old can be fixed", oldObj: withCIDR(validCluster(), "not-a-cidr"), newObj: validCluster(), wantErr: false},
-		{name: "invalid to invalid", oldObj: withCIDR(validCluster(), "not-a-cidr"), newObj: withGateway(validCluster(), "gateway"), wantErr: true},
+		{
+			name:    "invalid old can be fixed",
+			oldObj:  withCIDR(validCluster(), "not-a-cidr"),
+			newObj:  validCluster(),
+			wantErr: false,
+		},
+		{
+			name:    "invalid to invalid",
+			oldObj:  withCIDR(validCluster(), "not-a-cidr"),
+			newObj:  withGateway(validCluster(), "gateway"),
+			wantErr: true,
+		},
 		{name: "wrong new object type", oldObj: validCluster(), newObj: &v1alpha1.HypervisorClusterList{}, wantErr: true},
 		{name: "wrong old object type", oldObj: &v1alpha1.HypervisorClusterList{}, newObj: validCluster(), wantErr: true},
 	}

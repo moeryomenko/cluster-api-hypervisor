@@ -179,13 +179,42 @@ type recordingBuildTree struct {
 }
 
 // build implements the BuildTree seam.
-func (b *recordingBuildTree) build(role, cpIP, nodeName string, pk pki.ClusterPKI, kubeletCert, kubeletKey []byte, kubeconfigs map[string][]byte, encryptionConfig []byte) (map[string][]byte, error) {
-	b.calls = append(b.calls, buildTreeCall{role: role, cpIP: cpIP, nodeName: nodeName, pk: pk, kubeletCert: kubeletCert, kubeletKey: kubeletKey, kubeconfigs: kubeconfigs, encryptionConfig: encryptionConfig})
+func (b *recordingBuildTree) build(
+	role, cpIP, nodeName string,
+	pk pki.ClusterPKI,
+	kubeletCert, kubeletKey []byte,
+	kubeconfigs map[string][]byte,
+	encryptionConfig []byte,
+) (map[string][]byte, error) {
+	b.calls = append(
+		b.calls,
+		buildTreeCall{
+			role:             role,
+			cpIP:             cpIP,
+			nodeName:         nodeName,
+			pk:               pk,
+			kubeletCert:      kubeletCert,
+			kubeletKey:       kubeletKey,
+			kubeconfigs:      kubeconfigs,
+			encryptionConfig: encryptionConfig,
+		},
+	)
 	if b.err != nil {
 		return nil, b.err
 	}
 	if role == testConfigRoleControlPlane {
-		return confexttree.BuildControlPlane(cpIP, nodeName, pk, kubeletCert, kubeletKey, kubeconfigs["kubelet"], kubeconfigs["admin"], kubeconfigs["controller-manager"], kubeconfigs["scheduler"], encryptionConfig)
+		return confexttree.BuildControlPlane(
+			cpIP,
+			nodeName,
+			pk,
+			kubeletCert,
+			kubeletKey,
+			kubeconfigs["kubelet"],
+			kubeconfigs["admin"],
+			kubeconfigs["controller-manager"],
+			kubeconfigs["scheduler"],
+			encryptionConfig,
+		)
 	}
 	return confexttree.BuildWorker(nodeName, pk, kubeletCert, kubeletKey, kubeconfigs["kubelet"])
 }
@@ -259,8 +288,15 @@ type recordingRenderKubeconfig struct {
 }
 
 // render implements the RenderKubeconfig seam.
-func (r *recordingRenderKubeconfig) render(caPEM []byte, serverURL, user string, clientCert, clientKey []byte) ([]byte, error) {
-	r.calls = append(r.calls, renderKubeconfigCall{serverURL: serverURL, user: user, clientCert: clientCert, clientKey: clientKey})
+func (r *recordingRenderKubeconfig) render(
+	caPEM []byte,
+	serverURL, user string,
+	clientCert, clientKey []byte,
+) ([]byte, error) {
+	r.calls = append(
+		r.calls,
+		renderKubeconfigCall{serverURL: serverURL, user: user, clientCert: clientCert, clientKey: clientKey},
+	)
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -323,7 +359,15 @@ type linkedConfig struct {
 // is derived from the label; machineIP, when non-empty, is recorded as the
 // HypervisorMachine's InternalIP. mutate, when non-nil, adjusts the config
 // before it is created.
-func newLinkedConfig(t *testing.T, c client.Client, lc *linkedCluster, clusterName, machineName string, controlPlane bool, machineIP string, mutate func(*bootstrapv1alpha1.HypervisorConfig)) *linkedConfig {
+func newLinkedConfig(
+	t *testing.T,
+	c client.Client,
+	lc *linkedCluster,
+	clusterName, machineName string,
+	controlPlane bool,
+	machineIP string,
+	mutate func(*bootstrapv1alpha1.HypervisorConfig),
+) *linkedConfig {
 	t.Helper()
 	ctx := t.Context()
 
@@ -410,7 +454,11 @@ func (fx *configFixture) reconcileConfig(t *testing.T, cfg *bootstrapv1alpha1.Hy
 }
 
 // getConfig reads the config back from the API store.
-func getConfig(t *testing.T, c client.Client, cfg *bootstrapv1alpha1.HypervisorConfig) *bootstrapv1alpha1.HypervisorConfig {
+func getConfig(
+	t *testing.T,
+	c client.Client,
+	cfg *bootstrapv1alpha1.HypervisorConfig,
+) *bootstrapv1alpha1.HypervisorConfig {
 	t.Helper()
 	got := &bootstrapv1alpha1.HypervisorConfig{}
 	if err := c.Get(t.Context(), client.ObjectKeyFromObject(cfg), got); err != nil {
@@ -655,7 +703,12 @@ func TestConfigRoleDetection(t *testing.T) {
 		}
 
 		if len(fx.build.calls) != 1 || fx.build.calls[0].role != testConfigRoleWorker {
-			t.Errorf("BuildTree role = %q, want %q (calls %d)", roleOfBuildCalls(fx.build), testConfigRoleWorker, len(fx.build.calls))
+			t.Errorf(
+				"BuildTree role = %q, want %q (calls %d)",
+				roleOfBuildCalls(fx.build),
+				testConfigRoleWorker,
+				len(fx.build.calls),
+			)
 		}
 	})
 
@@ -664,15 +717,28 @@ func TestConfigRoleDetection(t *testing.T) {
 		setClusterEndpoint(t, c, lc, testCPIP, testCPPort)
 		// The Machine carries the control-plane label but the config pins the
 		// worker role; the rendered tree must be the worker tree.
-		lcfg := newLinkedConfig(t, c, lc, lc.name, "labeled-cp", true, testCPIP, func(cfg *bootstrapv1alpha1.HypervisorConfig) {
-			cfg.Spec.Role = testConfigRoleWorker
-		})
+		lcfg := newLinkedConfig(
+			t,
+			c,
+			lc,
+			lc.name,
+			"labeled-cp",
+			true,
+			testCPIP,
+			func(cfg *bootstrapv1alpha1.HypervisorConfig) {
+				cfg.Spec.Role = testConfigRoleWorker
+			},
+		)
 		fx.reconcileConfig(t, lcfg.cfg)
 
 		tree := configSecretTree(t, c, configDataSecretKey(t, c, lcfg.cfg))
 		wantTreeKeys(t, tree, workerTreeKeys("labeled-cp"))
 		if len(fx.build.calls) != 1 || fx.build.calls[0].role != testConfigRoleWorker {
-			t.Errorf("BuildTree role = %q, want the explicit worker role (calls %d)", roleOfBuildCalls(fx.build), len(fx.build.calls))
+			t.Errorf(
+				"BuildTree role = %q, want the explicit worker role (calls %d)",
+				roleOfBuildCalls(fx.build),
+				len(fx.build.calls),
+			)
 		}
 	})
 
@@ -821,7 +887,10 @@ func TestConfigIdempotentReconcile(t *testing.T) {
 	if got := countSecrets(t, c, lc.namespace); got != firstCount {
 		t.Errorf("Secret count changed across reconciles: %d -> %d", firstCount, got)
 	}
-	if got := dataSecretBlob(t, c, client.ObjectKey{Namespace: lc.namespace, Name: firstKey}); !bytes.Equal(got, firstBlob) {
+	if got := dataSecretBlob(t, c, client.ObjectKey{Namespace: lc.namespace, Name: firstKey}); !bytes.Equal(
+		got,
+		firstBlob,
+	) {
 		t.Error("tree.json blob changed across reconciles with unchanged inputs")
 	}
 }

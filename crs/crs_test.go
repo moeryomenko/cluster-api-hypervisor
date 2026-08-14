@@ -99,7 +99,11 @@ func TestCRSExistsAndParses(t *testing.T) {
 		switch pc.crs.Spec.Strategy {
 		case "", string(addonsv1.ClusterResourceSetStrategyApplyOnce):
 		default:
-			t.Errorf("%s: spec.strategy must be ApplyOnce (or omitted, which the controller defaults to ApplyOnce), got %q", pc.file, pc.crs.Spec.Strategy)
+			t.Errorf(
+				"%s: spec.strategy must be ApplyOnce (or omitted, which the controller defaults to ApplyOnce), got %q",
+				pc.file,
+				pc.crs.Spec.Strategy,
+			)
 		}
 	}
 }
@@ -108,12 +112,20 @@ func TestCRSSelector(t *testing.T) {
 	for _, pc := range clusterResourceSets(t) {
 		labels := pc.crs.Spec.ClusterSelector.MatchLabels
 		if labels == nil {
-			t.Errorf("%s: spec.clusterSelector.matchLabels must select the workload cluster via the %q label; an empty selector matches no Cluster", pc.file, clusterNameLabel)
+			t.Errorf(
+				"%s: spec.clusterSelector.matchLabels must select the workload cluster via the %q label; an empty selector matches no Cluster",
+				pc.file,
+				clusterNameLabel,
+			)
 			continue
 		}
 		value, ok := labels[clusterNameLabel]
 		if !ok {
-			t.Errorf("%s: spec.clusterSelector.matchLabels must include %q so the set applies only to the workload cluster carrying that label", pc.file, clusterNameLabel)
+			t.Errorf(
+				"%s: spec.clusterSelector.matchLabels must include %q so the set applies only to the workload cluster carrying that label",
+				pc.file,
+				clusterNameLabel,
+			)
 			continue
 		}
 		if value == "" {
@@ -125,13 +137,20 @@ func TestCRSSelector(t *testing.T) {
 func TestCRSResources(t *testing.T) {
 	for _, pc := range clusterResourceSets(t) {
 		if len(pc.crs.Spec.Resources) == 0 {
-			t.Errorf("%s: spec.resources must reference at least one ConfigMap carrying the rbac, cilium, coredns, and metrics-server manifests", pc.file)
+			t.Errorf(
+				"%s: spec.resources must reference at least one ConfigMap carrying the rbac, cilium, coredns, and metrics-server manifests",
+				pc.file,
+			)
 			continue
 		}
 		for i, res := range pc.crs.Spec.Resources {
 			path := fmt.Sprintf("%s: spec.resources[%d]", pc.file, i)
 			if res.Kind != string(addonsv1.ConfigMapClusterResourceSetResourceKind) {
-				t.Errorf("%s: kind must be ConfigMap (the cluster-ops manifests are delivered as ConfigMaps, not Secrets), got %q", path, res.Kind)
+				t.Errorf(
+					"%s: kind must be ConfigMap (the cluster-ops manifests are delivered as ConfigMaps, not Secrets), got %q",
+					path,
+					res.Kind,
+				)
 			}
 			if res.Name == "" {
 				t.Errorf("%s: name must reference a ConfigMap emitted by crs/populate.sh", path)
@@ -164,7 +183,10 @@ func TestCRSOrderingNote(t *testing.T) {
 	lower := strings.ToLower(text.String())
 	for _, component := range []string{"rbac", "cilium"} {
 		if !strings.Contains(lower, component) {
-			t.Errorf("the ordering note must mention %q: the rbac manifests must be applied before the cilium manifests", component)
+			t.Errorf(
+				"the ordering note must mention %q: the rbac manifests must be applied before the cilium manifests",
+				component,
+			)
 		}
 	}
 	if !strings.Contains(lower, "before") && !strings.Contains(lower, "then") && !strings.Contains(lower, "order") {
@@ -176,7 +198,10 @@ func TestPopulateScriptContract(t *testing.T) {
 	const script = "populate.sh"
 	info, err := os.Stat(script)
 	if err != nil {
-		t.Fatalf("crs/%s must exist: it turns the k8labs manifest directories into ConfigMaps referenced by the ClusterResourceSet", script)
+		t.Fatalf(
+			"crs/%s must exist: it turns the k8labs manifest directories into ConfigMaps referenced by the ClusterResourceSet",
+			script,
+		)
 	}
 	if info.Mode().Perm()&0o111 == 0 {
 		t.Fatalf("crs/%s must be executable", script)
@@ -205,7 +230,11 @@ func TestPopulateScriptContract(t *testing.T) {
 	// controller applies every string value of the data map as a YAML document.
 	// The fixture is a ServiceAccount named fixture-sa.
 	if !strings.Contains(data.String(), fixtureMarkerName) || !strings.Contains(data.String(), fixtureMarkerKind) {
-		t.Errorf("emitted ConfigMap data must embed the fixture manifest content (kind %s named %s)", fixtureMarkerKind, fixtureMarkerName)
+		t.Errorf(
+			"emitted ConfigMap data must embed the fixture manifest content (kind %s named %s)",
+			fixtureMarkerKind,
+			fixtureMarkerName,
+		)
 	}
 }
 
@@ -240,7 +269,9 @@ func clusterResourceSets(t *testing.T) []parsedCRS {
 		}
 	}
 	if len(found) == 0 {
-		t.Fatal("crs/ must ship at least one ClusterResourceSet manifest (kind ClusterResourceSet, group addons.cluster.x-k8s.io, version v1beta1)")
+		t.Fatal(
+			"crs/ must ship at least one ClusterResourceSet manifest (kind ClusterResourceSet, group addons.cluster.x-k8s.io, version v1beta1)",
+		)
 	}
 	return found
 }
@@ -304,8 +335,12 @@ func runPopulate(t *testing.T, script, sourceDir string) []byte {
 	cmd.Env = append(os.Environ(), "CRS_MANIFEST_DIR="+sourceDir)
 	envOut, envErr := cmd.CombinedOutput()
 	if envErr != nil {
-		t.Fatalf("populate.sh must accept the source manifest directory as its first argument (failed: %v) or via CRS_MANIFEST_DIR (failed: %v); output: %s",
-			argErr, envErr, envOut)
+		t.Fatalf(
+			"populate.sh must accept the source manifest directory as its first argument (failed: %v) or via CRS_MANIFEST_DIR (failed: %v); output: %s",
+			argErr,
+			envErr,
+			envOut,
+		)
 	}
 	return envOut
 }

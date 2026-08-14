@@ -67,20 +67,29 @@ func validControlPlane() *controlplanev1alpha1.HypervisorControlPlane {
 
 // withReplicas returns obj with the desired replica count replaced. Callers
 // pass a fresh validControlPlane() so table rows never share mutable state.
-func withReplicas(obj *controlplanev1alpha1.HypervisorControlPlane, replicas int32) *controlplanev1alpha1.HypervisorControlPlane {
+func withReplicas(
+	obj *controlplanev1alpha1.HypervisorControlPlane,
+	replicas int32,
+) *controlplanev1alpha1.HypervisorControlPlane {
 	obj.Spec.Replicas = replicas
 	return obj
 }
 
 // withVersion returns obj with the informational version replaced.
-func withVersion(obj *controlplanev1alpha1.HypervisorControlPlane, version string) *controlplanev1alpha1.HypervisorControlPlane {
+func withVersion(
+	obj *controlplanev1alpha1.HypervisorControlPlane,
+	version string,
+) *controlplanev1alpha1.HypervisorControlPlane {
 	obj.Spec.Version = version
 	return obj
 }
 
 // withInfrastructureRef returns obj with the machine template
 // infrastructureRef replaced.
-func withInfrastructureRef(obj *controlplanev1alpha1.HypervisorControlPlane, ref corev1.ObjectReference) *controlplanev1alpha1.HypervisorControlPlane {
+func withInfrastructureRef(
+	obj *controlplanev1alpha1.HypervisorControlPlane,
+	ref corev1.ObjectReference,
+) *controlplanev1alpha1.HypervisorControlPlane {
 	obj.Spec.MachineTemplate.InfrastructureRef = ref
 	return obj
 }
@@ -153,7 +162,11 @@ func TestHypervisorControlPlaneValidateCreate(t *testing.T) {
 		{name: "empty version is accepted", give: withVersion(validControlPlane(), ""), wantErr: false},
 		{name: "unset replicas are rejected", give: withReplicas(validControlPlane(), 0), wantErr: true},
 		{name: "negative replicas are rejected", give: withReplicas(validControlPlane(), -1), wantErr: true},
-		{name: "zero infrastructureRef is rejected", give: withInfrastructureRef(validControlPlane(), corev1.ObjectReference{}), wantErr: true},
+		{
+			name:    "zero infrastructureRef is rejected",
+			give:    withInfrastructureRef(validControlPlane(), corev1.ObjectReference{}),
+			wantErr: true,
+		},
 		{name: "wrong object type", give: &controlplanev1alpha1.HypervisorControlPlaneList{}, wantErr: true},
 		{name: "nil object", give: nil, wantErr: true},
 	}
@@ -189,12 +202,42 @@ func TestHypervisorControlPlaneValidateUpdate(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "valid to valid", oldObj: validControlPlane(), newObj: validControlPlane(), wantErr: false},
-		{name: "valid to zero replicas is rejected", oldObj: validControlPlane(), newObj: withReplicas(validControlPlane(), 0), wantErr: true},
-		{name: "valid to negative replicas is rejected", oldObj: validControlPlane(), newObj: withReplicas(validControlPlane(), -1), wantErr: true},
-		{name: "valid to zero infrastructureRef is rejected", oldObj: validControlPlane(), newObj: withInfrastructureRef(validControlPlane(), corev1.ObjectReference{}), wantErr: true},
-		{name: "invalid old can be fixed", oldObj: withReplicas(validControlPlane(), 0), newObj: validControlPlane(), wantErr: false},
-		{name: "wrong new object type", oldObj: validControlPlane(), newObj: &controlplanev1alpha1.HypervisorControlPlaneList{}, wantErr: true},
-		{name: "wrong old object type", oldObj: &controlplanev1alpha1.HypervisorControlPlaneList{}, newObj: validControlPlane(), wantErr: true},
+		{
+			name:    "valid to zero replicas is rejected",
+			oldObj:  validControlPlane(),
+			newObj:  withReplicas(validControlPlane(), 0),
+			wantErr: true,
+		},
+		{
+			name:    "valid to negative replicas is rejected",
+			oldObj:  validControlPlane(),
+			newObj:  withReplicas(validControlPlane(), -1),
+			wantErr: true,
+		},
+		{
+			name:    "valid to zero infrastructureRef is rejected",
+			oldObj:  validControlPlane(),
+			newObj:  withInfrastructureRef(validControlPlane(), corev1.ObjectReference{}),
+			wantErr: true,
+		},
+		{
+			name:    "invalid old can be fixed",
+			oldObj:  withReplicas(validControlPlane(), 0),
+			newObj:  validControlPlane(),
+			wantErr: false,
+		},
+		{
+			name:    "wrong new object type",
+			oldObj:  validControlPlane(),
+			newObj:  &controlplanev1alpha1.HypervisorControlPlaneList{},
+			wantErr: true,
+		},
+		{
+			name:    "wrong old object type",
+			oldObj:  &controlplanev1alpha1.HypervisorControlPlaneList{},
+			newObj:  validControlPlane(),
+			wantErr: true,
+		},
 	}
 	wh := &webhook.HypervisorControlPlaneWebhook{}
 	for _, tt := range tests {

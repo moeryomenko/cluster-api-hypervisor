@@ -176,7 +176,14 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 			return ctrl.Result{}, err
 		}
 		if _, err := r.CreateMachine(ctx, machine); err != nil {
-			r.Recorder.Eventf(cp, corev1.EventTypeWarning, "FailedCreateMachine", "failed to create Machine %q: %v", machineName, err)
+			r.Recorder.Eventf(
+				cp,
+				corev1.EventTypeWarning,
+				"FailedCreateMachine",
+				"failed to create Machine %q: %v",
+				machineName,
+				err,
+			)
 			return ctrl.Result{}, fmt.Errorf("create Machine %q: %w", machineName, err)
 		}
 	}
@@ -650,7 +657,11 @@ func (r *HypervisorControlPlaneReconciler) ensureKubeconfigSecret(
 
 // markControlPlaneReady upserts the ControlPlaneReady condition on the control
 // plane status with the given status, preserving any other conditions.
-func markControlPlaneReady(cp *controlplanev1alpha1.HypervisorControlPlane, status corev1.ConditionStatus, reason, message string) {
+func markControlPlaneReady(
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	status corev1.ConditionStatus,
+	reason, message string,
+) {
 	for i := range cp.Status.Conditions {
 		if cp.Status.Conditions[i].Type != controlPlaneReadyConditionType {
 			continue

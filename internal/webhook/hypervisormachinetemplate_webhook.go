@@ -80,7 +80,10 @@ func (w *HypervisorMachineTemplateWebhook) Default(_ context.Context, obj runtim
 // ValidateCreate always allows creation of a HypervisorMachineTemplate
 // regardless of its content; validation is limited to immutability on update.
 // Any non-HypervisorMachineTemplate object is rejected.
-func (w *HypervisorMachineTemplateWebhook) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (w *HypervisorMachineTemplateWebhook) ValidateCreate(
+	_ context.Context,
+	obj runtime.Object,
+) (admission.Warnings, error) {
 	if _, ok := obj.(*infrav1.HypervisorMachineTemplate); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorMachineTemplate but got a %T", obj))
 	}
@@ -124,7 +127,10 @@ func (w *HypervisorMachineTemplateWebhook) ValidateUpdate(
 // ValidateDelete always allows deletion of a HypervisorMachineTemplate
 // regardless of its content. Any non-HypervisorMachineTemplate object is
 // rejected.
-func (w *HypervisorMachineTemplateWebhook) ValidateDelete(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (w *HypervisorMachineTemplateWebhook) ValidateDelete(
+	_ context.Context,
+	obj runtime.Object,
+) (admission.Warnings, error) {
 	if _, ok := obj.(*infrav1.HypervisorMachineTemplate); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorMachineTemplate but got a %T", obj))
 	}

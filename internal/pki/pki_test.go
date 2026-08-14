@@ -73,8 +73,9 @@ import (
 	"net"
 	"testing"
 
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
 	"gopkg.in/yaml.v3"
+
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
 )
 
 // Compile-time pins: the exported type and functions must exist with exactly

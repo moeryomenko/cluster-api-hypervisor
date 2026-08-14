@@ -343,7 +343,13 @@ type linkedMachine struct {
 // HypervisorMachine carrying the owner reference to the Machine. When
 // withBootstrap is false the Machine is left without a bootstrap config ref,
 // so the controller's confext step has no Secret to read.
-func newLinkedMachine(t *testing.T, c client.Client, lc *linkedCluster, name string, withBootstrap bool) *linkedMachine {
+func newLinkedMachine(
+	t *testing.T,
+	c client.Client,
+	lc *linkedCluster,
+	name string,
+	withBootstrap bool,
+) *linkedMachine {
 	t.Helper()
 	ctx := t.Context()
 
@@ -1111,7 +1117,11 @@ func (fx *machineFixture) reconcileMachine(t *testing.T, hm *infrastructurev1alp
 }
 
 // getMachine reads the machine back from the API store.
-func getMachine(t *testing.T, c client.Client, hm *infrastructurev1alpha1.HypervisorMachine) *infrastructurev1alpha1.HypervisorMachine {
+func getMachine(
+	t *testing.T,
+	c client.Client,
+	hm *infrastructurev1alpha1.HypervisorMachine,
+) *infrastructurev1alpha1.HypervisorMachine {
 	t.Helper()
 	got := &infrastructurev1alpha1.HypervisorMachine{}
 	if err := c.Get(t.Context(), client.ObjectKeyFromObject(hm), got); err != nil {

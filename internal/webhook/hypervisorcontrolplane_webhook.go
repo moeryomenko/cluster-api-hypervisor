@@ -81,7 +81,10 @@ func (w *HypervisorControlPlaneWebhook) Default(_ context.Context, obj runtime.O
 // replica is required, and the machine template infrastructureRef must be a
 // usable reference with both kind and name set. The informational version
 // accepts any value, including empty.
-func (w *HypervisorControlPlaneWebhook) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (w *HypervisorControlPlaneWebhook) ValidateCreate(
+	_ context.Context,
+	obj runtime.Object,
+) (admission.Warnings, error) {
 	controlPlane, ok := obj.(*controlplanev1alpha1.HypervisorControlPlane)
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorControlPlane but got a %T", obj))
@@ -109,7 +112,10 @@ func (w *HypervisorControlPlaneWebhook) ValidateUpdate(
 
 // ValidateDelete always allows deletion of a HypervisorControlPlane regardless
 // of its content. Any non-HypervisorControlPlane object is rejected.
-func (w *HypervisorControlPlaneWebhook) ValidateDelete(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (w *HypervisorControlPlaneWebhook) ValidateDelete(
+	_ context.Context,
+	obj runtime.Object,
+) (admission.Warnings, error) {
 	if _, ok := obj.(*controlplanev1alpha1.HypervisorControlPlane); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorControlPlane but got a %T", obj))
 	}
@@ -150,7 +156,10 @@ func validateHypervisorControlPlane(controlPlane *controlplanev1alpha1.Hyperviso
 }
 
 // Default delegates to the runtime.Object-based implementation.
-func (d hypervisorControlPlaneDefaulter) Default(ctx context.Context, obj *controlplanev1alpha1.HypervisorControlPlane) error {
+func (d hypervisorControlPlaneDefaulter) Default(
+	ctx context.Context,
+	obj *controlplanev1alpha1.HypervisorControlPlane,
+) error {
 	return d.HypervisorControlPlaneWebhook.Default(ctx, obj)
 }
 

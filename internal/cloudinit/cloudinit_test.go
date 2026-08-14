@@ -22,8 +22,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
 	"gopkg.in/yaml.v3"
+
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
 )
 
 func validData() cloudinit.Data {

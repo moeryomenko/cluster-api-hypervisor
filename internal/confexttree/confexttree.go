@@ -131,7 +131,11 @@ func BuildWorker(
 // kubeletTree renders the z-kubelet-<node> tree: the node's kubelet kubeconfig
 // at kubelet.conf, the cluster CA certificate, the node's kubelet certificate
 // and key, and the extension-release metadata for the tree.
-func kubeletTree(nodeName string, pk pki.ClusterPKI, kubeletCert, kubeletKey, kubeletKubeconfig []byte) map[string][]byte {
+func kubeletTree(
+	nodeName string,
+	pk pki.ClusterPKI,
+	kubeletCert, kubeletKey, kubeletKubeconfig []byte,
+) map[string][]byte {
 	treeName := "z-kubelet-" + nodeName
 	return map[string][]byte{
 		treeName + "/etc/kubernetes/kubelet.conf":                           kubeletKubeconfig,

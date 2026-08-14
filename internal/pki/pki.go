@@ -305,7 +305,15 @@ func newCACertificate(cn string, key *rsa.PrivateKey) (*x509.Certificate, []byte
 
 // newLeafKeyAndCert generates a fresh key and a CA-signed leaf certificate
 // with the given parameters, returning both as PEM.
-func newLeafKeyAndCert(cn string, keyUsage x509.KeyUsage, extKeyUsage []x509.ExtKeyUsage, dnsNames []string, ipAddresses []net.IP, caCert *x509.Certificate, caKey crypto.Signer) (certPEM, keyPEM []byte, err error) {
+func newLeafKeyAndCert(
+	cn string,
+	keyUsage x509.KeyUsage,
+	extKeyUsage []x509.ExtKeyUsage,
+	dnsNames []string,
+	ipAddresses []net.IP,
+	caCert *x509.Certificate,
+	caKey crypto.Signer,
+) (certPEM, keyPEM []byte, err error) {
 	key, err := newKey()
 	if err != nil {
 		return nil, nil, err
@@ -325,7 +333,13 @@ func newLeafKeyAndCert(cn string, keyUsage x509.KeyUsage, extKeyUsage []x509.Ext
 // the given common name, key usage, extended key usage, DNS SANs, and IP
 // SANs. Every leaf shares the same validity window and gets a fresh random
 // serial number.
-func newLeafTemplate(cn string, keyUsage x509.KeyUsage, extKeyUsage []x509.ExtKeyUsage, dnsNames []string, ipAddresses []net.IP) (*x509.Certificate, error) {
+func newLeafTemplate(
+	cn string,
+	keyUsage x509.KeyUsage,
+	extKeyUsage []x509.ExtKeyUsage,
+	dnsNames []string,
+	ipAddresses []net.IP,
+) (*x509.Certificate, error) {
 	serial, err := newSerial()
 	if err != nil {
 		return nil, err

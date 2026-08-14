@@ -856,7 +856,11 @@ func mustGenerateClusterPKI(t *testing.T, cpIP, cpName string) pki.ClusterPKI {
 
 // getControlPlane reads the control plane back from the API store so the
 // readiness assertions observe the persisted status and conditions.
-func getControlPlane(t *testing.T, c client.Client, cp *controlplanev1alpha1.HypervisorControlPlane) *controlplanev1alpha1.HypervisorControlPlane {
+func getControlPlane(
+	t *testing.T,
+	c client.Client,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+) *controlplanev1alpha1.HypervisorControlPlane {
 	t.Helper()
 	got := &controlplanev1alpha1.HypervisorControlPlane{}
 	if err := c.Get(t.Context(), client.ObjectKeyFromObject(cp), got); err != nil {
@@ -879,7 +883,11 @@ func wantCPStatus(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane,
 
 // wantControlPlaneReadyCondition fails the test unless the control plane
 // carries a ControlPlaneReady condition with exactly the given status.
-func wantControlPlaneReadyCondition(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane, status corev1.ConditionStatus) {
+func wantControlPlaneReadyCondition(
+	t *testing.T,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	status corev1.ConditionStatus,
+) {
 	t.Helper()
 	for _, cond := range cp.Status.Conditions {
 		if cond.Type != controlPlaneReadyCondition {
@@ -899,7 +907,11 @@ func wantControlPlaneReadyNotTrue(t *testing.T, cp *controlplanev1alpha1.Hypervi
 	t.Helper()
 	for _, cond := range cp.Status.Conditions {
 		if cond.Type == controlPlaneReadyCondition && cond.Status == corev1.ConditionTrue {
-			t.Errorf("control plane reports %s=True (conditions %+v), want no ready condition", controlPlaneReadyCondition, cp.Status.Conditions)
+			t.Errorf(
+				"control plane reports %s=True (conditions %+v), want no ready condition",
+				controlPlaneReadyCondition,
+				cp.Status.Conditions,
+			)
 			return
 		}
 	}
@@ -962,7 +974,12 @@ func parseKubeconfig(t *testing.T, data []byte) kubeconfigYAML {
 // boots: the conventional same-name infrastructure object owned by the CAPI
 // Machine, reporting ip as its InternalIP when ip is non-empty (an empty ip
 // leaves the VM not yet up).
-func newControlPlaneInfraMachine(t *testing.T, c client.Client, lcp *linkedControlPlane, machineName, ip string) *infrastructurev1alpha1.HypervisorMachine {
+func newControlPlaneInfraMachine(
+	t *testing.T,
+	c client.Client,
+	lcp *linkedControlPlane,
+	machineName, ip string,
+) *infrastructurev1alpha1.HypervisorMachine {
 	t.Helper()
 	ctx := t.Context()
 
@@ -1012,7 +1029,12 @@ func wantRequeue(t *testing.T, res ctrl.Result) {
 // plane, and a first reconcile that creates the Machine, its bootstrap
 // config, and the cluster PKI Secret. The healthz seam returns healthResult
 // on every poll.
-func newReadinessControlPlane(t *testing.T, c client.Client, namespace string, healthResult error) (*controlPlaneFixture, *linkedCluster, *linkedControlPlane, pki.ClusterPKI) {
+func newReadinessControlPlane(
+	t *testing.T,
+	c client.Client,
+	namespace string,
+	healthResult error,
+) (*controlPlaneFixture, *linkedCluster, *linkedControlPlane, pki.ClusterPKI) {
 	t.Helper()
 	lc := newLinkedCluster(t, c, namespace, "capi-cluster")
 	machineName := lc.name + "-cp-0"
@@ -1405,7 +1427,12 @@ func TestControlPlaneScaleDown(t *testing.T) {
 	}
 	ref := retained.Spec.Bootstrap.ConfigRef
 	if ref.Name != machineConfigName(retained.Name) || ref.Kind != "HypervisorConfig" || ref.Namespace != lc.namespace {
-		t.Errorf("retained Machine configRef = %+v, want HypervisorConfig %q in %q", ref, machineConfigName(retained.Name), lc.namespace)
+		t.Errorf(
+			"retained Machine configRef = %+v, want HypervisorConfig %q in %q",
+			ref,
+			machineConfigName(retained.Name),
+			lc.namespace,
+		)
 	}
 	wantBootstrapConfigExists(t, c, lc.namespace, machineConfigName(retained.Name))
 

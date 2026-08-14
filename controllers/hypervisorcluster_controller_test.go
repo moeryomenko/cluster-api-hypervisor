@@ -419,7 +419,10 @@ func loadCRD(t *testing.T, path string) *apiextensionsv1.CustomResourceDefinitio
 // v1beta1OnlyCRD returns the CRD with every version but v1beta1 removed and
 // v1beta1 marked served and stored. See installCAPICoreCRDs for why the
 // cluster-api Machine CRD is installed this way.
-func v1beta1OnlyCRD(t *testing.T, crd *apiextensionsv1.CustomResourceDefinition) *apiextensionsv1.CustomResourceDefinition {
+func v1beta1OnlyCRD(
+	t *testing.T,
+	crd *apiextensionsv1.CustomResourceDefinition,
+) *apiextensionsv1.CustomResourceDefinition {
 	t.Helper()
 
 	versions := make([]apiextensionsv1.CustomResourceDefinitionVersion, 0, 1)
@@ -625,7 +628,14 @@ func newControlPlaneMachine(t *testing.T, c client.Client, lc *linkedCluster, ip
 // rendered config into a fresh temp dir, and the injected allocator
 // constructor. This composite literal pins the exact reconciler shape the
 // implementation must expose.
-func newTestReconciler(t *testing.T, c client.Client, ops *recordingLinkOps, dnsRunner *recordingDnsmasqRunner, nftRunner *recordingNftRunner, allocator *recordingAllocator) *HypervisorClusterReconciler {
+func newTestReconciler(
+	t *testing.T,
+	c client.Client,
+	ops *recordingLinkOps,
+	dnsRunner *recordingDnsmasqRunner,
+	nftRunner *recordingNftRunner,
+	allocator *recordingAllocator,
+) *HypervisorClusterReconciler {
 	t.Helper()
 
 	return &HypervisorClusterReconciler{
@@ -741,7 +751,8 @@ func TestReconcileMarksReadyAndCondition(t *testing.T) {
 	if !hc.Status.Ready {
 		t.Error("status.ready = false, want true")
 	}
-	if cond := findCondition(hc, clusterv1.InfrastructureReadyCondition); cond == nil || cond.Status != corev1.ConditionTrue {
+	if cond := findCondition(hc, clusterv1.InfrastructureReadyCondition); cond == nil ||
+		cond.Status != corev1.ConditionTrue {
 		t.Errorf("InfrastructureReady condition = %v, want True", cond)
 	}
 
@@ -1150,7 +1161,14 @@ func TestReconcileMissingClusterIsUntouched(t *testing.T) {
 // object key that does not exist returns no error and no requeue.
 func TestReconcileMissingObjectIsNoop(t *testing.T) {
 	c := mustReconcileClient(t)
-	r := newTestReconciler(t, c, newRecordingLinkOps(), &recordingDnsmasqRunner{}, &recordingNftRunner{}, &recordingAllocator{})
+	r := newTestReconciler(
+		t,
+		c,
+		newRecordingLinkOps(),
+		&recordingDnsmasqRunner{},
+		&recordingNftRunner{},
+		&recordingAllocator{},
+	)
 
 	key := client.ObjectKey{Namespace: "hc-missing-obj", Name: "does-not-exist"}
 	res, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})

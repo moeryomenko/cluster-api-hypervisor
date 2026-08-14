@@ -72,7 +72,11 @@ import (
 // the three lifecycle operations must exist with exactly these names,
 // types, and signatures, and the fake below must satisfy the runner seam.
 var (
-	_ dnsmasq.Config                                                = dnsmasq.Config{BridgeName: "", ListenAddress: "", Upstream: nil}
+	_ dnsmasq.Config = dnsmasq.Config{
+		BridgeName:    "",
+		ListenAddress: "",
+		Upstream:      nil,
+	}
 	_ func(dnsmasq.Config, dnsmasq.Runner, string) *dnsmasq.Manager = dnsmasq.NewManager
 	_ func(*dnsmasq.Manager) ([]byte, error)                        = (*dnsmasq.Manager).RenderConfig
 	_ func(*dnsmasq.Manager, context.Context) error                 = (*dnsmasq.Manager).Start
@@ -106,7 +110,10 @@ type recordingRunner struct {
 // default exec runner, not part of this contract.
 func (r *recordingRunner) Start(_ context.Context, name string, args []string, stdout, stderr io.Writer) error {
 	r.calls = append(r.calls, "start")
-	r.starts = append(r.starts, startCall{name: name, args: append([]string(nil), args...), stdout: stdout, stderr: stderr})
+	r.starts = append(
+		r.starts,
+		startCall{name: name, args: append([]string(nil), args...), stdout: stdout, stderr: stderr},
+	)
 
 	return r.startErr
 }

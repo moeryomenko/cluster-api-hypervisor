@@ -58,14 +58,15 @@ import (
 	"testing"
 	"time"
 
-	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
-	"github.com/moeryomenko/cluster-api-hypervisor/test/helpers"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
+	"github.com/moeryomenko/cluster-api-hypervisor/test/helpers"
 )
 
 // runningManager is a started provider binary process with its output
@@ -608,7 +609,12 @@ func newCAPIInfrastructureCluster(t *testing.T, c client.Client, namespace, name
 // carries the standard paused annotation so a registered cluster controller
 // must skip it. The freshly created object is returned so the test can pin
 // its resource version as the untouched baseline.
-func newPausedHypervisorCluster(t *testing.T, c client.Client, namespace string, cluster *clusterv1.Cluster) *infrastructurev1alpha1.HypervisorCluster {
+func newPausedHypervisorCluster(
+	t *testing.T,
+	c client.Client,
+	namespace string,
+	cluster *clusterv1.Cluster,
+) *infrastructurev1alpha1.HypervisorCluster {
 	t.Helper()
 
 	hc := &infrastructurev1alpha1.HypervisorCluster{
@@ -711,7 +717,13 @@ func scrapeMetrics(mgr *runningManager) (string, error) {
 
 // waitForControllerConcurrency polls the manager metrics endpoint until the
 // named controller reports the expected max-concurrent-reconciles value.
-func waitForControllerConcurrency(t *testing.T, mgr *runningManager, controller string, want int, timeout time.Duration) {
+func waitForControllerConcurrency(
+	t *testing.T,
+	mgr *runningManager,
+	controller string,
+	want int,
+	timeout time.Duration,
+) {
 	t.Helper()
 
 	re := regexp.MustCompile(`controller_runtime_max_concurrent_reconciles\{controller="` + controller + `"\} (\d+)`)
@@ -746,7 +758,9 @@ func waitForControllerConcurrency(t *testing.T, mgr *runningManager, controller 
 func waitForControllerReconcileSuccess(t *testing.T, mgr *runningManager, controller string, timeout time.Duration) {
 	t.Helper()
 
-	re := regexp.MustCompile(`controller_runtime_reconcile_total\{controller="` + controller + `",result="success"\} (\d+)`)
+	re := regexp.MustCompile(
+		`controller_runtime_reconcile_total\{controller="` + controller + `",result="success"\} (\d+)`,
+	)
 	deadline := time.Now().Add(timeout)
 	var lastBody string
 	for {
@@ -964,7 +978,11 @@ func assertNoControllerReconciles(t *testing.T, mgr *runningManager, controller 
 	deadline := time.Now().Add(timeout)
 	for {
 		if !mgr.alive() {
-			t.Fatalf("manager exited while watching controller %q reconcile activity; stderr:\n%s", controller, mgr.stderr.String())
+			t.Fatalf(
+				"manager exited while watching controller %q reconcile activity; stderr:\n%s",
+				controller,
+				mgr.stderr.String(),
+			)
 		}
 		body, err := scrapeMetrics(mgr)
 		if err == nil {
