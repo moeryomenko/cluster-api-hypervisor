@@ -43,6 +43,18 @@ linters:
       - linters:
           - staticcheck
         text: 'SA1019: "sigs\.k8s\.io/cluster-api/api/addons/v1beta1" is deprecated'
+      # Deliberate use of the old record.EventRecorder API via
+      # manager.Manager.GetEventRecorderFor. The reconcilers' Recorder fields
+      # are pinned to record.EventRecorder (the old events API) by the
+      # controller contract this provider implements; mgr.GetEventRecorder
+      # returns the incompatible new events.EventRecorder interface, so the
+      # mandated replacement would require a multi-file migration of every
+      # Recorder field and Eventf call site, which is a separate concern. The
+      # deprecation warning is expected and safe here; SA1019 stays enabled for
+      # every other deprecated API usage.
+      - linters:
+          - staticcheck
+        text: 'SA1019: mgr\.GetEventRecorderFor is deprecated: this uses the old events API and will be removed in a future release\. Please use GetEventRecorder instead\.'
 
 run:
   concurrency: 4
