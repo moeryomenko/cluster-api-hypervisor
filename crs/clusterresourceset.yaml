@@ -1,0 +1,72 @@
+# ClusterResourceSet that delivers the cluster-ops manifests to the workload
+# cluster: the rbac, cilium (including its gateway-api CRDs), coredns, and
+# metrics-server manifest sets, carried as ConfigMaps in this namespace.
+#
+# The ConfigMap names below are the names crs/populate.sh derives from the
+# k8labs manifest file names (extension dropped, lowercased, non-alphanumeric
+# runs collapsed to dashes). Generate the ConfigMaps with:
+#
+#   crs/populate.sh <k8labs>/rbac         | kubectl apply -f -
+#   crs/populate.sh <k8labs>/cilium/install | kubectl apply -f -
+#   crs/populate.sh <k8labs>/cilium       | kubectl apply -f -
+#   crs/populate.sh <k8labs>/coredns      | kubectl apply -f -
+#
+# The cluster.x-k8s.io/cluster-name selector value is a placeholder: the
+# Cluster object carries that label with the workload cluster name, and an
+# empty selector matches no Cluster. Replace the value with the workload
+# Cluster name before apply (or set the selector programmatically on Cluster
+# creation).
+#
+# The resources are listed in apply order: the rbac set must be applied before
+# the cilium sets. See README.md for the ordering contract.
+apiVersion: addons.cluster.x-k8s.io/v1beta1
+kind: ClusterResourceSet
+metadata:
+  name: cluster-ops
+  namespace: default
+spec:
+  clusterSelector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: example-cluster
+  resources:
+    - kind: ConfigMap
+      name: 00-kubelet-bootstrap
+    - kind: ConfigMap
+      name: 01-system-nodes
+    - kind: ConfigMap
+      name: 02-system-admin
+    - kind: ConfigMap
+      name: 03-kube-apiserver-proxy
+    - kind: ConfigMap
+      name: 00-gateway-api-crds
+    - kind: ConfigMap
+      name: 01-namespace
+    - kind: ConfigMap
+      name: 02-rbac
+    - kind: ConfigMap
+      name: 03-config
+    - kind: ConfigMap
+      name: 04-workloads
+    - kind: ConfigMap
+      name: gateway-class-config
+    - kind: ConfigMap
+      name: gatewayclass
+    - kind: ConfigMap
+      name: gateway
+    - kind: ConfigMap
+      name: http-route
+    - kind: ConfigMap
+      name: l2-policy
+    - kind: ConfigMap
+      name: lb-pool
+    - kind: ConfigMap
+      name: metrics-server
+    - kind: ConfigMap
+      name: corefile-configmap
+    - kind: ConfigMap
+      name: deployment
+    - kind: ConfigMap
+      name: rbac
+    - kind: ConfigMap
+      name: service
+  strategy: ApplyOnce
