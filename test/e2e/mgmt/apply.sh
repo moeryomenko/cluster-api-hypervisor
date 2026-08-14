@@ -3,9 +3,10 @@
 # apply.sh — bring the management plane up (idempotent).
 #
 # Reads MGMT_STATE_DIR (the state directory produced by pki.sh), validates the
-# environment, installs the quadlet units (test/e2e/mgmt/units/) with the state
-# directory rendered in, starts the management-plane services (etcd + apiserver)
-# via systemd, waits for the apiserver to answer /readyz, applies the CAPI core
+# environment, prepares every quadlet bind-mount source a fresh state lacks,
+# installs the quadlet units (test/e2e/mgmt/units/) with the state directory
+# rendered in, starts the management-plane services (etcd + apiserver) via
+# systemd, waits for the apiserver to answer /readyz, applies the CAPI core
 # manifests (test/e2e/mgmt/core/) to the bare apiserver, renders the clusterctl
 # configuration and the offline core override into the state directory,
 # initializes the Cluster API providers via `go tool clusterctl init`, patches
@@ -17,6 +18,14 @@
 # started, so the core manifests are applied only after the plane is up and
 # /readyz answers ok; the controller services start last, after clusterctl init
 # has created the core CRDs and the provider CRDs/webhooks.
+#
+# Mount sources and self-heal: a fresh management state (pki.sh) contains only
+# pki/ and kubeconfigs/, but the quadlet units bind-mount more: <state>/etcd
+# (etcd data), /tmp/ch-capi (cloud-hypervisor control sockets), the webhook
+# serving certificates, and the provider build directory. apply.sh creates
+# every such source with mkdir -p before any service starts, and resets failed
+# units (systemctl reset-failed) before each start so a previous crash-loop
+# (start-limit-hit) does not block a retry.
 #
 # Environment:
 #   MGMT_STATE_DIR   state directory with pki/ and kubeconfigs/ (required)
@@ -37,7 +46,8 @@
 # kubectl apply is declarative, clusterctl init skips providers of the same
 # name, type, and version already installed, kubectl patch of an identical
 # caBundle is a no-op, and installing the same quadlet units over themselves is
-# a no-op after systemctl daemon-reload.
+# a no-op after systemctl daemon-reload; mkdir -p of existing mount sources and
+# systemctl reset-failed of healthy units are silent no-ops.
 
 set -Eeuo pipefail
 shopt -s inherit_errexit
@@ -173,7 +183,15 @@ main() {
   [[ -d "${UNITS_DIR}" ]] || die "quadlet units directory missing: ${UNITS_DIR}"
   [[ -d "${CORE_DIR}" ]] || die "core manifests directory missing: ${CORE_DIR}"
 
-  # 1. Install the quadlet units with the actual state directory rendered in.
+  # 1. Prepare the quadlet bind-mount sources: a fresh management state holds
+  #    only pki/ and kubeconfigs/ (from pki.sh), but the quadlet units bind
+  #    <state>/etcd, /tmp/ch-capi (cloud-hypervisor control sockets), the
+  #    webhook serving certificates, and the provider build directory too. A
+  #    missing source makes podman fail with "statfs: no such file or
+  #    directory" and the unit crash-loops, so create every source first.
+  mkdir -p "${MGMT_STATE_DIR}/etcd" /tmp/ch-capi /etc/cluster-api-hypervisor/webhook-certs /var/lib/k8slab/build
+
+  # 2. Install the quadlet units with the actual state directory rendered in.
   #    Podman quadlet generates one systemd service per .container file.
   log "installing quadlet units into ${QUADLET_DIR}"
   install -d -m 0755 "${QUADLET_DIR}"
@@ -188,14 +206,17 @@ main() {
     log "installed ${installed}"
   done
 
-  # 2. Reload systemd so the (re)installed quadlet units take effect.
+  # 3. Reload systemd so the (re)installed quadlet units take effect.
   log "reloading systemd unit definitions"
   systemctl daemon-reload
 
-  # 3. Start the plane: etcd first, then the apiserver. systemctl start is a
-  #    no-op for already-running services, keeping the script idempotent.
+  # 4. Start the plane: etcd first, then the apiserver. systemctl start is a
+  #    no-op for already-running services, keeping the script idempotent. A
+  #    unit that previously crash-looped (start-limit-hit) blocks a retry
+  #    until its failure state is reset, so reset-failed precedes each start.
   local svc=""
   for svc in "${MGMT_PLANE_SERVICES[@]}"; do
+    systemctl reset-failed "${svc}" >/dev/null 2>&1 || true
     if systemctl start "${svc}" >/dev/null 2>&1; then
       log "started ${svc}"
     else
@@ -203,12 +224,12 @@ main() {
     fi
   done
 
-  # 4. Wait for the management apiserver: a first-time bring-up has no
+  # 5. Wait for the management apiserver: a first-time bring-up has no
   #    apiserver listening until the plane quadlets above are up, so the core
   #    manifests must not be applied before /readyz answers ok.
   wait_for_apiserver_ready "${admin_kubeconfig}"
 
-  # 5. Apply the CAPI core manifests to the management apiserver
+  # 6. Apply the CAPI core manifests to the management apiserver
   #    (declarative: re-running converges, never duplicates state).
   log "applying core manifests from ${CORE_DIR}"
   kubectl apply --kubeconfig="${admin_kubeconfig}" \
@@ -216,7 +237,7 @@ main() {
     -f "${CORE_DIR}/rbac.yaml" \
     -f "${CORE_DIR}/manager.yaml"
 
-  # 6. Render the clusterctl configuration from the committed template.
+  # 7. Render the clusterctl configuration from the committed template.
   #    clusterctl reads <config-home>/cluster-api/clusterctl.yaml, where the
   #    config home is $XDG_CONFIG_HOME; the state clusterctl/ subtree is used
   #    as that home so the configuration stays hermetic. The placeholder base
@@ -235,7 +256,7 @@ main() {
       "${CLUSTERCTL_TEMPLATE}" > "${rendered_config}"
   log "rendered clusterctl configuration at ${rendered_config}"
 
-  # 7. Assemble the offline core-CAPI override from the committed core
+  # 8. Assemble the offline core-CAPI override from the committed core
   #    manifests: the CRDs, RBAC, and manager deployment concatenated into a
   #    single multi-document YAML, with the metadata marker copied alongside.
   #    clusterctl init reads these instead of the upstream core components,
@@ -256,7 +277,7 @@ main() {
   cp "${CORE_DIR}/metadata.yaml" "${core_override_dir}/metadata.yaml"
   log "assembled core override at ${core_override_dir}"
 
-  # 8. Initialize the Cluster API providers with clusterctl. The rendered
+  # 9. Initialize the Cluster API providers with clusterctl. The rendered
   #    configuration registers the three hypervisor providers as local
   #    repositories and the overrides folder supplies the offline core
   #    components. The core version is pinned to v1.13.5 so clusterctl
@@ -274,7 +295,7 @@ main() {
     --control-plane hypervisor \
     --skip-cert-manager
 
-  # 9. Patch the management CA into the admission webhook configurations so
+  # 10. Patch the management CA into the admission webhook configurations so
   #    the provider webhook endpoints (served over TLS with the management CA
   #    as trust root) are accepted on first admission. Every webhook entry of
   #    both configurations receives the same bundle; patching an identical
@@ -297,10 +318,12 @@ main() {
     log "patched caBundle into ${webhook_config}"
   done
 
-  # 10. Start the controller services (CAPI core + hypervisor provider) now
+  # 11. Start the controller services (CAPI core + hypervisor provider) now
   #     that clusterctl init has created the core CRDs and the provider
-  #     CRDs/webhooks.
+  #     CRDs/webhooks. The same reset-failed self-heal as the plane start
+  #     clears a previous crash-loop before each start.
   for svc in "${MGMT_CONTROLLER_SERVICES[@]}"; do
+    systemctl reset-failed "${svc}" >/dev/null 2>&1 || true
     if systemctl start "${svc}" >/dev/null 2>&1; then
       log "started ${svc}"
     else
