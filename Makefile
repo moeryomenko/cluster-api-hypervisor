@@ -10,6 +10,14 @@ TEST ?= $(shell go list ./...)
 IMPORT_PATH := $(shell go list -m -f {{.Path}} | head -1)
 ENVTEST_K8S_VERSION ?= 1.35.0
 
+# Release tree knobs for the clusterctl provider packaging targets. OUT_DIR is
+# the release root (the default out/ is gitignored); callers such as the
+# contract test and the e2e scripts override it with a scratch directory.
+# RELEASE_VERSION names the version directory under each provider folder and
+# must stay in sync with the releaseSeries in metadata.yaml.
+OUT_DIR ?= out
+RELEASE_VERSION ?= v0.1.0
+
 # ENVTEST_ASSETS resolves the envtest binary directory used by the test
 # targets. A pre-set KUBEBUILDER_ASSETS wins; otherwise setup-envtest returns
 # (downloading on first use) the binary directory for the pinned Kubernetes
@@ -68,6 +76,29 @@ generate-check: ## Fail if a second generate changes tracked files
 	@$(MAKE) generate
 	@$(MAKE) generate
 	@git diff --no-ext-diff --exit-code
+
+.PHONY: components
+components: ## Build the clusterctl provider release tree under OUT_DIR
+	@set -e; \
+	tmp=$$(mktemp); \
+	trap 'rm -f "$$tmp"' EXIT; \
+	go tool kustomize build config/release > "$$tmp"; \
+	for provider in infrastructure bootstrap control-plane; do \
+		dir="$(OUT_DIR)/$${provider}-hypervisor/$(RELEASE_VERSION)"; \
+		mkdir -p "$$dir"; \
+		cp "$$tmp" "$$dir/$${provider}-components.yaml"; \
+		cp metadata.yaml "$$dir/metadata.yaml"; \
+		cp templates/cluster-template.yaml "$$dir/cluster-template.yaml"; \
+	done
+
+.PHONY: components-check
+components-check: ## Fail if a second make components changes the release tree
+	@set -e; \
+	test -d "$(OUT_DIR)" || { echo "components-check: $(OUT_DIR) missing; run make components first" >&2; exit 1; }; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	$(MAKE) components OUT_DIR="$$tmp"; \
+	diff -r "$$tmp" "$(OUT_DIR)"
 
 .PHONY: envtest
 envtest: ## Run the envtest suite (controllers CRD contract + helpers) against the pinned k8s binaries

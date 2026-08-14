@@ -3,6 +3,7 @@
 .plans/
 .agent/
 bin/
+/out/
 coverage.out
 *.sock
 
