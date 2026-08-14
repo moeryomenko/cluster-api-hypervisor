@@ -165,7 +165,7 @@ Wants=network-online.target
 [Container]
 Image=localhost/cluster-api-hypervisor:dev
 Network=host
-Privileged=yes
+PodmanArgs=--privileged
 AddCapability=NET_ADMIN
 
 # Read-only provider inputs: baked base image, firmware, and the writable
@@ -237,7 +237,7 @@ authentication inputs described in sections 4 and 7.
 |---|---|
 | `Network=host` | The provider owns the host network stack for the lab: it creates and enslaves the `k8sbr0` bridge and per-Machine TAPs via netlink, runs dnsmasq as a subprocess answering on the host `:53`, and manages the `inet k8slab` nftables table. These operations target the host network namespace, so the container must share it. |
 | `AddCapability=NET_ADMIN` | Netlink bridge/TAP management (creation, enslaving, address assignment) and nftables rule installation require `NET_ADMIN` in the shared network namespace. |
-| `Privileged=yes` | The provider spawns cloud-hypervisor subprocesses that need host device access (KVM) and full capability set for the host-ops model (bridge/NAT/VM management). This is the "privileged as needed" capability the provider's host-ops model requires; `NET_ADMIN` is listed explicitly so the requirement is visible even though privileged mode implies it. |
+| `PodmanArgs=--privileged` | Quadlet has no `Privileged=` key for `[Container]` units, so privileged mode is passed through as a podman argument. The provider spawns cloud-hypervisor subprocesses that need host device access (KVM) and full capability set for the host-ops model (bridge/NAT/VM management). This is the "privileged as needed" capability the provider's host-ops model requires; `NET_ADMIN` is listed explicitly so the requirement is visible even though privileged mode implies it. |
 
 ---
 
