@@ -1,0 +1,59 @@
+# kube-apiserver.quadlet — Kubernetes API server for the bare management plane.
+#
+# Serves the management endpoint https://127.0.0.1:6443 on the host loopback.
+# The serving certificate, the client CA, the service-account key pair, and the
+# etcd client credentials all come from the state directory produced by
+# pki.sh (test/e2e/mgmt/pki.sh):
+#
+#   host <state>/pki -> container /etc/kubernetes/mgmt/pki (ro)
+#
+# Host paths are examples; apply.sh rewrites the default <state> prefix
+# (/var/lib/k8slab/mgmt) to the configured MGMT_STATE_DIR when installing the
+# unit.
+
+[Unit]
+Description=kube-apiserver quadlet for the management plane
+After=network-online.target mgmt-etcd.service
+Wants=network-online.target
+Requires=mgmt-etcd.service
+
+[Container]
+Image=registry.k8s.io/kube-apiserver:v1.35.4
+Network=host
+
+# Bind to the host loopback only: the management endpoint every generated
+# kubeconfig points at.
+Exec=--advertise-address=127.0.0.1
+Exec=--bind-address=127.0.0.1
+Exec=--secure-port=6443
+Exec=--service-cluster-ip-range=10.96.0.0/12
+
+# Client authentication: every kubeconfig in <state>/kubeconfigs was signed by
+# the management CA, so the apiserver accepts the whole plane with one
+# --client-ca-file.
+Exec=--client-ca-file=/etc/kubernetes/mgmt/pki/ca.pem
+Exec=--tls-cert-file=/etc/kubernetes/mgmt/pki/apiserver.pem
+Exec=--tls-private-key-file=/etc/kubernetes/mgmt/pki/apiserver-key.pem
+
+# Service-account token signing: the private key signs, the public key
+# verifies (--service-account-key-file is the public part).
+Exec=--service-account-issuer=https://127.0.0.1:6443
+Exec=--service-account-key-file=/etc/kubernetes/mgmt/pki/service-account.pem
+Exec=--service-account-signing-key-file=/etc/kubernetes/mgmt/pki/service-account-key.pem
+
+# etcd backend over TLS with the dedicated etcd-client identity.
+Exec=--etcd-servers=https://127.0.0.1:2379
+Exec=--etcd-cafile=/etc/kubernetes/mgmt/pki/ca.pem
+Exec=--etcd-certfile=/etc/kubernetes/mgmt/pki/clients/etcd-client.pem
+Exec=--etcd-keyfile=/etc/kubernetes/mgmt/pki/clients/etcd-client-key.pem
+
+# Minimal authorization: the plane has no kube-controller-manager or RBAC
+# controller, so authorization stays permissive; authentication is still
+# enforced through the client CA above.
+Exec=--authorization-mode=AlwaysAllow
+Exec=--allow-privileged=true
+
+Mount=type=bind,source=/var/lib/k8slab/mgmt/pki,target=/etc/kubernetes/mgmt/pki,ro
+
+[Service]
+Restart=always

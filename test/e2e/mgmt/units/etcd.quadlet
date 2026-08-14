@@ -1,0 +1,49 @@
+# etcd.quadlet — etcd for the bare management plane.
+#
+# Runs etcd as a single-node cluster on the host loopback, TLS-only client and
+# peer endpoints. The management CA and the etcd server certificate come from
+# the state directory produced by pki.sh (test/e2e/mgmt/pki.sh):
+#
+#   host <state>/pki              -> container /etc/kubernetes/mgmt/pki (ro)
+#   host <state>/etcd             -> container /var/lib/k8slab/mgmt/etcd
+#
+# Host paths are examples; apply.sh rewrites the default <state> prefix
+# (/var/lib/k8slab/mgmt) to the configured MGMT_STATE_DIR when installing the
+# unit.
+
+[Unit]
+Description=etcd quadlet for the management plane
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=registry.k8s.io/etcd:3.7.0-0
+Network=host
+
+# Single-node cluster pinned to the host loopback.
+Exec=--name=mgmt-etcd
+Exec=--data-dir=/var/lib/k8slab/mgmt/etcd
+Exec=--listen-client-urls=https://127.0.0.1:2379
+Exec=--advertise-client-urls=https://127.0.0.1:2379
+Exec=--listen-peer-urls=https://127.0.0.1:2380
+Exec=--initial-advertise-peer-urls=https://127.0.0.1:2380
+Exec=--initial-cluster=mgmt-etcd=https://127.0.0.1:2380
+Exec=--initial-cluster-state=new
+
+# Client TLS: the apiserver authenticates with the etcd-client certificate.
+Exec=--client-cert-auth=true
+Exec=--cert-file=/etc/kubernetes/mgmt/pki/clients/etcd-server.pem
+Exec=--key-file=/etc/kubernetes/mgmt/pki/clients/etcd-server-key.pem
+Exec=--trusted-ca-file=/etc/kubernetes/mgmt/pki/ca.pem
+
+# Peer TLS: single node, but the endpoints stay TLS-only.
+Exec=--peer-cert-file=/etc/kubernetes/mgmt/pki/clients/etcd-server.pem
+Exec=--peer-key-file=/etc/kubernetes/mgmt/pki/clients/etcd-server-key.pem
+Exec=--peer-client-cert-auth=true
+Exec=--peer-trusted-ca-file=/etc/kubernetes/mgmt/pki/ca.pem
+
+Mount=type=bind,source=/var/lib/k8slab/mgmt/pki,target=/etc/kubernetes/mgmt/pki,ro
+Mount=type=bind,source=/var/lib/k8slab/mgmt/etcd,target=/var/lib/k8slab/mgmt/etcd
+
+[Service]
+Restart=always

@@ -1,0 +1,37 @@
+# cluster-api-core.quadlet — CAPI core controller for the bare management
+# plane.
+#
+# Runs the upstream cluster-api controller manager (v1.13.5, pinned release
+# series) against the bare apiserver. Its identity is the cluster-api-core
+# client certificate from pki.sh, wired through the core kubeconfig:
+#
+#   host <state>/kubeconfigs -> container /etc/kubernetes/mgmt/kubeconfigs (ro)
+#
+# The controller applies the core CRDs and RBAC shipped in test/e2e/mgmt/core/
+# (apply.sh does that before starting this unit).
+#
+# Host paths are examples; apply.sh rewrites the default <state> prefix
+# (/var/lib/k8slab/mgmt) to the configured MGMT_STATE_DIR when installing the
+# unit.
+
+[Unit]
+Description=Cluster API core controller quadlet for the management plane
+After=network-online.target mgmt-kube-apiserver.service
+Wants=network-online.target
+Requires=mgmt-kube-apiserver.service
+
+[Container]
+Image=registry.k8s.io/cluster-api/cluster-api-controller:v1.13.5
+Network=host
+
+# Management apiserver kubeconfig (the cluster-api-core identity).
+Exec=--kubeconfig=/etc/kubernetes/mgmt/kubeconfigs/cluster-api-core.conf
+
+# Single controller instance, no leader-election Lease coordination needed on
+# the bare plane.
+Exec=--leader-elect=false
+
+Mount=type=bind,source=/var/lib/k8slab/mgmt/kubeconfigs,target=/etc/kubernetes/mgmt/kubeconfigs,ro
+
+[Service]
+Restart=always

@@ -359,7 +359,7 @@ test_quadlet_units() {
         # kubeconfig, provider environment).
         check_contains "${path}" "Image=localhost/cluster-api-hypervisor:dev" || :
         check_contains "${path}" "Network=host" || :
-        check_contains "${path}" "Privileged=yes" || :
+        check_contains "${path}" "PodmanArgs=--privileged" || :
         check_contains "${path}" "AddCapability=NET_ADMIN" || :
         check_contains "${path}" "--kubeconfig=" || :
         check_contains "${path}" "Environment=HYPERVISOR_" || :
