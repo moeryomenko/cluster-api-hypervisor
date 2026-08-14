@@ -97,7 +97,7 @@ The rendered URLs must stay absolute: clusterctl resolves local repositories as
 `{basepath}/{provider-label}/{version}/{components.yaml}` with `file://` URLs
 (`clusterctl.yaml:26-37`). The management-plane bootstrap performs the same
 substitution when rendering into its hermetic state directory
-(`test/e2e/mgmt/apply.sh:219-236`).
+(`test/e2e/mgmt/apply.sh:240-257`).
 
 ## 5. Initialize the providers
 
@@ -109,14 +109,14 @@ The three hypervisor providers register from the local repositories of your
 configuration; `--skip-cert-manager` keeps the bootstrap offline (the webhook
 certificates are static, provisioned per `docs/install-contract.md` §7, so no
 cert-manager is involved). The repository drives the same command through
-`go tool clusterctl init` (`test/e2e/mgmt/apply.sh:267-275`).
+`go tool clusterctl init` (`test/e2e/mgmt/apply.sh:288-296`).
 
 The core Cluster API provider is initialized by default. To stay fully
 offline, pin the core version and pre-assemble a local override so clusterctl
 never fetches the upstream core components: the reference bootstrap assembles
 `<state>/clusterctl/overrides/cluster-api/v1.13.5/core-components.yaml` from the
 committed core manifests and passes `--core cluster-api:v1.13.5`
-(`test/e2e/mgmt/apply.sh:238-275`); the same files feed the `overridesFolder`
+(`test/e2e/mgmt/apply.sh:259-296`); the same files feed the `overridesFolder`
 key of the rendered configuration (`clusterctl.yaml:37`).
 
 ## 6. Patch the webhook CA bundles
@@ -139,7 +139,7 @@ kubectl patch validating-webhook-configuration --type=json \
 ```
 
 The reference bootstrap builds the per-index JSON patch for every webhook of
-both configurations from `<state>/pki/ca.pem` (`test/e2e/mgmt/apply.sh:277-298`);
+both configurations from `<state>/pki/ca.pem` (`test/e2e/mgmt/apply.sh:298-319`);
 patching an identical bundle is a no-op, keeping the step idempotent.
 
 ## 7. Create a cluster
@@ -217,5 +217,5 @@ labeled objects; Cluster-object deletion is the supported teardown path.
   Cluster-object deletion rather than clusterctl delete (§9).
 - **Offline e2e reference**: the full-lab harness provisions the plane with
   `clusterctl init` against locally assembled core overrides and never touches
-  the network (`test/e2e/mgmt/apply.sh:238-275`); the runbook's §5 init shows
+  the network (`test/e2e/mgmt/apply.sh:259-296`); the runbook's §5 init shows
   the same flags without the offline scaffolding.
