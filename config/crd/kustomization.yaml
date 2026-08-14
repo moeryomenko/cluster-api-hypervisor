@@ -1,0 +1,9 @@
+# The CRD base of the provider release: the five controller-gen CRDs emitted
+# by make generate into config/crd/bases. The release overlay builds from this
+# base so the components artifacts always carry the generated schemas.
+resources:
+- bases/bootstrap.cluster.x-k8s.io_hypervisorconfigs.yaml
+- bases/controlplane.cluster.x-k8s.io_hypervisorcontrolplanes.yaml
+- bases/infrastructure.cluster.x-k8s.io_hypervisorclusters.yaml
+- bases/infrastructure.cluster.x-k8s.io_hypervisormachines.yaml
+- bases/infrastructure.cluster.x-k8s.io_hypervisormachinetemplates.yaml

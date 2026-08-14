@@ -1,0 +1,6 @@
+# The webhook base of the provider release: the MutatingWebhookConfiguration
+# and ValidatingWebhookConfiguration emitted by controller-gen (make generate).
+# The release overlay rewrites the generated Service-based clientConfigs to
+# direct URLs, so this base stays identical to the generated output.
+resources:
+- manifests.yaml

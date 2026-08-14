@@ -1,0 +1,9 @@
+# The RBAC base of the provider release. The ClusterRole comes from the
+# controller-gen output (config/rbac/role.yaml); the Namespace, ServiceAccount
+# and ClusterRoleBinding are the shared resources the manager process binds
+# against when the components are applied.
+resources:
+- role.yaml
+- namespace.yaml
+- service_account.yaml
+- cluster_role_binding.yaml

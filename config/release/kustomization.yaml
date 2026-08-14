@@ -1,0 +1,142 @@
+# The release overlay: the one kustomization the provider release is built
+# from. It folds the three bases (CRDs, RBAC, webhooks) into the single
+# shared object set that every provider type ships, applies the clusterctl
+# labels, and rewrites the generated webhook clientConfigs from Service
+# references to direct URLs.
+#
+# Shared-label semantics: the infrastructure, bootstrap and control-plane
+# providers run one binary and ship one fully-shared object set, so every
+# object carries the infrastructure provider label. clusterctl applies the
+# providers in Core -> Bootstrap -> ControlPlane -> Infrastructure order,
+# making the infrastructure label deterministically own the shared set, and
+# teardown is Cluster-object deletion rather than clusterctl delete, which
+# keeps the shared-label caveat inert.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../crd
+- ../rbac
+- ../webhook
+
+commonLabels:
+  cluster.x-k8s.io/provider: infrastructure-hypervisor
+  clusterctl.cluster.x-k8s.io: ""
+
+# The webhook server runs on the provider host and is reached directly at the
+# pinned port, so every generated Service-based clientConfig is rewritten to
+# url form. The ten paths follow the controller-gen output in
+# config/webhook/manifests.yaml exactly.
+patches:
+# Mutating webhooks, clientConfig per webhook index.
+- patch: |-
+    - op: remove
+      path: /webhooks/0/clientConfig/service
+    - op: add
+      path: /webhooks/0/clientConfig/url
+      value: https://127.0.0.1:9443/mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisorcluster
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: MutatingWebhookConfiguration
+    name: mutating-webhook-configuration
+- patch: |-
+    - op: remove
+      path: /webhooks/1/clientConfig/service
+    - op: add
+      path: /webhooks/1/clientConfig/url
+      value: https://127.0.0.1:9443/mutate-bootstrap-cluster-x-k8s-io-v1alpha1-hypervisorconfig
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: MutatingWebhookConfiguration
+    name: mutating-webhook-configuration
+- patch: |-
+    - op: remove
+      path: /webhooks/2/clientConfig/service
+    - op: add
+      path: /webhooks/2/clientConfig/url
+      value: https://127.0.0.1:9443/mutate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorcontrolplane
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: MutatingWebhookConfiguration
+    name: mutating-webhook-configuration
+- patch: |-
+    - op: remove
+      path: /webhooks/3/clientConfig/service
+    - op: add
+      path: /webhooks/3/clientConfig/url
+      value: https://127.0.0.1:9443/mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachine
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: MutatingWebhookConfiguration
+    name: mutating-webhook-configuration
+- patch: |-
+    - op: remove
+      path: /webhooks/4/clientConfig/service
+    - op: add
+      path: /webhooks/4/clientConfig/url
+      value: https://127.0.0.1:9443/mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachinetemplate
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: MutatingWebhookConfiguration
+    name: mutating-webhook-configuration
+# Validating webhooks, clientConfig per webhook index.
+- patch: |-
+    - op: remove
+      path: /webhooks/0/clientConfig/service
+    - op: add
+      path: /webhooks/0/clientConfig/url
+      value: https://127.0.0.1:9443/validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisorcluster
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: ValidatingWebhookConfiguration
+    name: validating-webhook-configuration
+- patch: |-
+    - op: remove
+      path: /webhooks/1/clientConfig/service
+    - op: add
+      path: /webhooks/1/clientConfig/url
+      value: https://127.0.0.1:9443/validate-bootstrap-cluster-x-k8s-io-v1alpha1-hypervisorconfig
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: ValidatingWebhookConfiguration
+    name: validating-webhook-configuration
+- patch: |-
+    - op: remove
+      path: /webhooks/2/clientConfig/service
+    - op: add
+      path: /webhooks/2/clientConfig/url
+      value: https://127.0.0.1:9443/validate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorcontrolplane
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: ValidatingWebhookConfiguration
+    name: validating-webhook-configuration
+- patch: |-
+    - op: remove
+      path: /webhooks/3/clientConfig/service
+    - op: add
+      path: /webhooks/3/clientConfig/url
+      value: https://127.0.0.1:9443/validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachine
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: ValidatingWebhookConfiguration
+    name: validating-webhook-configuration
+- patch: |-
+    - op: remove
+      path: /webhooks/4/clientConfig/service
+    - op: add
+      path: /webhooks/4/clientConfig/url
+      value: https://127.0.0.1:9443/validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachinetemplate
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: ValidatingWebhookConfiguration
+    name: validating-webhook-configuration
