@@ -43,7 +43,12 @@
 #   4. apply.sh / down.sh — lifecycle scripts. apply.sh installs the quadlet
 #      units and applies the core manifests idempotently, and validates its
 #      environment before acting (a missing management state directory is a
-#      clear error). down.sh stops the quadlets. Both are executable.
+#      clear error). apply.sh also creates every quadlet bind-mount source a
+#      fresh state lacks (at minimum <state>/etcd, /tmp/ch-capi,
+#      /etc/cluster-api-hypervisor/webhook-certs, /var/lib/k8slab/build)
+#      before starting the plane services and resets failed units
+#      (systemctl reset-failed) so a crashed service can be retried. down.sh
+#      stops the quadlets. Both are executable.
 #
 # The test runs without a live management plane: pki.sh is executed against a
 # scratch state directory and every other assertion checks the committed
@@ -303,6 +308,27 @@ has_command() {
   local file="$1"
   local pattern="$2"
   awk -v pat="${pattern}" '!/^[[:space:]]*#/ && index($0, pat) { found = 1 } END { exit !found }' "${file}"
+}
+
+# first_line_with <file> <pattern1> <pattern2> — the 1-based line number of
+# the first non-comment line containing both literal patterns, or empty when
+# no line matches. Comment lines (first non-blank character '#') are skipped.
+first_line_with() {
+  local file="$1"
+  local pattern1="$2"
+  local pattern2="$3"
+  awk -v pat1="${pattern1}" -v pat2="${pattern2}" \
+    '!/^[[:space:]]*#/ && index($0, pat1) && index($0, pat2) { print NR; exit }' "${file}"
+}
+
+# has_line_with <file> <pattern1> <pattern2> — true when a non-comment line
+# contains both literal patterns.
+has_line_with() {
+  local file="$1"
+  local pattern1="$2"
+  local pattern2="$3"
+  awk -v pat1="${pattern1}" -v pat2="${pattern2}" \
+    '!/^[[:space:]]*#/ && index($0, pat1) && index($0, pat2) { found = 1 } END { exit !found }' "${file}"
 }
 
 # --- test groups ------------------------------------------------------------
@@ -637,6 +663,85 @@ test_apply_order() {
   fi
 }
 
+# test_apply_mount_sources — pin the mount-source preparation and self-heal
+# contract of apply.sh. A fresh management state (pki.sh) has only pki/ and
+# kubeconfigs/, but the quadlet units bind-mount more sources than pki.sh
+# produces:
+#
+#   etcd.quadlet                    <state>/pki (exists), <state>/etcd (missing)
+#   kube-apiserver.quadlet          <state>/pki (exists)
+#   cluster-api-core.quadlet        <state>/kubeconfigs (exists)
+#   cluster-api-hypervisor.quadlet  /var/lib/k8slab/build (missing),
+#                                   /var/lib/k8slab (parent, exists),
+#                                   /tmp/ch-capi (missing),
+#                                   /etc/cluster-api-hypervisor/webhook-certs (missing),
+#                                   <state>/kubeconfigs/cluster-api-hypervisor.conf (exists)
+#
+# A missing source directory makes podman fail (statfs: no such file or
+# directory) and the unit crash-loops into systemd's start-limit-hit, so
+# apply.sh must:
+#
+#   1. create the missing bind-mount sources before starting the plane
+#      services (at minimum <state>/etcd, /tmp/ch-capi,
+#      /etc/cluster-api-hypervisor/webhook-certs, /var/lib/k8slab/build via
+#      mkdir -p) — the etcd data dir creation must precede the first
+#      `systemctl start`;
+#   2. reset failed systemd units (systemctl reset-failed) so a previous
+#      crash-loop (start-limit-hit) does not block a retry.
+#
+# Everything is asserted statically against apply.sh: no live cluster, no VM,
+# and no quadlet is started.
+test_apply_mount_sources() {
+  log "test: apply.sh mount-source preparation and self-heal"
+  if [[ ! -f "${APPLY_SH}" ]]; then
+    return 1
+  fi
+
+  # Edge: the etcd data directory under the state dir must exist before the
+  # plane services start, so its mkdir -p line must precede the first
+  # 'systemctl start'.
+  local etcd_mkdir="" first_start=""
+  etcd_mkdir="$(first_line_with "${APPLY_SH}" "mkdir -p" "etcd")"
+  first_start="$(first_line "${APPLY_SH}" "systemctl start")"
+  if [[ -z "${etcd_mkdir}" ]]; then
+    missing "etcd data dir must be created before systemctl start (no non-comment 'mkdir -p' line referencing etcd)"
+  elif [[ -z "${first_start}" ]]; then
+    missing "etcd data dir must be created before systemctl start (apply.sh has no 'systemctl start' of the management services)"
+  elif (( etcd_mkdir > first_start )); then
+    missing "etcd data dir must be created before systemctl start (mkdir -p at line ${etcd_mkdir} is after systemctl start at line ${first_start})"
+  else
+    ok "etcd data dir is created before the management services start (mkdir -p at line ${etcd_mkdir}, systemctl start at line ${first_start})"
+  fi
+
+  # Edge: the other quadlet bind-mount sources that pki.sh does not produce
+  # are created with mkdir -p (cloud-hypervisor control sockets, the webhook
+  # serving certificates, and the provider build directory).
+  if has_line_with "${APPLY_SH}" "mkdir -p" "/tmp/ch-capi"; then
+    ok "apply.sh creates the /tmp/ch-capi mount source"
+  else
+    missing "missing mkdir -p /tmp/ch-capi"
+  fi
+  if has_line_with "${APPLY_SH}" "mkdir -p" "/etc/cluster-api-hypervisor/webhook-certs"; then
+    ok "apply.sh creates the webhook-certs mount source"
+  else
+    missing "missing mkdir -p webhook-certs"
+  fi
+  if has_line_with "${APPLY_SH}" "mkdir -p" "/var/lib/k8slab/build"; then
+    ok "apply.sh creates the /var/lib/k8slab/build mount source"
+  else
+    missing "missing mkdir -p /var/lib/k8slab/build"
+  fi
+
+  # Edge: a previously crashed unit stays blocked by systemd's
+  # start-limit-hit until the failure is reset, so apply.sh must reset failed
+  # services around the start loop to allow the retry.
+  if has_command "${APPLY_SH}" "systemctl reset-failed"; then
+    ok "apply.sh resets failed systemd services before retrying them"
+  else
+    missing "missing systemctl reset-failed"
+  fi
+}
+
 # --- entry point ------------------------------------------------------------
 
 main() {
@@ -665,6 +770,7 @@ main() {
   test_apply_scripts || :
   test_apply_rewire || :
   test_apply_order || :
+  test_apply_mount_sources || :
 
   if [[ "${problems}" -gt 0 ]]; then
     fail "contract check failed: ${problems} problem(s)" 1
