@@ -26,3 +26,9 @@ plane providers that manage cloud-hypervisor VMs on a Linux host.
 | `make image` | Build container image (placeholder, later phase) |
 | `make clean` | Remove build artifacts and coverage output |
 | `make help` | Print this help |
+
+## Version Pins
+
+Pinned component versions (Go modules, envtest k8s binaries, and container
+image tools) are documented in [VERSIONS.md](VERSIONS.md) — keep them in sync
+when bumping.
