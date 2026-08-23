@@ -3,8 +3,8 @@
 How to provision a cluster with clusterctl using this provider's
 static-resources packaging. clusterctl delivers the CRDs, RBAC, and webhook
 configurations to the management cluster; the manager binary still runs as the
-host quadlet described in [docs/install-contract.md](install-contract.md) — no
-Deployment is shipped.
+user quadlets described in
+[docs/install-contract.md](install-contract.md) — no Deployment is shipped.
 
 Every command below exists in the repository sources; source lines are listed
 so the runbook can be re-verified. Source files:
@@ -32,7 +32,7 @@ so the runbook can be re-verified. Source files:
 |---|---|---|
 | What clusterctl delivers | CRDs, RBAC, webhook configurations | `config/release/kustomization.yaml:17-20` |
 | What clusterctl does NOT deliver | A manager Deployment — the component set ships no Deployment/Service | contract `test/e2e/clusterctl_test.sh` |
-| Manager runtime | Host quadlet per the install contract (unchanged) | `docs/install-contract.md` §5 |
+| Manager runtime | User quadlets (k8netd + provider) per the install contract | `docs/install-contract.md` §5 |
 | Provider types | Infrastructure, Bootstrap, Control-Plane — one binary, three provider entries | `clusterctl.yaml:26-35` |
 | Contract version | v1beta1 | `metadata.yaml:3-6` |
 | Release layout | `{basepath}/{provider-label}/{version}/{components.yaml}` per provider | `Makefile:80-92`, `clusterctl.yaml:26-35` |
@@ -45,7 +45,7 @@ share every object (see §10 for the label consequences).
 
 | Prerequisite | Detail | Source |
 |---|---|---|
-| KVM-capable host | `/dev/kvm` and the host-ops capability set (bridge/TAP/NAT/VM) | `docs/install-contract.md` §6 |
+| KVM-capable host | `/dev/kvm`, the lab user in the `kvm` group, and the k8netd + provider user quadlets installed | `docs/install-contract.md` §5-§6 |
 | podman with quadlet support | Manager runtime; `make image` builds with podman | `Makefile:107-109` |
 | kubectl | All management-cluster operations | `test/e2e/run.sh:451` |
 | Go toolchain | `go tool clusterctl` / `go tool kustomize` resolve through `tools/go.mod` | `tools/go.mod:11`, `tools/go.mod:14` |
@@ -82,7 +82,9 @@ a scratch `OUT_DIR` and fails on any diff against the committed layout
 
 The committed `clusterctl.yaml` is a template: its three `file://` URLs and the
 `overridesFolder` key carry absolute placeholder base paths
-(`/var/lib/k8slab/out`, `/var/lib/k8slab/overrides`). Substitute them with your
+(`/var/lib/k8slab/out`, `/var/lib/k8slab/overrides`). These are substitution
+markers for the bootstrap's rendering, not a required on-disk layout — any
+absolute user-writable base path works. Substitute them with your
 real release layout and overrides directory, then install the result where
 clusterctl reads it: `$XDG_CONFIG_HOME/cluster-api/clusterctl.yaml` (default
 `~/.cluster-api/clusterctl.yaml`).
@@ -192,8 +194,8 @@ kubectl delete cluster <name>
 ```
 
 Deleting the Cluster object tears down the Machines and, through them, the VMs,
-TAPs, and disks (the reference harness deletes the Cluster on exit,
-`test/e2e/run.sh:423-429`). Do NOT use `clusterctl delete`: the fully-shared
+their k8netd ports, and the disks (the reference harness deletes the Cluster on
+exit, `test/e2e/run.sh:423-429`). Do NOT use `clusterctl delete`: the fully-shared
 object set carries only the infrastructure provider label
 (`config/release/kustomization.yaml:7-13`, `config/release/kustomization.yaml:22-26`),
 so clusterctl delete of the bootstrap or control-plane providers would find no
@@ -203,11 +205,13 @@ labeled objects; Cluster-object deletion is the supported teardown path.
 
 - **Static-resources model**: no Deployment is shipped (`test/e2e/clusterctl_test.sh`
   pins "no Deployment/Service"), so `clusterctl init --wait-providers` has
-  nothing to wait on — the manager must run as the host quadlet.
-- **Host-ops prerequisites**: the manager quadlet requires `Network=host`,
-  privileged mode, `NET_ADMIN`, KVM access (`/dev/kvm`), and the host bind
-  mounts for the base image, firmware, VM disks, state, sockets, webhook certs,
-  and kubeconfig (`docs/install-contract.md` §5-§6).
+  nothing to wait on — the manager must run as the user quadlets.
+- **Rootless prerequisites**: the manager runs as two user quadlets
+  (`k8netd.service` and the provider service) on the systemd user bus; they
+  require the lab user in the `kvm` group (`/dev/kvm`), user-writable bind-mount
+  sources for the base image, firmware, VM disks, state, sockets, webhook certs,
+  and kubeconfig, and the k8netd control socket under `/run/user/<uid>/k8snet/`
+  (`docs/install-contract.md` §5-§6).
 - **Contract version**: v1beta1, declared in `metadata.yaml:3-6` (clusterctl
   1.13 accepts it through the compatibility window).
 - **Fully-shared object labels**: every object in every provider's components
