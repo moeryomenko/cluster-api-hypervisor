@@ -67,6 +67,19 @@
 #   9. --help and -h — exit 0 and document every variable above, its default,
 #      and the management-plane bootstrap fallback (test/e2e/mgmt).
 #
+#  10. Lab-host guard and prerequisite skip. run.sh refuses to run unless
+#      E2E_LAB_HOST=1 is exported, and its lab-host prerequisite gates
+#      (P1-P12) cannot pass on a non-lab host (gate P1 checks /dev/kvm
+#      directly, which no PATH stub can satisfy). Every scenario therefore
+#      runs the harness with E2E_LAB_HOST=1 (like a real operator) plus
+#      SKIP_PREREQS=1, the documented test-only escape hatch in run.sh that
+#      skips the gates after environment validation; the environment contract
+#      itself is still enforced in full.
+#
+#  11. GUEST_SSH_KEY — the guest-probe key must name an existing file. The
+#      scenarios get a fixture key from run_harness unless they pass their
+#      own.
+#
 # Exit codes of the harness under test:
 #   0  --help / -h
 #   1  environment validation failure (before any heavy work)
@@ -158,6 +171,19 @@ run_harness() {
       harness_args+=("${arg}")
     fi
   done
+  # The lab-host guard must be satisfied like a real operator would, and the
+  # prerequisite gates are skipped via the documented test-only escape hatch
+  # (run.sh SKIP_PREREQS): gate P1 checks /dev/kvm directly and cannot be
+  # satisfied by PATH stubs on a non-lab host.
+  harness_env+=("E2E_LAB_HOST=1" "SKIP_PREREQS=1")
+  # A valid guest SSH key for every scenario unless one is passed explicitly.
+  local has_ssh_key=""
+  for arg in "${harness_env[@]}"; do
+    [[ "${arg}" == GUEST_SSH_KEY=* ]] && has_ssh_key=1
+  done
+  if [[ -z "${has_ssh_key}" ]]; then
+    harness_env+=("GUEST_SSH_KEY=${SCRATCH}/guest_ssh_key")
+  fi
   local rc=0 out=""
   out="$(timeout "${HARNESS_TIMEOUT}" env -i "${harness_env[@]}" PATH="${PATH}" \
     HOME="${HOME}" bash "${RUN_SH}" "${harness_args[@]}" 2>&1)" || rc=$?
@@ -499,6 +525,9 @@ test_invalid_out_dir() {
   ln -sf "$(command -v env)" "${outbin}/env"
   ln -sf "$(command -v bash)" "${outbin}/bash"
   ln -sf "$(command -v dirname)" "${outbin}/dirname"
+  # rm is needed by the harness EXIT cleanup trap so a validation failure
+  # keeps its own exit code instead of being masked by 127.
+  ln -sf "$(command -v rm)" "${outbin}/rm"
   printf '#!/usr/bin/env bash\nexit 0\n' > "${outbin}/go"
   chmod +x "${outbin}/go"
 
@@ -590,6 +619,9 @@ test_requires_go() {
   ln -sf "$(command -v env)" "${gobin}/env"
   ln -sf "$(command -v bash)" "${gobin}/bash"
   ln -sf "$(command -v dirname)" "${gobin}/dirname"
+  # rm is needed by the harness EXIT cleanup trap so a validation failure
+  # keeps its own exit code instead of being masked by 127.
+  ln -sf "$(command -v rm)" "${gobin}/rm"
   for tool in kubectl base64 mktemp; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "${gobin}/${tool}"
     chmod +x "${gobin}/${tool}"
@@ -611,27 +643,74 @@ test_apply_templates_flow() {
   local base="" out="" rc=0
   base="$(setup_valid_base)" || return 1
 
-  # Stub bin prepended to PATH: a go that records every invocation (and
-  # emits a fake manifest only for the clusterctl generate cluster dispatch)
-  # and a kubectl that satisfies the full-lab flow without a cluster and
-  # captures stdin when an apply reads from -f -.
+  # Stub bin prepended to PATH. The stubs mirror the full-lab lifecycle the
+  # real plane exhibits (run.sh orchestrate), without a cluster, VM, quadlet,
+  # or any real host state:
+  #   - go records every invocation; the clusterctl generate cluster dispatch
+  #     emits the fake manifest kubectl apply reads from stdin, and the k8netd
+  #     probe build (go build -o ...) emits a fake probe binary,
+  #   - kubectl answers readyz, apply (-f - captures stdin), the fixed
+  #     1-control-plane + 3-worker machine inventory with reserved IPs, and
+  #     delete cluster (flips the stub lab into the torn-down state),
+  #   - pgrep prints the pinned passt PIDs until teardown empties them,
+  #   - ss reports no host listeners, ssh/systemctl/journalctl succeed.
   local stubbin="${SCRATCH}/apply-stub-bin"
   local calls="${SCRATCH}/apply-go-calls.txt"
   local kube_calls="${SCRATCH}/apply-kubectl-calls.txt"
   local stdin_rec="${SCRATCH}/apply-kubectl-stdin.txt"
-  mkdir -p "${stubbin}"
+  local probe_state="${SCRATCH}/apply-probe-state.txt"
+  local passt_pids="${SCRATCH}/apply-passt-pids.txt"
+  local teardown_flag="${SCRATCH}/apply-teardown-flag"
+  local k8snet_dir="${SCRATCH}/k8snet"
+  mkdir -p "${stubbin}" "${k8snet_dir}"
   : > "${calls}"
   : > "${kube_calls}"
   : > "${stdin_rec}"
+  : > "${probe_state}"
+  printf '101 102 103 104\n' > "${passt_pids}"
+
+  # The dataplane gate checks a real unix socket per machine under the
+  # K8NETD_SOCKET directory; bind-and-close leaves the socket inodes behind.
+  if ! command -v python3 >/dev/null 2>&1; then
+    fail "python3 is required to create the unix-socket fixtures" 2
+  fi
+  local sock=""
+  for sock in vm-cp-1 vm-w-1 vm-w-2 vm-w-3; do
+    python3 -c 'import socket, sys; s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' \
+      "${k8snet_dir}/${sock}.sock"
+  done
 
   cat > "${stubbin}/go" <<'STUB'
 #!/usr/bin/env bash
 # go stub: record every invocation; only the clusterctl generate cluster
-# dispatch emits the fake manifest the harness pipes into kubectl apply.
+# dispatch emits the fake manifest the harness pipes into kubectl apply, and
+# the k8netd probe build (go build -o ...) emits a fake probe binary.
 printf 'go %s\n' "$*" >> "${STUB_GO_CALLS:-/dev/null}"
 if [[ "${1:-}" == "tool" && "${2:-}" == "clusterctl" \
   && "${3:-}" == "generate" && "${4:-}" == "cluster" ]]; then
   printf 'apiVersion: cluster.x-k8s.io/v1beta1\nkind: Cluster\nmetadata:\n  name: k8labs\n'
+fi
+if [[ "${1:-}" == "build" && "${2:-}" == "-o" && -n "${3:-}" ]]; then
+  cat > "${3}" <<'PROBE'
+#!/usr/bin/env bash
+# fake k8netd JSON-RPC probe (emitted by the harness_test go stub): mirrors
+# the real probe's lifecycle answers without touching a socket — the first
+# call reports the workload network present, every later call not_found.
+state_file="${STUB_PROBE_STATE:?}"
+calls=0
+if [[ -f "${state_file}" ]]; then
+  calls="$(cat "${state_file}")"
+fi
+calls=$((calls + 1))
+printf '%s\n' "${calls}" > "${state_file}"
+if (( calls == 1 )); then
+  printf 'ok {"name":"k8labs","cidr":"192.168.124.0/24","gateway":"192.168.124.1"}\n'
+  exit 0
+fi
+printf 'err not_found network not found\n'
+exit 4
+PROBE
+  chmod +x "${3}"
 fi
 exit 0
 STUB
@@ -640,30 +719,102 @@ STUB
   cat > "${stubbin}/kubectl" <<'STUB'
 #!/usr/bin/env bash
 # kubectl stub: satisfy the full-lab flow without a cluster. The readyz poll
-# succeeds, apply/delete succeed, get machine reports one Ready machine, and
-# an apply reading stdin (-f -) captures the piped manifest for the test.
+# succeeds, apply/delete succeed (an apply reading stdin captures the piped
+# manifest), the machine inventory reports the fixed topology with reserved
+# IPs, and delete cluster tears the stub lab down (machines gone, port
+# sockets removed, passt PIDs gone).
 printf 'kubectl %s\n' "$*" >> "${STUB_KUBECTL_CALLS:-/dev/null}"
 case "$*" in
-  *--raw=*readyz*) exit 0 ;;
-  apply*)
-    if [[ " $* " == *" -f - "* ]]; then
-      cat > "${STUB_KUBECTL_STDIN:-/dev/null}"
-    fi
-    exit 0 ;;
-  delete*) exit 0 ;;
-  get*)
-    if [[ "$*" == *"metadata.name"* ]]; then
-      printf 'vm-1\n'
-    else
-      printf 'True\n'
-    fi
-    exit 0 ;;
-  *)
-    printf 'kubectl stub: unexpected invocation: %s\n' "$*" >&2
-    exit 1 ;;
+  *--raw=*readyz*) printf 'ok\n'; exit 0 ;;
 esac
+if [[ "${1:-}" == "apply" ]]; then
+  if [[ " $* " == *" -f - "* ]]; then
+    cat > "${STUB_KUBECTL_STDIN:-/dev/null}"
+  fi
+  exit 0
+fi
+if [[ "${1:-}" == "delete" ]]; then
+  : > "${STUB_PGREP_PIDS:-/dev/null}"
+  rm -f -- "${STUB_K8SNET_DIR:-/nonexistent}"/vm-*.sock
+  : > "${STUB_TEARDOWN_FLAG:-/dev/null}"
+  exit 0
+fi
+if [[ "${1:-}" == "config" && "${2:-}" == "view" ]]; then
+  printf 'https://127.0.0.1:6443\n'
+  exit 0
+fi
+if [[ "${1:-}" == "get" ]]; then
+  if [[ -f "${STUB_TEARDOWN_FLAG:-/nonexistent}" && "${2:-}" == "machine" ]]; then
+    exit 0
+  fi
+  if [[ "${2:-}" == "hypervisormachine" ]]; then
+    case "${3:-}" in
+      vm-cp-1) printf 'MachineInternalIP\t192.168.124.20\n' ;;
+      vm-w-1)  printf 'MachineInternalIP\t192.168.124.21\n' ;;
+      vm-w-2)  printf 'MachineInternalIP\t192.168.124.22\n' ;;
+      vm-w-3)  printf 'MachineInternalIP\t192.168.124.23\n' ;;
+      *) exit 1 ;;
+    esac
+    exit 0
+  fi
+  if [[ "$*" == *'infrastructureRef.name'* ]]; then
+    printf 'vm-cp-1\ttrue\nvm-w-1\t\nvm-w-2\t\nvm-w-3\t\n'
+    exit 0
+  fi
+  if [[ "$*" == *'conditions[?(@.type=="Ready")]'* ]]; then
+    printf 'True\nTrue\nTrue\nTrue\n'
+    exit 0
+  fi
+  if [[ "$*" == *'InternalIP'* ]]; then
+    printf '192.168.124.20\n192.168.124.21\n192.168.124.22\n192.168.124.23\n'
+    exit 0
+  fi
+  if [[ "$*" == *'metadata.name'* ]]; then
+    printf 'vm-1 vm-2 vm-3 vm-4\n'
+    exit 0
+  fi
+  if [[ "${2:-}" == "secret" ]]; then
+    printf 'aGVsbG8ta3ViZWNvbmZpZwo='
+    exit 0
+  fi
+  printf 'True\n'
+  exit 0
+fi
+printf 'kubectl stub: unexpected invocation: %s\n' "$*" >&2
+exit 1
 STUB
   chmod +x "${stubbin}/kubectl"
+
+  cat > "${stubbin}/pgrep" <<'STUB'
+#!/usr/bin/env bash
+# pgrep stub: prints the pinned passt PID list; the kubectl delete stub
+# empties it to simulate teardown.
+cat "${STUB_PGREP_PIDS:-/dev/null}"
+exit 0
+STUB
+  cat > "${stubbin}/ss" <<'STUB'
+#!/usr/bin/env bash
+# ss stub: the stubbed lab never binds host ports; header line only.
+printf 'Netid State Recv-Q Send-Q Local-Address:Port Peer-Address:Port\n'
+STUB
+  cat > "${stubbin}/ssh" <<'STUB'
+#!/usr/bin/env bash
+# ssh stub: every guest probe answers.
+exit 0
+STUB
+  cat > "${stubbin}/systemctl" <<'STUB'
+#!/usr/bin/env bash
+# systemctl stub: user units are always active.
+printf 'active\n'
+exit 0
+STUB
+  cat > "${stubbin}/journalctl" <<'STUB'
+#!/usr/bin/env bash
+# journalctl stub: an empty provider journal.
+exit 0
+STUB
+  chmod +x "${stubbin}/pgrep" "${stubbin}/ss" "${stubbin}/ssh" \
+    "${stubbin}/systemctl" "${stubbin}/journalctl"
 
   rc=0
   out="$(PATH="${stubbin}:${PATH}" run_harness \
@@ -673,10 +824,15 @@ STUB
     "FIRMWARE=${base}/firmware.fd" \
     "STATE_DIR=${base}/state" \
     "OUT_DIR=${base}/out" \
+    "K8NETD_SOCKET=${k8snet_dir}/control.sock" \
     "SMOKE=0" \
     "STUB_GO_CALLS=${calls}" \
     "STUB_KUBECTL_CALLS=${kube_calls}" \
-    "STUB_KUBECTL_STDIN=${stdin_rec}")" || rc=$?
+    "STUB_KUBECTL_STDIN=${stdin_rec}" \
+    "STUB_PROBE_STATE=${probe_state}" \
+    "STUB_PGREP_PIDS=${passt_pids}" \
+    "STUB_TEARDOWN_FLAG=${teardown_flag}" \
+    "STUB_K8SNET_DIR=${k8snet_dir}")" || rc=$?
 
   if [[ "${rc}" -ne 0 ]]; then
     missing "harness did not complete the full-lab flow (exit ${rc}); expected 0 with stubbed go and kubectl: ${out}"
@@ -732,6 +888,10 @@ main() {
   SCRATCH="$(mktemp -d)"
   trap 'rm -rf -- "${SCRATCH}"' EXIT
   log "scratch root ${SCRATCH}"
+
+  # Fixture guest SSH key handed to every scenario via run_harness (the
+  # GUEST_SSH_KEY contract requires an existing, readable file).
+  printf 'fake guest ssh key\n' > "${SCRATCH}/guest_ssh_key"
 
   # The harness resolves the relative defaults (build/...) against the
   # working directory it is invoked from; run every scenario from the

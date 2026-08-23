@@ -24,7 +24,7 @@ AddCapability=NET_ADMIN
 # Read-only provider inputs: baked base image, firmware, and the writable
 # per-machine disk directory (see install-contract.md section 5.1).
 Mount=type=bind,source=/var/lib/k8slab/build,target=/build
-# Provider state: dnsmasq data, nftables state, cluster PKI artifacts.
+# Provider state: cluster PKI artifacts and per-cluster k8netd state.
 Mount=type=bind,source=/var/lib/k8slab,target=/var/lib/k8slab
 # cloud-hypervisor control sockets: the provider writes one socket tree per
 # VM under this directory.
@@ -42,7 +42,7 @@ Environment=HYPERVISOR_SOCKET_DIR=/tmp/ch-capi
 Environment=HYPERVISOR_STATE_DIR=/var/lib/k8slab
 Environment=HYPERVISOR_CH_BINARY=cloud-hypervisor
 Environment=HYPERVISOR_QEMU_IMG=qemu-img
-Environment=HYPERVISOR_DNSMASQ=dnsmasq
+Environment=HYPERVISOR_K8NETD_SOCKET=/run/user/1000/k8snet/control.sock
 Environment=HYPERVISOR_NETWORK_CIDR=192.168.124.0/24
 
 Exec=--kubeconfig=/etc/kubernetes/mgmt/kubeconfigs/cluster-api-hypervisor.conf

@@ -174,6 +174,19 @@ check_contains() {
   return 1
 }
 
+# check_not_contains <file> <pattern> — the file must not contain the literal
+# pattern (used to pin that the provider unit carries no dnsmasq/nftables
+# host-tool contract after the k8netd migration).
+check_not_contains() {
+  local file="$1"
+  local pattern="$2"
+  if ! grep -Fq -- "$pattern" "$file"; then
+    return 0
+  fi
+  missing "file ${file} must not contain: ${pattern}"
+  return 1
+}
+
 # check_pem_cert <file> — a PEM certificate that parses as X.509 when openssl
 # is available.
 check_pem_cert() {
@@ -433,6 +446,12 @@ test_quadlet_units() {
         check_contains "${path}" "AddCapability=NET_ADMIN" || :
         check_contains "${path}" "--kubeconfig=" || :
         check_contains "${path}" "Environment=HYPERVISOR_" || :
+        # Edge: after the k8netd migration the unit wires the k8netd control
+        # socket and carries no dnsmasq/nftables host-tool contract.
+        check_contains "${path}" "Environment=HYPERVISOR_K8NETD_SOCKET=" || :
+        check_not_contains "${path}" "DNSMASQ" || :
+        check_not_contains "${path}" "dnsmasq" || :
+        check_not_contains "${path}" "nftables" || :
         ;;
     esac
   done

@@ -10,9 +10,9 @@
 # here: there is no live cluster in this test. What this file pins instead is
 # the per-step contract of delete-cluster.sh, by executing it against a stub
 # kubectl on PATH that dispatches on its arguments and returns scripted canned
-# outputs, plus stub host commands (ip, pgrep, nft) and a stub mgmt-down
-# script, then asserting delete-cluster.sh's decisions and its aggregate exit
-# code.
+# outputs, plus sentinel host binaries (ip, pgrep, nft, dnsmasq) that record
+# every invocation, and a stub mgmt-down script, then asserting
+# delete-cluster.sh's decisions and its aggregate exit code.
 #
 # The kubeconfig contract mirrors the harness exactly: run.sh hands the
 # management kubeconfig to its helpers as the KUBECONFIG environment variable
@@ -48,17 +48,19 @@
 #      mgmt-down script through MGMT_DOWN_SH (default
 #      <script-dir>/mgmt/down.sh); the tests always inject a recording stub so
 #      a faulty implementation can never reach the real mgmt/down.sh.
-#   4. leftover — after a successful teardown, delete-cluster.sh verifies the
-#      host network state is gone via host commands (ip link show k8sbr0,
-#      pgrep dnsmasq, nft list table inet k8slab); any surviving artifact
-#      makes the script exit non-zero naming the leftover item ("k8sbr0",
-#      "dnsmasq", or "k8slab").
+#   4. no-host-net-tooling — after the k8netd migration delete-cluster.sh
+#      performs no host network operation at all: the whole scenario must
+#      converge with sentinel ip/pgrep/nft/dnsmasq binaries on PATH whose
+#      invocation log stays empty. Any bridge/dnsmasq/nftables tooling
+#      invocation is a contract violation (the provider talks to k8netd over
+#      the control socket instead; there is no leftover host network state
+#      for the script to inspect).
 #
 # Aggregate contract: delete-cluster.sh exits 0 only when the whole scenario
 # converges (Cluster gone, Machines gone, mgmt-down handled per the plane
-# origin, no host leftovers). Every failure scenario keeps everything healthy
-# except the step under test, so a non-zero exit is attributable to exactly
-# that step and the output must name it.
+# origin, and no host network tooling invoked). Every failure scenario keeps
+# everything healthy except the step under test, so a non-zero exit is
+# attributable to exactly that step and the output must name it.
 #
 # Exit codes of this test:
 #   0  delete-cluster.sh satisfies the cluster-deletion scenario contract
@@ -247,84 +249,27 @@ STUB
   chmod +x "${dir}/kubectl"
 }
 
-# install_stub_host_commands <dir> — write executable stub ip, pgrep, and nft
-# binaries into <dir>. Each stub logs its invocation to "$STUB_HOST_LOG" (when
-# set) and answers only for the exact host artifact it models: the k8sbr0
-# bridge (`ip link show k8sbr0`), the dnsmasq process (`pgrep dnsmasq`), and
-# the inet k8slab nftables table (`nft list table inet k8slab`). The artifact
-# is "gone" by default (exit 1, nothing printed); STUB_BRIDGE_RC,
-# STUB_DNSMASQ_RC, and STUB_NFT_RC flip it to "present" (exit 0 with a canned
-# listing) for the leftover scenarios. Unrelated invocations answer "gone" so
-# the stubs cannot fabricate a leftover for a check the script never makes.
-install_stub_host_commands() {
+# install_stub_net_sentinels <dir> — write executable sentinel ip, pgrep,
+# nft, and dnsmasq binaries into <dir>. After the k8netd migration the
+# deletion scenario must not touch any host network tooling: each sentinel
+# appends its invocation to "$STUB_NET_LOG" (when set) and exits 7 so that,
+# even if a script invoked one inside an if-condition, the invocation is
+# still recorded and detectable. The tests assert the log stays empty.
+install_stub_net_sentinels() {
   local dir="$1"
-
-  cat > "${dir}/ip" <<'STUB'
+  local tool=""
+  for tool in ip pgrep nft dnsmasq; do
+    cat > "${dir}/${tool}" <<'STUB'
 #!/usr/bin/env bash
 set -u
-host_log="${STUB_HOST_LOG:-}"
-if [[ -n "${host_log}" ]]; then
-  printf 'ip: %s\n' "$*" >> "${host_log}"
+net_log="${STUB_NET_LOG:-}"
+if [[ -n "${net_log}" ]]; then
+  printf '%s: %s\n' "$(basename "$0")" "$*" >> "${net_log}"
 fi
-case "$*" in
-  *k8sbr0*)
-    if [[ "${STUB_BRIDGE_RC-1}" -eq 0 ]]; then
-      printf '3: k8sbr0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 state UP group default qlen 1000\n'
-      printf '    link/ether 3a:5c:8f:1a:2b:3c brd ff:ff:ff:ff:ff:ff\n'
-    fi
-    exit "${STUB_BRIDGE_RC-1}"
-    ;;
-  *)
-    exit 1
-    ;;
-esac
+exit 7
 STUB
-
-  cat > "${dir}/pgrep" <<'STUB'
-#!/usr/bin/env bash
-set -u
-host_log="${STUB_HOST_LOG:-}"
-if [[ -n "${host_log}" ]]; then
-  printf 'pgrep: %s\n' "$*" >> "${host_log}"
-fi
-case "$*" in
-  *dnsmasq*)
-    if [[ "${STUB_DNSMASQ_RC-1}" -eq 0 ]]; then
-      printf '4242\n'
-    fi
-    exit "${STUB_DNSMASQ_RC-1}"
-    ;;
-  *)
-    exit 1
-    ;;
-esac
-STUB
-
-  cat > "${dir}/nft" <<'STUB'
-#!/usr/bin/env bash
-set -u
-host_log="${STUB_HOST_LOG:-}"
-if [[ -n "${host_log}" ]]; then
-  printf 'nft: %s\n' "$*" >> "${host_log}"
-fi
-case "$*" in
-  *k8slab*)
-    if [[ "${STUB_NFT_RC-1}" -eq 0 ]]; then
-      printf 'table inet k8slab {\n'
-      printf '  chain postrouting {\n'
-      printf '    type nat hook postrouting priority srcnat; policy accept;\n'
-      printf '  }\n'
-      printf '}\n'
-    fi
-    exit "${STUB_NFT_RC-1}"
-    ;;
-  *)
-    exit 1
-    ;;
-esac
-STUB
-
-  chmod +x "${dir}/ip" "${dir}/pgrep" "${dir}/nft"
+    chmod +x "${dir}/${tool}"
+  done
 }
 
 # install_stub_down <dir> — write an executable stub mgmt-down script into
@@ -346,15 +291,15 @@ STUB
   chmod +x "${dir}/down.sh"
 }
 
-# new_scenario <label> — create a scratch fixture: a stub kubectl, stub host
-# commands, and a stub mgmt-down on PATH, plus a stub state directory and a
-# minimal management kubeconfig. Prints the scratch directory path.
+# new_scenario <label> — create a scratch fixture: a stub kubectl, sentinel
+# host binaries, and a stub mgmt-down on PATH, plus a stub state directory
+# and a minimal management kubeconfig. Prints the scratch directory path.
 new_scenario() {
   local label="$1"
   local scratch=""
   scratch="$(mktemp -d "${SCRATCH}/${label}.XXXXXX")"
   install_stub_kubectl "${scratch}"
-  install_stub_host_commands "${scratch}"
+  install_stub_net_sentinels "${scratch}"
   install_stub_down "${scratch}"
   mkdir -p "${scratch}/stub-state"
   printf '%s' "${scratch}"
@@ -394,7 +339,7 @@ make_kubeconfig() {
 # exceeds DELETE_TIMEOUT).
 run_delete() {
   local scratch="$1" kubeconfig="$2" mode="${3:-harness}" ns="${4:-}"
-  local log="${scratch}/kubectl.log" host_log="${scratch}/host.log" down_log="${scratch}/down.log"
+  local log="${scratch}/kubectl.log" down_log="${scratch}/down.log"
   local down_stub="${scratch}/down.sh"
   local -a env_extra=()
   local arg="" rc=0
@@ -412,8 +357,9 @@ run_delete() {
         MANAGEMENT_KUBECONFIG="${kubeconfig}" CLUSTER_NAME="${CLUSTER_NAME}" \
         CLUSTER_NAMESPACE="${ns:-${DEFAULT_NAMESPACE}}" \
         DELETE_WAIT_TIMEOUT="${wait_timeout}" MGMT_DOWN_SH="${down_stub}" \
-        STUB_LOG="${log}" STUB_HOST_LOG="${host_log}" STUB_DOWN_LOG="${down_log}" \
+        STUB_LOG="${log}" STUB_DOWN_LOG="${down_log}" \
         STUB_STATE_DIR="${scratch}/stub-state" \
+        STUB_NET_LOG="${scratch}/net.log" \
         "${DELETE_SH}" >"${scratch}/delete.out" 2>&1 || rc=$?
       ;;
     poskc)
@@ -421,8 +367,9 @@ run_delete() {
         PATH="${scratch}:${PATH}" MANAGEMENT_KUBECONFIG="${kubeconfig}" \
         CLUSTER_NAME="${CLUSTER_NAME}" CLUSTER_NAMESPACE="${ns:-${DEFAULT_NAMESPACE}}" \
         DELETE_WAIT_TIMEOUT="${wait_timeout}" MGMT_DOWN_SH="${down_stub}" \
-        STUB_LOG="${log}" STUB_HOST_LOG="${host_log}" STUB_DOWN_LOG="${down_log}" \
+        STUB_LOG="${log}" STUB_DOWN_LOG="${down_log}" \
         STUB_STATE_DIR="${scratch}/stub-state" \
+        STUB_NET_LOG="${scratch}/net.log" \
         "${DELETE_SH}" "${kubeconfig}" >"${scratch}/delete.out" 2>&1 || rc=$?
       ;;
     selfboot)
@@ -430,8 +377,9 @@ run_delete() {
         PATH="${scratch}:${PATH}" KUBECONFIG="${kubeconfig}" \
         CLUSTER_NAME="${CLUSTER_NAME}" CLUSTER_NAMESPACE="${ns:-${DEFAULT_NAMESPACE}}" \
         DELETE_WAIT_TIMEOUT="${wait_timeout}" MGMT_DOWN_SH="${down_stub}" \
-        STUB_LOG="${log}" STUB_HOST_LOG="${host_log}" STUB_DOWN_LOG="${down_log}" \
+        STUB_LOG="${log}" STUB_DOWN_LOG="${down_log}" \
         STUB_STATE_DIR="${scratch}/stub-state" \
+        STUB_NET_LOG="${scratch}/net.log" \
         "${DELETE_SH}" "${kubeconfig}" >"${scratch}/delete.out" 2>&1 || rc=$?
       ;;
     *)
@@ -440,8 +388,9 @@ run_delete() {
         MANAGEMENT_KUBECONFIG="${kubeconfig}" CLUSTER_NAME="${CLUSTER_NAME}" \
         CLUSTER_NAMESPACE="${ns:-${DEFAULT_NAMESPACE}}" \
         DELETE_WAIT_TIMEOUT="${wait_timeout}" MGMT_DOWN_SH="${down_stub}" \
-        STUB_LOG="${log}" STUB_HOST_LOG="${host_log}" STUB_DOWN_LOG="${down_log}" \
+        STUB_LOG="${log}" STUB_DOWN_LOG="${down_log}" \
         STUB_STATE_DIR="${scratch}/stub-state" \
+        STUB_NET_LOG="${scratch}/net.log" \
         "${DELETE_SH}" "${kubeconfig}" "${ns}" >"${scratch}/delete.out" 2>&1 || rc=$?
       ;;
   esac
@@ -493,36 +442,6 @@ assert_delete_timeout() {
   ok "delete-cluster.sh exited ${rc} and named the '${step}' step when ${display}"
 }
 
-# assert_leftover <scratch> <display> <item...> — delete-cluster.sh must exit
-# non-zero and its output must name every leftover item ("k8sbr0", "dnsmasq",
-# "k8slab").
-assert_leftover() {
-  local scratch="$1" display="$2"
-  shift 2
-  local out="" rc="${DELETE_RC}" item="" all_present=1
-  out="$(<"${scratch}/delete.out")"
-  if [[ "${rc}" -eq 0 ]]; then
-    missing "delete-cluster.sh exited 0; expected non-zero when ${display}"
-    printf 'delete_test: output:\n%s\n' "${out}" >&2
-    return 1
-  fi
-  if [[ "${rc}" -eq 124 ]]; then
-    missing "delete-cluster.sh exceeded the ${DELETE_TIMEOUT}s test guard when ${display}"
-    printf 'delete_test: output:\n%s\n' "${out}" >&2
-    return 1
-  fi
-  for item in "$@"; do
-    if ! grep -Fq -- "${item}" <<< "${out}"; then
-      missing "delete-cluster.sh output does not name the leftover '${item}' when ${display}: ${out}"
-      all_present=0
-    fi
-  done
-  if [[ "${all_present}" -eq 1 ]]; then
-    ok "delete-cluster.sh exited ${rc} and named the leftover(s): ${display}"
-  fi
-  [[ "${all_present}" -eq 1 ]]
-}
-
 # assert_no_down_calls <scratch> <display> — the stub mgmt-down must never
 # have been invoked (the mgmt-down step is skipped for an external plane).
 assert_no_down_calls() {
@@ -554,14 +473,28 @@ assert_down_called_once() {
   ok "mgmt-down was invoked exactly once for ${display}"
 }
 
+# assert_no_net_tooling <scratch> <display> — the sentinel ip/pgrep/nft/
+# dnsmasq binaries must never have been invoked: delete-cluster.sh performs
+# no host network operation (the k8netd migration removed the host-tool
+# contract entirely).
+assert_no_net_tooling() {
+  local scratch="$1" display="$2"
+  local net_log="${scratch}/net.log"
+  if [[ -f "${net_log}" && -s "${net_log}" ]]; then
+    missing "delete-cluster.sh invoked host network tooling for ${display}; the k8netd migration requires no bridge/dnsmasq/nftables tooling at all"
+    printf 'delete_test: net sentinel log:\n%s\n' "$(<"${net_log}")" >&2
+    return 1
+  fi
+  ok "no host network tooling was invoked for ${display}"
+}
+
 # assert_contract_observations <scratch> <kubeconfig> <namespace> — the
 # management kubeconfig must have been observed by the stub kubectl, the
 # workload namespace must appear in the invocations (including a namespace
-# deletion), and every host leftover check must have run (the stub ip, pgrep,
-# and nft commands were each invoked at least once).
+# deletion).
 assert_contract_observations() {
   local scratch="$1" kubeconfig="$2" ns="${3:-${DEFAULT_NAMESPACE}}"
-  local kclog="" host_log=""
+  local kclog=""
   if [[ "${DELETE_RC}" -ne 0 ]]; then
     missing "delete-cluster.sh exited ${DELETE_RC}; expected 0"
     printf 'delete_test: output:\n%s\n' "$(<"${scratch}/delete.out")" >&2
@@ -570,10 +503,6 @@ assert_contract_observations() {
   kclog=""
   if [[ -f "${scratch}/kubectl.log" ]]; then
     kclog="$(<"${scratch}/kubectl.log")"
-  fi
-  host_log=""
-  if [[ -f "${scratch}/host.log" ]]; then
-    host_log="$(<"${scratch}/host.log")"
   fi
   if ! grep -Fq -- "kubeconfig=${kubeconfig}" <<< "${kclog}"; then
     missing "the stub kubectl never observed the management kubeconfig ${kubeconfig}"
@@ -590,22 +519,7 @@ assert_contract_observations() {
     printf 'delete_test: kubectl log:\n%s\n' "${kclog}" >&2
     return 1
   fi
-  if ! grep -q '^ip:' <<< "${host_log}"; then
-    missing "the stub ip command was never invoked (the leftover bridge check did not run)"
-    printf 'delete_test: host log:\n%s\n' "${host_log}" >&2
-    return 1
-  fi
-  if ! grep -q '^pgrep:' <<< "${host_log}"; then
-    missing "the stub pgrep command was never invoked (the leftover dnsmasq check did not run)"
-    printf 'delete_test: host log:\n%s\n' "${host_log}" >&2
-    return 1
-  fi
-  if ! grep -q '^nft:' <<< "${host_log}"; then
-    missing "the stub nft command was never invoked (the leftover nftables check did not run)"
-    printf 'delete_test: host log:\n%s\n' "${host_log}" >&2
-    return 1
-  fi
-  ok "delete-cluster.sh targeted the management kubeconfig ${kubeconfig}, the namespace ${ns}, and the host leftover checks"
+  ok "delete-cluster.sh targeted the management kubeconfig ${kubeconfig} and the namespace ${ns}"
 }
 
 # --- scenarios --------------------------------------------------------------
@@ -622,6 +536,7 @@ test_delete_success() {
   assert_delete_passed "${scratch}" "an all-healthy deletion scenario" || :
   assert_contract_observations "${scratch}" "${kc}" "default" || :
   assert_no_down_calls "${scratch}" "an all-healthy deletion scenario with an external management kubeconfig" || :
+  assert_no_net_tooling "${scratch}" "an all-healthy deletion scenario" || :
   rm -rf -- "${scratch}"
 
   # Environment-only shape: no positionals at all.
@@ -630,6 +545,7 @@ test_delete_success() {
   run_delete "${scratch}" "${kc}" env
   assert_delete_passed "${scratch}" "the environment-only invocation shape" || :
   assert_contract_observations "${scratch}" "${kc}" "default" || :
+  assert_no_net_tooling "${scratch}" "the environment-only invocation shape" || :
   rm -rf -- "${scratch}"
 
   # Positional-kubeconfig shape: the management kubeconfig arrives only as the
@@ -639,6 +555,7 @@ test_delete_success() {
   run_delete "${scratch}" "${kc}" poskc
   assert_delete_passed "${scratch}" "the positional-kubeconfig invocation shape" || :
   assert_contract_observations "${scratch}" "${kc}" "default" || :
+  assert_no_net_tooling "${scratch}" "the positional-kubeconfig invocation shape" || :
   rm -rf -- "${scratch}"
 
   # The optional workload namespace arrives as the second positional argument.
@@ -647,6 +564,7 @@ test_delete_success() {
   run_delete "${scratch}" "${kc}" harness "lab-ns"
   assert_delete_passed "${scratch}" "the harness shape with an explicit workload namespace" || :
   assert_contract_observations "${scratch}" "${kc}" "lab-ns" || :
+  assert_no_net_tooling "${scratch}" "the harness shape with an explicit workload namespace" || :
   rm -rf -- "${scratch}"
 }
 
@@ -664,45 +582,14 @@ test_cluster_delete_timeout() {
   rm -rf -- "${scratch}"
 }
 
-test_leftover_bridge() {
-  log "scenario: the bridge k8sbr0 survives the deletion"
+test_no_host_net_tooling() {
+  log "scenario: the deletion converges without any host network tooling"
   local scratch="" kc=""
-  scratch="$(new_scenario leftover-bridge)"
+  scratch="$(new_scenario no-host-net-tooling)"
   kc="$(make_kubeconfig "${scratch}")"
-  run_delete "${scratch}" "${kc}" harness \
-    "DELETE_WAIT_TIMEOUT=${DELETE_WAIT_OK}" \
-    "STUB_BRIDGE_RC=0"
-  assert_leftover "${scratch}" "the bridge k8sbr0 is still present" "k8sbr0" || :
-  rm -rf -- "${scratch}"
-}
-
-test_leftover_dnsmasq_nft() {
-  log "scenario: dnsmasq or the nftables table survives the deletion"
-  local scratch="" kc=""
-
-  scratch="$(new_scenario leftover-dnsmasq)"
-  kc="$(make_kubeconfig "${scratch}")"
-  run_delete "${scratch}" "${kc}" harness \
-    "DELETE_WAIT_TIMEOUT=${DELETE_WAIT_OK}" \
-    "STUB_DNSMASQ_RC=0"
-  assert_leftover "${scratch}" "dnsmasq is still running" "dnsmasq" || :
-  rm -rf -- "${scratch}"
-
-  scratch="$(new_scenario leftover-nft)"
-  kc="$(make_kubeconfig "${scratch}")"
-  run_delete "${scratch}" "${kc}" harness \
-    "DELETE_WAIT_TIMEOUT=${DELETE_WAIT_OK}" \
-    "STUB_NFT_RC=0"
-  assert_leftover "${scratch}" "the nftables table k8slab is still present" "k8slab" || :
-  rm -rf -- "${scratch}"
-
-  # All three host artifacts at once: every leftover must be named.
-  scratch="$(new_scenario leftover-all)"
-  kc="$(make_kubeconfig "${scratch}")"
-  run_delete "${scratch}" "${kc}" harness \
-    "DELETE_WAIT_TIMEOUT=${DELETE_WAIT_OK}" \
-    "STUB_BRIDGE_RC=0" "STUB_DNSMASQ_RC=0" "STUB_NFT_RC=0"
-  assert_leftover "${scratch}" "all three host artifacts survive" "k8sbr0" "dnsmasq" "k8slab" || :
+  run_delete "${scratch}" "${kc}" harness
+  assert_delete_passed "${scratch}" "a scenario with sentinel ip/pgrep/nft/dnsmasq on PATH" || :
+  assert_no_net_tooling "${scratch}" "a scenario with sentinel ip/pgrep/nft/dnsmasq on PATH" || :
   rm -rf -- "${scratch}"
 }
 
@@ -763,8 +650,7 @@ main() {
 
   test_delete_success || :
   test_cluster_delete_timeout || :
-  test_leftover_bridge || :
-  test_leftover_dnsmasq_nft || :
+  test_no_host_net_tooling || :
   test_mgmt_down_external || :
 
   if [[ "${problems}" -gt 0 ]]; then

@@ -3,12 +3,12 @@
 # delete-cluster.sh — cluster-deletion scenario for the cluster-api-hypervisor
 # full-lab e2e. Deleting the workload Cluster object drives the CAPI
 # controllers to tear down the workload Machines and, through them, the
-# VMs, TAPs, and disks; this script gates that teardown at the object level
-# (the Cluster object gone, then no workload Machine remains), brings the
-# management plane down through the mgmt-down script when the plane was
-# self-bootstrapped, and finally verifies the host network state (the
-# k8sbr0 bridge, the dnsmasq process, the inet k8slab nftables table) is
-# gone, exiting non-zero and naming every leftover artifact when it is not.
+# VMs and disks; this script gates that teardown at the object level
+# (the Cluster object gone, then no workload Machine remains) and brings
+# the management plane down through the mgmt-down script when the plane
+# was self-bootstrapped. It performs no host network operation: after the
+# k8netd migration the provider tears the cluster network down through the
+# k8netd control socket, so there is no host-side network state to inspect.
 #
 # The harness (test/e2e/run.sh) hands the management kubeconfig to its
 # helpers as the KUBECONFIG environment variable and as the first positional
@@ -40,8 +40,8 @@
 #
 # Exit codes:
 #   0  the whole deletion scenario converged
-#   1  a step timed out (the error line names the step), a step failed, or a
-#      host artifact survived (each leftover is named)
+#   1  a step timed out (the error line names the step) or a step failed;
+#      no host network tooling is ever invoked (none is part of the contract)
 #
 # shellcheck disable=SC2329 # wait predicates are invoked indirectly by name through wait_for
 
@@ -127,8 +127,8 @@ wait_for "cluster-delete" "the Cluster object to be gone" cluster_gone_ok
 printf '%s\n' "cluster-delete: Cluster object gone"
 
 # Step 2: machine-teardown — poll the management cluster until no workload
-# Machine remains. The CAPI controllers tear down the VMs, TAPs, and disks as
-# part of the deletion; this script's gate is the object teardown.
+# Machine remains. The CAPI controllers tear down the VMs and disks as part
+# of the deletion; this script's gate is the object teardown.
 printf '%s\n' "--- machine-teardown: waiting for the workload Machines ---"
 wait_for "machine-teardown" "the workload Machines to be gone" machines_gone_ok
 printf '%s\n' "machine-teardown: no workload Machines remain"
@@ -146,26 +146,6 @@ else
   printf '%s\n' "mgmt-down: stopping the management plane"
   bash "${MGMT_DOWN_SH}" >/dev/null 2>&1 \
     || { printf 'ERROR: mgmt-down: the management plane did not stop cleanly\n' >&2; exit 1; }
-fi
-
-# Step 4: leftover — verify the host network state is gone. Any surviving
-# artifact makes the script exit non-zero naming the leftover item.
-printf '%s\n' "--- leftover: verifying the host network state is gone ---"
-leftover=0
-if ip link show k8sbr0 >/dev/null 2>&1; then
-  printf 'ERROR: leftover: bridge k8sbr0 is still present\n' >&2
-  leftover=1
-fi
-if pgrep dnsmasq >/dev/null 2>&1; then
-  printf 'ERROR: leftover: dnsmasq is still running\n' >&2
-  leftover=1
-fi
-if nft list table inet k8slab >/dev/null 2>&1; then
-  printf 'ERROR: leftover: nftables table k8slab is still present\n' >&2
-  leftover=1
-fi
-if [[ "${leftover}" -ne 0 ]]; then
-  exit 1
 fi
 
 printf '%s\n' "PASS: cluster-deletion scenario complete"
