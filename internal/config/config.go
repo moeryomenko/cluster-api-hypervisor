@@ -24,6 +24,8 @@ package config
 import (
 	"fmt"
 	"net/netip"
+	"os"
+	"path/filepath"
 )
 
 // Config is the resolved provider configuration. Each field names the
@@ -51,8 +53,8 @@ type Config struct {
 	// QemuImg is the qemu-img binary used to create and convert VM disks.
 	QemuImg string
 
-	// Dnsmasq is the dnsmasq binary used to serve the lab DNS.
-	Dnsmasq string
+	// K8NetdSocket is the Unix control socket for the k8netd network daemon.
+	K8NetdSocket string
 
 	// NetworkCIDR is the IPv4 network served on the lab bridge.
 	NetworkCIDR string
@@ -61,16 +63,30 @@ type Config struct {
 // Default values used when the corresponding HYPERVISOR_* environment
 // variable is unset or set to an empty string.
 const (
-	defaultBaseImage   = "build/k8labs-base.qcow2"
-	defaultFirmware    = "build/CLOUDHV.fd"
-	defaultVMDiskDir   = "build/vm-disks"
-	defaultSocketDir   = "/tmp/ch-capi"
-	defaultStateDir    = "/var/lib/k8slab"
-	defaultCHBinary    = "cloud-hypervisor"
-	defaultQemuImg     = "qemu-img"
-	defaultDnsmasq     = "dnsmasq"
-	defaultNetworkCIDR = "192.168.124.0/24"
+	defaultBaseImage    = "build/k8labs-base.qcow2"
+	defaultFirmware     = "build/CLOUDHV.fd"
+	defaultVMDiskDir    = "build/vm-disks"
+	defaultSocketDir    = "/tmp/ch-capi"
+	defaultCHBinary     = "cloud-hypervisor"
+	defaultQemuImg      = "qemu-img"
+	defaultK8NetdSocket = "/run/user/1000/k8snet/control.sock"
+	defaultNetworkCIDR  = "192.168.124.0/24"
 )
+
+// defaultStateDir returns the user-writable default for StateDir. It
+// resolves to $HOME/.local/state/k8slab when HOME is set, otherwise falls
+// back to /tmp/k8slab-state so the provider remains runnable in minimal
+// environments. The result always contains "k8slab" and ".local/state" or
+// "/tmp" and never starts with "/var/lib/".
+func defaultStateDir() string {
+	if home := os.Getenv("HOME"); home != "" {
+		return filepath.Join(home, ".local", "state", "k8slab")
+	}
+	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "k8slab")
+	}
+	return "/tmp/k8slab-state"
+}
 
 // Load resolves the provider configuration from the supplied environment
 // lookup. A nil env function behaves as if every variable were unset. The
@@ -85,15 +101,15 @@ func Load(env func(string) string) (Config, error) {
 	}
 
 	cfg := Config{
-		BaseImage:   valueOrDefault(env("HYPERVISOR_BASE_IMAGE"), defaultBaseImage),
-		Firmware:    valueOrDefault(env("HYPERVISOR_FIRMWARE"), defaultFirmware),
-		VMDiskDir:   valueOrDefault(env("HYPERVISOR_VM_DISKS_DIR"), defaultVMDiskDir),
-		SocketDir:   valueOrDefault(env("HYPERVISOR_SOCKET_DIR"), defaultSocketDir),
-		StateDir:    valueOrDefault(env("HYPERVISOR_STATE_DIR"), defaultStateDir),
-		CHBinary:    valueOrDefault(env("HYPERVISOR_CH_BINARY"), defaultCHBinary),
-		QemuImg:     valueOrDefault(env("HYPERVISOR_QEMU_IMG"), defaultQemuImg),
-		Dnsmasq:     valueOrDefault(env("HYPERVISOR_DNSMASQ"), defaultDnsmasq),
-		NetworkCIDR: valueOrDefault(env("HYPERVISOR_NETWORK_CIDR"), defaultNetworkCIDR),
+		BaseImage:    valueOrDefault(env("HYPERVISOR_BASE_IMAGE"), defaultBaseImage),
+		Firmware:     valueOrDefault(env("HYPERVISOR_FIRMWARE"), defaultFirmware),
+		VMDiskDir:    valueOrDefault(env("HYPERVISOR_VM_DISKS_DIR"), defaultVMDiskDir),
+		SocketDir:    valueOrDefault(env("HYPERVISOR_SOCKET_DIR"), defaultSocketDir),
+		StateDir:     valueOrDefault(env("HYPERVISOR_STATE_DIR"), defaultStateDir()),
+		CHBinary:     valueOrDefault(env("HYPERVISOR_CH_BINARY"), defaultCHBinary),
+		QemuImg:      valueOrDefault(env("HYPERVISOR_QEMU_IMG"), defaultQemuImg),
+		K8NetdSocket: valueOrDefault(env("HYPERVISOR_K8NETD_SOCKET"), defaultK8NetdSocket),
+		NetworkCIDR:  valueOrDefault(env("HYPERVISOR_NETWORK_CIDR"), defaultNetworkCIDR),
 	}
 
 	if err := validateNetworkCIDR(cfg.NetworkCIDR); err != nil {

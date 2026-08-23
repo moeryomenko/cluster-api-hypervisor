@@ -37,10 +37,10 @@ limitations under the License.
 //     HYPERVISOR_FIRMWARE          -> build/CLOUDHV.fd
 //     HYPERVISOR_VM_DISKS_DIR      -> build/vm-disks
 //     HYPERVISOR_SOCKET_DIR        -> /tmp/ch-capi
-//     HYPERVISOR_STATE_DIR         -> /var/lib/k8slab
+//     HYPERVISOR_STATE_DIR         -> $HOME/.local/state/k8slab (or /tmp/k8slab-state fallback)
 //     HYPERVISOR_CH_BINARY         -> cloud-hypervisor
 //     HYPERVISOR_QEMU_IMG          -> qemu-img
-//     HYPERVISOR_DNSMASQ           -> dnsmasq
+//     HYPERVISOR_K8NETD_SOCKET     -> /run/user/1000/k8snet/control.sock
 //     HYPERVISOR_NETWORK_CIDR      -> 192.168.124.0/24
 //
 //   - When a variable is set to a non-empty value, that value replaces the
@@ -48,7 +48,7 @@ limitations under the License.
 //
 //   - Config fields are named after the resource they locate:
 //     BaseImage, Firmware, VMDiskDir, SocketDir, StateDir, CHBinary,
-//     QemuImg, Dnsmasq, NetworkCIDR.
+//     QemuImg, K8NetdSocket, NetworkCIDR.
 //
 //   - Load returns a non-nil error when HYPERVISOR_NETWORK_CIDR does not
 //     parse as an IPv4 network (for example "not-a-cidr"). No other
@@ -57,11 +57,26 @@ limitations under the License.
 package config_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
 )
+
+// expectedDefaultStateDir mirrors the provider's defaultStateDir logic
+// for test expectations. It returns $HOME/.local/state/k8slab when HOME
+// is set, otherwise XDG_STATE_HOME/k8slab or /tmp/k8slab-state.
+func expectedDefaultStateDir() string {
+	if home := os.Getenv("HOME"); home != "" {
+		return filepath.Join(home, ".local", "state", "k8slab")
+	}
+	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "k8slab")
+	}
+	return "/tmp/k8slab-state"
+}
 
 func loadConfig(t *testing.T, env map[string]string) config.Config {
 	t.Helper()
@@ -86,6 +101,8 @@ func loadConfig(t *testing.T, env map[string]string) config.Config {
 func TestLoadDefaults(t *testing.T) {
 	t.Parallel()
 
+	defaultStateDir := expectedDefaultStateDir()
+
 	for _, tt := range []struct {
 		name string
 		env  map[string]string
@@ -95,40 +112,40 @@ func TestLoadDefaults(t *testing.T) {
 			name: "no variables set",
 			env:  nil,
 			want: config.Config{
-				BaseImage:   "build/k8labs-base.qcow2",
-				Firmware:    "build/CLOUDHV.fd",
-				VMDiskDir:   "build/vm-disks",
-				SocketDir:   "/tmp/ch-capi",
-				StateDir:    "/var/lib/k8slab",
-				CHBinary:    "cloud-hypervisor",
-				QemuImg:     "qemu-img",
-				Dnsmasq:     "dnsmasq",
-				NetworkCIDR: "192.168.124.0/24",
+				BaseImage:    "build/k8labs-base.qcow2",
+				Firmware:     "build/CLOUDHV.fd",
+				VMDiskDir:    "build/vm-disks",
+				SocketDir:    "/tmp/ch-capi",
+				StateDir:     defaultStateDir,
+				CHBinary:     "cloud-hypervisor",
+				QemuImg:      "qemu-img",
+				K8NetdSocket: "/run/user/1000/k8snet/control.sock",
+				NetworkCIDR:  "192.168.124.0/24",
 			},
 		},
 		{
 			name: "empty string is treated as unset",
 			env: map[string]string{
-				"HYPERVISOR_BASE_IMAGE":   "",
-				"HYPERVISOR_FIRMWARE":     "",
-				"HYPERVISOR_VM_DISKS_DIR": "",
-				"HYPERVISOR_SOCKET_DIR":   "",
-				"HYPERVISOR_STATE_DIR":    "",
-				"HYPERVISOR_CH_BINARY":    "",
-				"HYPERVISOR_QEMU_IMG":     "",
-				"HYPERVISOR_DNSMASQ":      "",
-				"HYPERVISOR_NETWORK_CIDR": "",
+				"HYPERVISOR_BASE_IMAGE":    "",
+				"HYPERVISOR_FIRMWARE":      "",
+				"HYPERVISOR_VM_DISKS_DIR":  "",
+				"HYPERVISOR_SOCKET_DIR":    "",
+				"HYPERVISOR_STATE_DIR":     "",
+				"HYPERVISOR_CH_BINARY":     "",
+				"HYPERVISOR_QEMU_IMG":      "",
+				"HYPERVISOR_K8NETD_SOCKET": "",
+				"HYPERVISOR_NETWORK_CIDR":  "",
 			},
 			want: config.Config{
-				BaseImage:   "build/k8labs-base.qcow2",
-				Firmware:    "build/CLOUDHV.fd",
-				VMDiskDir:   "build/vm-disks",
-				SocketDir:   "/tmp/ch-capi",
-				StateDir:    "/var/lib/k8slab",
-				CHBinary:    "cloud-hypervisor",
-				QemuImg:     "qemu-img",
-				Dnsmasq:     "dnsmasq",
-				NetworkCIDR: "192.168.124.0/24",
+				BaseImage:    "build/k8labs-base.qcow2",
+				Firmware:     "build/CLOUDHV.fd",
+				VMDiskDir:    "build/vm-disks",
+				SocketDir:    "/tmp/ch-capi",
+				StateDir:     defaultStateDir,
+				CHBinary:     "cloud-hypervisor",
+				QemuImg:      "qemu-img",
+				K8NetdSocket: "/run/user/1000/k8snet/control.sock",
+				NetworkCIDR:  "192.168.124.0/24",
 			},
 		},
 	} {
@@ -148,27 +165,27 @@ func TestLoadOverrides(t *testing.T) {
 	t.Parallel()
 
 	overrides := map[string]string{
-		"HYPERVISOR_BASE_IMAGE":   "/opt/hypervisor/base.qcow2",
-		"HYPERVISOR_FIRMWARE":     "/opt/hypervisor/firmware.bin",
-		"HYPERVISOR_VM_DISKS_DIR": "/srv/vm-disks",
-		"HYPERVISOR_SOCKET_DIR":   "/run/ch-capi",
-		"HYPERVISOR_STATE_DIR":    "/var/lib/ch-capi",
-		"HYPERVISOR_CH_BINARY":    "/usr/local/bin/cloud-hypervisor",
-		"HYPERVISOR_QEMU_IMG":     "/usr/bin/qemu-img",
-		"HYPERVISOR_DNSMASQ":      "/usr/bin/dnsmasq",
-		"HYPERVISOR_NETWORK_CIDR": "10.10.0.0/16",
+		"HYPERVISOR_BASE_IMAGE":    "/opt/hypervisor/base.qcow2",
+		"HYPERVISOR_FIRMWARE":      "/opt/hypervisor/firmware.bin",
+		"HYPERVISOR_VM_DISKS_DIR":  "/srv/vm-disks",
+		"HYPERVISOR_SOCKET_DIR":    "/run/ch-capi",
+		"HYPERVISOR_STATE_DIR":     "/var/lib/ch-capi",
+		"HYPERVISOR_CH_BINARY":     "/usr/local/bin/cloud-hypervisor",
+		"HYPERVISOR_QEMU_IMG":      "/usr/bin/qemu-img",
+		"HYPERVISOR_K8NETD_SOCKET": "/run/custom/k8netd.sock",
+		"HYPERVISOR_NETWORK_CIDR":  "10.10.0.0/16",
 	}
 
 	want := config.Config{
-		BaseImage:   "/opt/hypervisor/base.qcow2",
-		Firmware:    "/opt/hypervisor/firmware.bin",
-		VMDiskDir:   "/srv/vm-disks",
-		SocketDir:   "/run/ch-capi",
-		StateDir:    "/var/lib/ch-capi",
-		CHBinary:    "/usr/local/bin/cloud-hypervisor",
-		QemuImg:     "/usr/bin/qemu-img",
-		Dnsmasq:     "/usr/bin/dnsmasq",
-		NetworkCIDR: "10.10.0.0/16",
+		BaseImage:    "/opt/hypervisor/base.qcow2",
+		Firmware:     "/opt/hypervisor/firmware.bin",
+		VMDiskDir:    "/srv/vm-disks",
+		SocketDir:    "/run/ch-capi",
+		StateDir:     "/var/lib/ch-capi",
+		CHBinary:     "/usr/local/bin/cloud-hypervisor",
+		QemuImg:      "/usr/bin/qemu-img",
+		K8NetdSocket: "/run/custom/k8netd.sock",
+		NetworkCIDR:  "10.10.0.0/16",
 	}
 
 	got := loadConfig(t, overrides)
@@ -221,15 +238,15 @@ func TestLoadMixedDefaultsAndOverrides(t *testing.T) {
 	}
 
 	want := config.Config{
-		BaseImage:   "/data/images/base.qcow2",
-		Firmware:    "build/CLOUDHV.fd",
-		VMDiskDir:   "build/vm-disks",
-		SocketDir:   "/tmp/ch-capi",
-		StateDir:    "/mnt/lab-state",
-		CHBinary:    "cloud-hypervisor",
-		QemuImg:     "qemu-img",
-		Dnsmasq:     "dnsmasq",
-		NetworkCIDR: "10.20.0.0/24",
+		BaseImage:    "/data/images/base.qcow2",
+		Firmware:     "build/CLOUDHV.fd",
+		VMDiskDir:    "build/vm-disks",
+		SocketDir:    "/tmp/ch-capi",
+		StateDir:     "/mnt/lab-state",
+		CHBinary:     "cloud-hypervisor",
+		QemuImg:      "qemu-img",
+		K8NetdSocket: "/run/user/1000/k8snet/control.sock",
+		NetworkCIDR:  "10.20.0.0/24",
 	}
 
 	got := loadConfig(t, env)
