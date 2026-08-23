@@ -18,7 +18,6 @@ the source of truth listed in the table — keep them in sync when bumping.
 | cloud-hypervisor | 48.0-r0 | `Containerfile:40` (`CLOUD_HYPERVISOR_VERSION`) |
 | qemu-img | 11.0.3-r1 | `Containerfile:41` (`QEMU_IMG_VERSION`) |
 | squashfs-tools | 4.7.5-r0 | `Containerfile:42` (`SQUASHFS_TOOLS_VERSION`) |
-| dnsmasq | 2.93-r0 | `Containerfile:43` (`DNSMASQ_VERSION`) |
 
 Source files:
 

@@ -8,7 +8,8 @@
 #       entrypoint path /usr/local/bin/cluster-api-hypervisor, and the
 #       image entrypoint must be set to that provider binary;
 #     - the pinned tool binaries discoverable on PATH inside the container:
-#       cloud-hypervisor, qemu-img, mksquashfs, dnsmasq.
+#       cloud-hypervisor, qemu-img, mksquashfs. DNS/DHCP come from the
+#       k8netd daemon quadlet and ship in no image.
 #
 # Image reference resolution (first match wins):
 #   1. the IMAGE environment variable;
@@ -40,7 +41,7 @@ set -Eeuo pipefail
 
 readonly DEFAULT_IMAGE="cluster-api-hypervisor:dev"
 readonly ENTRYPOINT_BIN="/usr/local/bin/cluster-api-hypervisor"
-readonly REQUIRED_TOOLS="cloud-hypervisor qemu-img mksquashfs dnsmasq"
+readonly REQUIRED_TOOLS="cloud-hypervisor qemu-img mksquashfs"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly SCRIPT_DIR

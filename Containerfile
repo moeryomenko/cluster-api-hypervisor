@@ -7,7 +7,9 @@
 #   - cloud-hypervisor : per-VM subprocess management
 #   - qemu-img         : root disk convert/resize
 #   - mksquashfs       : confext data disk packaging (squashfs-tools)
-#   - dnsmasq          : cluster DNS forwarder
+#
+# DNS and DHCP are served by the k8netd daemon (a separate user quadlet), so
+# no DNS forwarder ships in this image.
 #
 # The runtime base is Alpine edge (pinned by digest) because cloud-hypervisor
 # is packaged only in Alpine's edge/testing repository. Every tool is pinned to
@@ -40,14 +42,12 @@ FROM alpine:edge@sha256:266f29255458134745f2bf588cb23ed1ed1768b96ff2580a05d70a8a
 ARG CLOUD_HYPERVISOR_VERSION=48.0-r0
 ARG QEMU_IMG_VERSION=11.0.3-r1
 ARG SQUASHFS_TOOLS_VERSION=4.7.5-r0
-ARG DNSMASQ_VERSION=2.93-r0
 
 RUN apk add --no-cache \
         --repository https://dl-cdn.alpinelinux.org/alpine/edge/testing \
         cloud-hypervisor=${CLOUD_HYPERVISOR_VERSION} \
         qemu-img=${QEMU_IMG_VERSION} \
-        squashfs-tools=${SQUASHFS_TOOLS_VERSION} \
-        dnsmasq=${DNSMASQ_VERSION}
+        squashfs-tools=${SQUASHFS_TOOLS_VERSION}
 
 COPY --from=builder /out/cluster-api-hypervisor /usr/local/bin/cluster-api-hypervisor
 
