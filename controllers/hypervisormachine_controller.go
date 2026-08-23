@@ -64,6 +64,11 @@ const (
 	// vmProvisionedCondition is the condition type reported once the
 	// cloud-hypervisor VM backing the machine is provisioned and running.
 	vmProvisionedCondition = clusterv1.ConditionType("VMProvisioned")
+
+	// controlPlaneSSHPort is the VM-side SSH port the machine controller
+	// publishes for control-plane machines next to the apiserver port
+	// (controlPlaneAPIServerPort).
+	controlPlaneSSHPort int32 = 22
 )
 
 // HypervisorMachineReconciler reconciles a HypervisorMachine object: it
@@ -358,10 +363,13 @@ func (r *HypervisorMachineReconciler) effectiveMAC(
 
 // reconcileIdentity ensures the machine identity: the MAC address (derived
 // once per reconcile in Reconcile and passed in) and the k8netd port/IP. It
-// creates the port, attaches it to the cluster network, and allocates an IP
-// for the MAC, in order. AlreadyExists on create/attach is treated as success
-// for idempotency. The allocated IP is recorded in status.addresses together
-// with the machine hostname and returned.
+// creates the port, attaches it to the cluster network, publishes the
+// control-plane endpoints for a control-plane machine (REQ-008), and
+// allocates an IP for the MAC, in order. AlreadyExists on create/attach is
+// treated as success for idempotency. The allocated IP is recorded in
+// status.addresses together with the machine hostname and returned; the
+// published allocations are recorded on status.publishedPorts in the same
+// status update.
 func (r *HypervisorMachineReconciler) reconcileIdentity(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
@@ -390,6 +398,13 @@ func (r *HypervisorMachineReconciler) reconcileIdentity(
 		}
 	}
 
+	// With the port attached, a control-plane machine publishes its endpoints
+	// through k8netd right away; the recorded allocations ride the status
+	// update of recordAddresses below.
+	if err := r.publishControlPlaneEndpoints(ctx, hm, machine); err != nil {
+		return "", err
+	}
+
 	ip, err := r.K8Netd.AllocateIP(ctx, network, mac)
 	if err != nil {
 		r.Recorder.Eventf(
@@ -408,6 +423,75 @@ func (r *HypervisorMachineReconciler) reconcileIdentity(
 	}
 
 	return ip, nil
+}
+
+// publishControlPlaneEndpoints publishes the control-plane endpoints of a
+// control-plane machine through the k8netd PublishPort RPC — the apiserver
+// port and SSH — immediately after the machine's port is attached, and
+// records the returned host ports on status.publishedPorts. Worker machines
+// publish nothing (REQ-008). Publication is idempotent: vmPorts already
+// recorded are not re-published, so repeated reconciles issue no duplicate
+// allocations; a failed call surfaces as a reconcile error so the existing
+// retry path re-runs it.
+func (r *HypervisorMachineReconciler) publishControlPlaneEndpoints(
+	ctx context.Context,
+	hm *infrastructurev1alpha1.HypervisorMachine,
+	machine *clusterv1.Machine,
+) error {
+	if !isControlPlaneMachine(machine) {
+		return nil
+	}
+
+	for _, vmPort := range []int32{controlPlaneAPIServerPort, controlPlaneSSHPort} {
+		if _, ok := publishedHostPort(hm.Status.PublishedPorts, vmPort); ok {
+			continue
+		}
+		hostPort, err := r.K8Netd.PublishPort(ctx, hm.Name, vmPort)
+		if err != nil {
+			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to publish vm_port %d for %q: %v", vmPort, hm.Name, err)
+			return fmt.Errorf("publish vm_port %d for %q: %w", vmPort, hm.Name, err)
+		}
+		hm.Status.PublishedPorts = upsertPublishedPort(hm.Status.PublishedPorts, infrastructurev1alpha1.MachinePublishedPort{
+			VMPort:   vmPort,
+			HostPort: hostPort,
+		})
+	}
+
+	return nil
+}
+
+// isControlPlaneMachine reports whether the owning CAPI Machine carries the
+// control-plane role label — the signal the control-plane controller labels
+// its Machines with.
+func isControlPlaneMachine(machine *clusterv1.Machine) bool {
+	_, ok := machine.Labels[clusterv1.MachineControlPlaneLabel]
+	return ok
+}
+
+// publishedHostPort returns the recorded host port for vmPort in ports, and
+// whether such an entry exists.
+func publishedHostPort(ports []infrastructurev1alpha1.MachinePublishedPort, vmPort int32) (int32, bool) {
+	for _, p := range ports {
+		if p.VMPort == vmPort {
+			return p.HostPort, true
+		}
+	}
+	return 0, false
+}
+
+// upsertPublishedPort records allocation in ports, replacing an existing
+// entry for the same VM-side port.
+func upsertPublishedPort(
+	ports []infrastructurev1alpha1.MachinePublishedPort,
+	allocation infrastructurev1alpha1.MachinePublishedPort,
+) []infrastructurev1alpha1.MachinePublishedPort {
+	for i := range ports {
+		if ports[i].VMPort == allocation.VMPort {
+			ports[i] = allocation
+			return ports
+		}
+	}
+	return append(ports, allocation)
 }
 
 // recordAddresses writes the allocated IP and the machine hostname into

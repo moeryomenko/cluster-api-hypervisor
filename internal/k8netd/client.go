@@ -162,6 +162,34 @@ func (c *Client) ReleaseIP(ctx context.Context, network, mac string) error {
 	return c.call(ctx, "ReleaseIP", params, nil)
 }
 
+// PublishPort asks the daemon to publish vmPort of the named port to the
+// host, returning the allocated host port. The params travel under exactly
+// the two canonical keys "port" and "vm_port" per the contract envelope. The
+// result must be exactly the {"host_port": N} envelope with a positive port;
+// any other shape is a loud ErrInternal, never a guess (same strictness as
+// AllocateIP).
+func (c *Client) PublishPort(ctx context.Context, port string, vmPort int32) (int32, error) {
+	params := map[string]any{
+		"port":    port,
+		"vm_port": vmPort,
+	}
+	var raw json.RawMessage
+	if err := c.call(ctx, "PublishPort", params, &raw); err != nil {
+		return 0, err
+	}
+	var envelope struct {
+		HostPort *int32 `json:"host_port"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return 0, fmt.Errorf("%w: PublishPort result shape: want {\"host_port\": N}, got %s", ErrInternal, string(raw))
+	}
+	if envelope.HostPort == nil || *envelope.HostPort <= 0 {
+		return 0, fmt.Errorf("%w: PublishPort result shape: want a positive host_port, got %s", ErrInternal, string(raw))
+	}
+
+	return *envelope.HostPort, nil
+}
+
 // rpcRequest is the wire request envelope.
 type rpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`

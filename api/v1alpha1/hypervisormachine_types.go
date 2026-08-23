@@ -45,6 +45,17 @@ type HypervisorMachineSpec struct {
 	RetainDiskOnDelete bool `json:"retainDiskOnDelete,omitempty"`
 }
 
+// MachinePublishedPort records one host-published endpoint of the machine's
+// VM: the VM-side port and the host port k8netd allocated for it through the
+// PublishPort RPC.
+type MachinePublishedPort struct {
+	// VMPort is the port inside the VM.
+	VMPort int32 `json:"vmPort"`
+
+	// HostPort is the host port k8netd allocated for VMPort.
+	HostPort int32 `json:"hostPort"`
+}
+
 // HypervisorMachineStatus defines the observed state of HypervisorMachine.
 type HypervisorMachineStatus struct {
 	// Ready indicates the VM process is running.
@@ -53,6 +64,12 @@ type HypervisorMachineStatus struct {
 	// Addresses is the list of addresses for the VM: the allocated static IP
 	// and the machine hostname.
 	Addresses []clusterv1.MachineAddress `json:"addresses,omitempty"`
+
+	// PublishedPorts lists the host-published endpoints of the machine
+	// recorded through the k8netd PublishPort RPC. Control-plane machines
+	// publish the apiserver (6443) and SSH (22); worker machines publish
+	// nothing.
+	PublishedPorts []MachinePublishedPort `json:"publishedPorts,omitempty"`
 
 	// ProviderID is the infrastructure provider ID in the form
 	// hypervisor://<cluster>/<machine>.

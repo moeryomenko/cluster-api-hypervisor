@@ -1153,7 +1153,10 @@ func TestControlPlaneReadinessWritesKubeconfig(t *testing.T) {
 	c := mustReconcileClient(t)
 	fx, lc, lcp, pk := newReadinessControlPlane(t, c, "cp-readiness-healthy", nil)
 
-	newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+	hm := newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+	// REQ-009: the kubeconfig endpoint comes from the recorded 6443
+	// allocation, so the readiness fixture records one.
+	setHMPublishedPorts(t, c, hm, infrastructurev1alpha1.MachinePublishedPort{VMPort: 6443, HostPort: 26443})
 	fx.reconcileControlPlane(t, lcp.cp)
 
 	if len(fx.health.calls) == 0 {
@@ -1176,7 +1179,7 @@ func TestControlPlaneReadinessWritesKubeconfig(t *testing.T) {
 		t.Fatalf("kubeconfig Secret has no %q data key (keys %v)", kubeconfigSecretDataKey, secret.Data)
 	}
 	doc := parseKubeconfig(t, data)
-	wantServer := "https://127.0.0.1:6443"
+	wantServer := "https://127.0.0.1:26443"
 	if len(doc.Clusters) != 1 || doc.Clusters[0].Cluster.Server != wantServer {
 		t.Errorf("kubeconfig server = %+v, want %q", doc.Clusters, wantServer)
 	}
@@ -1278,14 +1281,15 @@ func TestControlPlaneReadinessWaitsForMachineAddresses(t *testing.T) {
 }
 
 // TestControlPlaneReadinessKubeconfigContent pins the rendered kubeconfig
-// content: the document is a Config whose single cluster entry serves
-// https://127.0.0.1:6443 and whose certificate-authority-data is exactly the
-// base64 encoding of the cluster PKI CA.
+// content: the document is a Config whose single cluster entry serves the
+// recorded 6443 allocation on loopback and whose certificate-authority-data is
+// exactly the base64 encoding of the cluster PKI CA.
 func TestControlPlaneReadinessKubeconfigContent(t *testing.T) {
 	c := mustReconcileClient(t)
 	fx, lc, lcp, pk := newReadinessControlPlane(t, c, "cp-readiness-content", nil)
 
-	newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+	hm := newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+	setHMPublishedPorts(t, c, hm, infrastructurev1alpha1.MachinePublishedPort{VMPort: 6443, HostPort: 26443})
 	fx.reconcileControlPlane(t, lcp.cp)
 
 	secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
@@ -1300,7 +1304,7 @@ func TestControlPlaneReadinessKubeconfigContent(t *testing.T) {
 	if len(doc.Clusters) != 1 {
 		t.Fatalf("kubeconfig has %d cluster entries, want 1", len(doc.Clusters))
 	}
-	wantServer := "https://127.0.0.1:6443"
+	wantServer := "https://127.0.0.1:26443"
 	if got := doc.Clusters[0].Cluster.Server; got != wantServer {
 		t.Errorf("kubeconfig server = %q, want %q", got, wantServer)
 	}
@@ -1600,15 +1604,16 @@ func TestControlPlaneScaleVersion(t *testing.T) {
 // TASK-011 VC-06 REQ-006 — endpoint + PKI: kubeconfig and readiness use loopback.
 //
 // Grill-me: reserved IP is dynamic (not hardcoded .20); rendered kubeconfig must
-// be https://127.0.0.1:6443 even when the VM's InternalIP differs; healthz seam
-// still polls the internal IP while the kubeconfig uses loopback; second
-// reconcile converges without duplicating the Secret.
+// be loopback at the recorded 6443 allocation (REQ-009) even when the VM's
+// InternalIP differs; healthz seam still polls the internal IP while the
+// kubeconfig uses loopback; second reconcile converges without duplicating the
+// Secret.
 // RED: current impl renders https://<internal-IP>:6443, so the server assertion fails.
 func TestControlPlaneKubeconfigServerIsLoopback(t *testing.T) {
 	c := mustReconcileClient(t)
 	// Use a non-default reserved IP to prove not hardcoded .20.
 	const reservedIP = "192.168.124.77"
-	const wantServer = "https://127.0.0.1:6443"
+	const wantServer = "https://127.0.0.1:26443"
 	lc := newLinkedCluster(t, c, "cp-kubeconfig-loopback", "capi-cluster")
 	machineName := lc.name + "-cp-0"
 	pk := mustGenerateClusterPKI(t, reservedIP, machineName)
@@ -1618,7 +1623,8 @@ func TestControlPlaneKubeconfigServerIsLoopback(t *testing.T) {
 	// First reconcile creates Machine + PKI Secret.
 	fx.reconcileControlPlane(t, lcp.cp)
 	// VM boots with the reserved internal IP (simulating AllocateIP result).
-	newControlPlaneInfraMachine(t, c, lcp, machineName, reservedIP)
+	hm := newControlPlaneInfraMachine(t, c, lcp, machineName, reservedIP)
+	setHMPublishedPorts(t, c, hm, infrastructurev1alpha1.MachinePublishedPort{VMPort: 6443, HostPort: 26443})
 	fx.reconcileControlPlane(t, lcp.cp)
 
 	if len(fx.health.calls) == 0 {
@@ -1672,13 +1678,14 @@ func TestControlPlaneKubeconfigLoopbackWithDifferentReservedIPs(t *testing.T) {
 			fx := newControlPlaneFixtureWithPKI(t, c, pk)
 			lcp := newLinkedControlPlane(t, c, lc, lc.name+"-cp", 1, nil)
 			fx.reconcileControlPlane(t, lcp.cp)
-			newControlPlaneInfraMachine(t, c, lcp, machineName, reservedIP)
+			hm := newControlPlaneInfraMachine(t, c, lcp, machineName, reservedIP)
+			setHMPublishedPorts(t, c, hm, infrastructurev1alpha1.MachinePublishedPort{VMPort: 6443, HostPort: 26443})
 			fx.reconcileControlPlane(t, lcp.cp)
 			secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
 			doc := parseKubeconfig(t, secret.Data[kubeconfigSecretDataKey])
-			if doc.Clusters[0].Cluster.Server != "https://127.0.0.1:6443" {
+			if doc.Clusters[0].Cluster.Server != "https://127.0.0.1:26443" {
 				t.Errorf(
-					"reserved %s: kubeconfig server = %q, want https://127.0.0.1:6443",
+					"reserved %s: kubeconfig server = %q, want https://127.0.0.1:26443",
 					reservedIP,
 					doc.Clusters[0].Cluster.Server,
 				)

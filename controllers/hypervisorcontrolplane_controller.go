@@ -17,6 +17,7 @@ limitations under the License.
 package controllers
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -206,20 +207,21 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 
 	log.Info("reconciled control-plane Machines", "controlPlane", cp.Name, "replicas", replicas)
 
-	// Readiness: once the first control-plane Machine's VM reports an address,
-	// poll the workload apiserver and, when healthy, render the admin
-	// kubeconfig into the conventional <cluster>-kubeconfig Secret and mark
-	// the control plane initialized and ready. A VM with no address yet, or an
-	// apiserver that is not yet healthy, is not an error: the reconcile
-	// requeues and keeps polling.
-	if !cp.Status.Ready {
-		res, err := r.reconcileReadiness(ctx, cp, cluster)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if res.RequeueAfter > 0 {
-			return res, nil
-		}
+	// Readiness and kubeconfig: once the first control-plane Machine's VM
+	// reports an address, poll the workload apiserver and, when healthy,
+	// render the admin kubeconfig into the conventional <cluster>-kubeconfig
+	// Secret and mark the control plane initialized and ready. The kubeconfig
+	// keeps reconciling to the currently recorded published endpoint even
+	// after the control plane is ready (REQ-009), so a re-allocation reaches
+	// consumers within one reconcile. A VM with no address yet, a missing
+	// recorded allocation, or an apiserver that is not yet healthy is not an
+	// error: the reconcile requeues and keeps polling.
+	res, err := r.reconcileReadiness(ctx, cp, cluster)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if res.RequeueAfter > 0 {
+		return res, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -548,9 +550,14 @@ func (r *HypervisorControlPlaneReconciler) clusterToHypervisorControlPlane(
 // and once the VM reports an InternalIP it polls the workload apiserver
 // healthz endpoint through the CheckAPIServerHealth seam with the cluster PKI
 // material. A healthy poll renders the admin kubeconfig into the conventional
-// <cluster>-kubeconfig Secret and marks the control plane initialized and
-// ready. A VM with no address yet, or an apiserver that is not yet healthy,
-// is not an error: the reconcile requeues after
+// <cluster>-kubeconfig Secret — with the server URL taken from the 6443
+// allocation recorded on the machine's status.publishedPorts (REQ-009); a
+// machine without a recorded allocation has no endpoint to render and requeues
+// rather than falling back to a static port — and marks the control plane
+// initialized and ready. After readiness, the kubeconfig keeps reconciling to
+// the currently recorded allocation so a changed endpoint updates the existing
+// Secret in place. A VM with no address yet, or an apiserver that is not yet
+// healthy, is not an error: the reconcile requeues after
 // controlPlaneReadinessPollInterval so the later boot is eventually noticed.
 func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 	ctx context.Context,
@@ -588,27 +595,37 @@ func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 		return ctrl.Result{}, err
 	}
 
-	if r.CheckAPIServerHealth == nil {
-		log.Info("apiserver healthz seam not wired, waiting", "controlPlane", cp.Name)
-		return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
+	if !cp.Status.Ready {
+		if r.CheckAPIServerHealth == nil {
+			log.Info("apiserver healthz seam not wired, waiting", "controlPlane", cp.Name)
+			return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
+		}
+		if err := r.CheckAPIServerHealth(ctx, cpIP, pk.CA, pk.CAKey, pk.CA); err != nil {
+			log.Info("workload apiserver not healthy yet, waiting", "ip", cpIP, "error", err)
+			return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
+		}
 	}
-	if err := r.CheckAPIServerHealth(ctx, cpIP, pk.CA, pk.CAKey, pk.CA); err != nil {
-		log.Info("workload apiserver not healthy yet, waiting", "ip", cpIP, "error", err)
+
+	apiHostPort, ok := publishedHostPort(hm.Status.PublishedPorts, controlPlaneAPIServerPort)
+	if !ok {
+		log.Info("control-plane VM has no recorded apiserver port allocation yet, waiting", "machine", machine.Name)
 		return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
 	}
 
-	serverURL := fmt.Sprintf("https://%s:%d", "127.0.0.1", controlPlaneAPIServerPort)
+	serverURL := fmt.Sprintf("https://%s:%d", "127.0.0.1", apiHostPort)
 	if err := r.ensureKubeconfigSecret(ctx, cp, cluster, serverURL, pk); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	cp.Status.Initialized = true
-	cp.Status.Ready = true
-	markControlPlaneReady(cp, corev1.ConditionTrue, "ControlPlaneReady", "control plane apiserver is healthy")
-	if err := r.Status().Update(ctx, cp); err != nil {
-		return ctrl.Result{}, fmt.Errorf("update HypervisorControlPlane readiness status: %w", err)
+	if !cp.Status.Ready {
+		cp.Status.Initialized = true
+		cp.Status.Ready = true
+		markControlPlaneReady(cp, corev1.ConditionTrue, "ControlPlaneReady", "control plane apiserver is healthy")
+		if err := r.Status().Update(ctx, cp); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update HypervisorControlPlane readiness status: %w", err)
+		}
+		log.Info("control plane initialized and ready", "controlPlane", cp.Name, "server", serverURL)
 	}
-	log.Info("control plane initialized and ready", "controlPlane", cp.Name, "server", serverURL)
 
 	return ctrl.Result{}, nil
 }
@@ -666,10 +683,12 @@ func (r *HypervisorControlPlaneReconciler) clusterPKI(
 	return pk, nil
 }
 
-// ensureKubeconfigSecret writes the rendered admin kubeconfig as the
-// conventional <cluster>-kubeconfig Secret in the control plane's namespace
-// under the "value" data key, unless the Secret already exists so a second
-// reconcile does not duplicate it.
+// ensureKubeconfigSecret reconciles the conventional <cluster>-kubeconfig
+// Secret to the current server URL: it creates the Secret in the control
+// plane's namespace under the "value" data key when absent, and updates the
+// existing Secret's data value in place when the rendered document changes —
+// write-once semantics become reconcile-to-current, so a re-allocation of the
+// published apiserver port reaches consumers within one reconcile (REQ-009).
 func (r *HypervisorControlPlaneReconciler) ensureKubeconfigSecret(
 	ctx context.Context,
 	cp *controlplanev1alpha1.HypervisorControlPlane,
@@ -678,23 +697,35 @@ func (r *HypervisorControlPlaneReconciler) ensureKubeconfigSecret(
 	pk pki.ClusterPKI,
 ) error {
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: cluster.Name + "-kubeconfig"}
-	secret := &corev1.Secret{}
-	if err := r.Get(ctx, key, secret); err == nil {
-		return nil
-	} else if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("get kubeconfig Secret %q: %w", key, err)
-	}
-
 	data, err := pki.RenderKubeconfig(pk.CA, serverURL, controlPlaneKubeconfigUser, pk.CA, pk.CAKey)
 	if err != nil {
 		return fmt.Errorf("render admin kubeconfig: %w", err)
 	}
-	secret = &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
-		Data:       map[string][]byte{controlPlaneKubeconfigDataKey: data},
+
+	secret := &corev1.Secret{}
+	switch err := r.Get(ctx, key, secret); {
+	case apierrors.IsNotFound(err):
+		secret = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+			Data:       map[string][]byte{controlPlaneKubeconfigDataKey: data},
+		}
+		if err := r.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create kubeconfig Secret %q: %w", key, err)
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("get kubeconfig Secret %q: %w", key, err)
 	}
-	if err := r.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create kubeconfig Secret %q: %w", key, err)
+
+	if bytes.Equal(secret.Data[controlPlaneKubeconfigDataKey], data) {
+		return nil
+	}
+	if secret.Data == nil {
+		secret.Data = map[string][]byte{}
+	}
+	secret.Data[controlPlaneKubeconfigDataKey] = data
+	if err := r.Update(ctx, secret); err != nil {
+		return fmt.Errorf("update kubeconfig Secret %q: %w", key, err)
 	}
 
 	return nil

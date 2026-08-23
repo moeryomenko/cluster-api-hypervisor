@@ -74,6 +74,18 @@ type RPCError struct {
 // and result is nil, the response carries "result":null.
 type HandlerFunc func(params json.RawMessage) (any, *RPCError)
 
+// publishKey is the allocation key of the built-in PublishPort handler: the
+// k8netd port name and the VM-side port published from it.
+type publishKey struct {
+	Port   string `json:"port"`
+	VMPort int32  `json:"vm_port"`
+}
+
+// fakePublishBasePort is the first host port the built-in PublishPort
+// allocator hands out, mirroring the daemon's default publish range start
+// (REQ-010).
+const fakePublishBasePort = 20000
+
 // Server is a fake k8netd control-plane server.
 type Server struct {
 	mu              sync.Mutex
@@ -84,6 +96,8 @@ type Server struct {
 	results         map[string]any
 	errors          map[string]*RPCError
 	expectedVersion string
+	published       map[publishKey]int32
+	nextHostPort    int32
 	closed          bool
 }
 
@@ -109,6 +123,8 @@ func New(socketPath string) (*Server, error) {
 		results:         make(map[string]any),
 		errors:          make(map[string]*RPCError),
 		expectedVersion: "", // empty means accept any version
+		published:       make(map[publishKey]int32),
+		nextHostPort:    fakePublishBasePort,
 	}
 	go s.serve()
 	return s, nil
@@ -305,5 +321,45 @@ func (s *Server) handleConn(conn net.Conn) {
 		_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Result: cannedResult})
 		return
 	}
+	if req.Method == "PublishPort" {
+		result, perr := s.builtinPublishPort(req.Params)
+		if perr != nil {
+			_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Error: perr})
+			return
+		}
+		_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Result: result})
+		return
+	}
 	_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Result: nil})
+}
+
+// builtinPublishPort serves PublishPort when no handler, canned result, or
+// canned error is registered for the method: allocations are keyed by the
+// full (port, vm_port) pair, an idempotent re-publish returns the same host
+// port, and distinct pairs get distinct ports — the deterministic allocator
+// semantics controller suites rely on without registering handlers. A
+// registered handler via Handle (or SetResult/SetError) keeps shadowing this
+// default.
+func (s *Server) builtinPublishPort(params json.RawMessage) (any, *RPCError) {
+	var key publishKey
+	if err := json.Unmarshal(params, &key); err != nil {
+		return nil, &RPCError{Code: "invalid_params", Message: fmt.Sprintf("decode PublishPort params: %v", err)}
+	}
+	if key.Port == "" || key.VMPort <= 0 {
+		return nil, &RPCError{Code: "invalid_params", Message: "PublishPort params must carry port and vm_port"}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.published == nil {
+		s.published = make(map[publishKey]int32)
+	}
+	if host, ok := s.published[key]; ok {
+		return map[string]int32{"host_port": host}, nil
+	}
+	host := s.nextHostPort
+	s.nextHostPort++
+	s.published[key] = host
+
+	return map[string]int32{"host_port": host}, nil
 }

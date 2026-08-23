@@ -163,6 +163,32 @@ spec:
                   ProviderID is the infrastructure provider ID in the form
                   hypervisor://<cluster>/<machine>.
                 type: string
+              publishedPorts:
+                description: |-
+                  PublishedPorts lists the host-published endpoints of the machine
+                  recorded through the k8netd PublishPort RPC. Control-plane machines
+                  publish the apiserver (6443) and SSH (22); worker machines publish
+                  nothing.
+                items:
+                  description: |-
+                    MachinePublishedPort records one host-published endpoint of the machine's
+                    VM: the VM-side port and the host port k8netd allocated for it through the
+                    PublishPort RPC.
+                  properties:
+                    hostPort:
+                      description: HostPort is the host port k8netd allocated for
+                        VMPort.
+                      format: int32
+                      type: integer
+                    vmPort:
+                      description: VMPort is the port inside the VM.
+                      format: int32
+                      type: integer
+                  required:
+                  - hostPort
+                  - vmPort
+                  type: object
+                type: array
               ready:
                 description: Ready indicates the VM process is running.
                 type: boolean
