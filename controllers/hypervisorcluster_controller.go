@@ -15,14 +15,14 @@ limitations under the License.
 */
 
 // Package controllers implements the provider's Kubernetes controllers. The
-// HypervisorCluster reconciler owns the host network stack of one cluster:
-// the lab bridge, the dnsmasq DNS forwarder, and the nftables NAT table, all
-// behind injectable seams so the reconcile contract is testable without host
-// privileges.
+// HypervisorCluster reconciler owns the cluster network via the k8netd daemon:
+// it creates and deletes the per-cluster network through a JSON-RPC client
+// instead of touching the host bridge, dnsmasq, or nftables directly.
 package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -43,25 +43,18 @@ import (
 
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
 	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/dnsmasq"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/ipam"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/networking"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/nft"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
 )
 
 const (
-	// hypervisorClusterFinalizer protects the host network stack of a cluster
+	// hypervisorClusterFinalizer protects the k8netd network of a cluster
 	// until the controller has torn it down.
 	hypervisorClusterFinalizer = "hypervisorcluster.infrastructure.cluster.x-k8s.io"
 
 	// defaultPoolStart and defaultPoolEnd bound the static IP pool handed to
-	// the per-cluster allocator.
+	// k8netd as the per-cluster pool.
 	defaultPoolStart = "192.168.124.20"
 	defaultPoolEnd   = "192.168.124.200"
-
-	// defaultBridgeName is the effective bridge name when the spec leaves it
-	// empty.
-	defaultBridgeName = "k8sbr0"
 
 	// defaultControlPlanePort is the workload API server port published in
 	// status.controlPlaneEndpoint.
@@ -82,21 +75,15 @@ type HypervisorClusterReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
-	// Net orchestrates the cluster bridge and machine TAPs over netlink.
-	Net *networking.Manager
-	// Nft owns the cluster NAT table.
-	Nft *nft.Manager
-	// Dnsmasq owns the cluster DNS forwarder subprocess.
-	Dnsmasq *dnsmasq.Manager
-	// NewAllocator constructs the per-cluster static IP allocator from the
-	// cluster CIDR, gateway, and pool bounds.
-	NewAllocator func(clusterCIDR, gateway, poolStart, poolEnd string) (*ipam.Allocator, error)
+	// K8Netd is the k8netd JSON-RPC client used to create and delete the
+	// per-cluster network. It is injected from main.go via cfg.K8NetdSocket.
+	K8Netd *k8netd.Client
 }
 
 // Reconcile moves the current state of the HypervisorCluster towards the
 // desired state: it resolves the linked CAPI Cluster, applies the paused
-// gate, provisions the host network stack on normal reconciles, and tears the
-// stack down on deletion.
+// gate, provisions the k8netd network on normal reconciles, and tears the
+// network down on deletion.
 func (r *HypervisorClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -140,39 +127,38 @@ func (r *HypervisorClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-// reconcileNormal provisions the host network stack in order — bridge,
-// dnsmasq, NAT ruleset, then the IPAM allocator — and reports the object ready
-// with the InfrastructureReady condition true once every step succeeded.
+// reconcileNormal provisions the k8netd network and reports the object ready
+// with the InfrastructureReady condition true once the call succeeded. The
+// call is idempotent: AlreadyExists is treated as success, and repeated
+// reconciles after the object is marked ready do not issue a second
+// CreateNetwork.
 func (r *HypervisorClusterReconciler) reconcileNormal(
 	ctx context.Context,
 	hc *infrastructurev1alpha1.HypervisorCluster,
 	cluster *clusterv1.Cluster,
 ) error {
-	network := &hc.Spec.Network
-
-	bridgeName := effectiveBridgeName(network)
-	if err := r.Net.EnsureBridge(bridgeName); err != nil {
-		r.Recorder.Eventf(hc, corev1.EventTypeWarning, "FailedProvision", "failed to ensure bridge %q: %v", bridgeName, err)
-		return fmt.Errorf("ensure bridge %q: %w", bridgeName, err)
+	// Only create the network if the object is not yet marked ready. This
+	// makes repeated reconciles idempotent without issuing a duplicate
+	// CreateNetwork, while still treating AlreadyExists as success when the
+	// network was created externally.
+	if !isInfrastructureReady(hc) {
+		network := &hc.Spec.Network
+		name := hc.Name
+		if err := r.K8Netd.CreateNetwork(ctx, name, network.CIDR, network.Gateway, defaultPoolStart, defaultPoolEnd); err != nil {
+			if errors.Is(err, k8netd.ErrAlreadyExists) {
+				// Idempotent: network already exists with same params.
+			} else {
+				r.Recorder.Eventf(hc, corev1.EventTypeWarning, "FailedProvision", "failed to create network %q: %v", name, err)
+				return fmt.Errorf("create network %q: %w", name, err)
+			}
+		}
+		hc.Status.Ready = true
+		markInfrastructureReady(hc)
+	} else {
+		// Already provisioned: ensure Ready remains true.
+		hc.Status.Ready = true
+		markInfrastructureReady(hc)
 	}
-
-	if err := r.Dnsmasq.Start(ctx); err != nil {
-		r.Recorder.Eventf(hc, corev1.EventTypeWarning, "FailedProvision", "failed to start dnsmasq: %v", err)
-		return fmt.Errorf("start dnsmasq: %w", err)
-	}
-
-	if err := r.Nft.Apply(ctx); err != nil {
-		r.Recorder.Eventf(hc, corev1.EventTypeWarning, "FailedProvision", "failed to apply NAT ruleset: %v", err)
-		return fmt.Errorf("apply NAT ruleset: %w", err)
-	}
-
-	if _, err := r.NewAllocator(network.CIDR, network.Gateway, defaultPoolStart, defaultPoolEnd); err != nil {
-		r.Recorder.Eventf(hc, corev1.EventTypeWarning, "FailedProvision", "failed to construct ipam allocator: %v", err)
-		return fmt.Errorf("construct ipam allocator: %w", err)
-	}
-
-	hc.Status.Ready = true
-	markInfrastructureReady(hc)
 
 	if err := r.reconcileControlPlaneEndpoint(ctx, cluster, hc); err != nil {
 		return err
@@ -185,10 +171,9 @@ func (r *HypervisorClusterReconciler) reconcileNormal(
 	return nil
 }
 
-// reconcileDelete tears the host network stack down — dnsmasq first, then the
-// NAT table, then the bridge — and drops the finalizer so the object is
-// reclaimed. Every step is idempotent, so a repeated delete reconcile adds no
-// further host calls.
+// reconcileDelete tears the k8netd network down and drops the finalizer so
+// the object is reclaimed. DeleteNetwork is idempotent: NotFound is treated
+// as success, and a repeated delete reconcile adds no further calls.
 func (r *HypervisorClusterReconciler) reconcileDelete(
 	ctx context.Context,
 	hc *infrastructurev1alpha1.HypervisorCluster,
@@ -197,19 +182,13 @@ func (r *HypervisorClusterReconciler) reconcileDelete(
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.Dnsmasq.Stop(ctx); err != nil {
-		r.Recorder.Eventf(hc, corev1.EventTypeWarning, "FailedTeardown", "failed to stop dnsmasq: %v", err)
-		return ctrl.Result{}, fmt.Errorf("stop dnsmasq: %w", err)
-	}
-
-	if err := r.Nft.Delete(ctx); err != nil {
-		r.Recorder.Eventf(hc, corev1.EventTypeWarning, "FailedTeardown", "failed to delete NAT table: %v", err)
-		return ctrl.Result{}, fmt.Errorf("delete NAT table: %w", err)
-	}
-
-	if err := r.Net.DeleteBridge(effectiveBridgeName(&hc.Spec.Network)); err != nil {
-		r.Recorder.Eventf(hc, corev1.EventTypeWarning, "FailedTeardown", "failed to delete bridge: %v", err)
-		return ctrl.Result{}, fmt.Errorf("delete bridge: %w", err)
+	if err := r.K8Netd.DeleteNetwork(ctx, hc.Name); err != nil {
+		if errors.Is(err, k8netd.ErrNotFound) {
+			// Idempotent: network already gone.
+		} else {
+			r.Recorder.Eventf(hc, corev1.EventTypeWarning, "FailedTeardown", "failed to delete network %q: %v", hc.Name, err)
+			return ctrl.Result{}, fmt.Errorf("delete network %q: %w", hc.Name, err)
+		}
 	}
 
 	controllerutil.RemoveFinalizer(hc, hypervisorClusterFinalizer)
@@ -220,11 +199,26 @@ func (r *HypervisorClusterReconciler) reconcileDelete(
 	return ctrl.Result{}, nil
 }
 
+// isInfrastructureReady reports whether the cluster is already marked ready
+// with the InfrastructureReady condition true.
+func isInfrastructureReady(hc *infrastructurev1alpha1.HypervisorCluster) bool {
+	if !hc.Status.Ready {
+		return false
+	}
+	for i := range hc.Status.Conditions {
+		if hc.Status.Conditions[i].Type == clusterv1.InfrastructureReadyCondition &&
+			hc.Status.Conditions[i].Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
 // reconcileControlPlaneEndpoint publishes status.controlPlaneEndpoint when the
 // linked control plane reports initialized and a control-plane machine holds a
-// static internal IP: the host is the first such IP and the port is 6443. An
-// absent or uninitialized control plane leaves the endpoint untouched without
-// error.
+// static internal IP: the host is 127.0.0.1 and the port is 6443, reachable
+// via the control-plane VM's per-VM passt forwarding. An absent or
+// uninitialized control plane leaves the endpoint untouched without error.
 func (r *HypervisorClusterReconciler) reconcileControlPlaneEndpoint(
 	ctx context.Context,
 	cluster *clusterv1.Cluster,
@@ -262,14 +256,14 @@ func (r *HypervisorClusterReconciler) reconcileControlPlaneEndpoint(
 	}
 
 	for i := range machines.Items {
-		ip, ok, err := r.machineInternalIP(ctx, &machines.Items[i])
+		_, ok, err := r.machineInternalIP(ctx, &machines.Items[i])
 		if err != nil {
 			return err
 		}
 		if !ok {
 			continue
 		}
-		hc.Status.ControlPlaneEndpoint = clusterv1.APIEndpoint{Host: ip, Port: defaultControlPlanePort}
+		hc.Status.ControlPlaneEndpoint = clusterv1.APIEndpoint{Host: "127.0.0.1", Port: defaultControlPlanePort}
 		return nil
 	}
 
@@ -437,13 +431,4 @@ func markInfrastructureReady(hc *infrastructurev1alpha1.HypervisorCluster) {
 		Status:             corev1.ConditionTrue,
 		LastTransitionTime: metav1.Now(),
 	})
-}
-
-// effectiveBridgeName returns the bridge name to ensure, defaulting to k8sbr0
-// when the spec leaves it empty.
-func effectiveBridgeName(network *infrastructurev1alpha1.HypervisorClusterNetworkSpec) string {
-	if network.BridgeName == "" {
-		return defaultBridgeName
-	}
-	return network.BridgeName
 }

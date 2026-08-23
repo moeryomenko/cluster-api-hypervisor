@@ -14,62 +14,42 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// HypervisorCluster controller contract (test-first, red).
+// HypervisorCluster controller contract (post-k8netd integration).
 //
-// This suite pins the contract for the HypervisorCluster reconciler that
-// provisions and tears down the host network stack for one cluster: the lab
-// bridge, the dnsmasq DNS forwarder, and the nftables NAT table. The
-// reconciler is exercised through the committed envtest harness with
-// recording fakes standing in for every host-side effect, so no real
-// netlink, nft, or dnsmasq state is ever touched.
+// The host network stack (bridge, dnsmasq, nftables, static-IP IPAM) is owned
+// by the k8netd daemon; its provisioning and teardown contract is pinned by
+// hypervisorcluster_k8netd_test.go. This suite keeps the contracts that are
+// independent of who owns the network:
 //
-// The contract, in prose:
-//
-//   - HypervisorClusterReconciler carries the controller-runtime wiring
-//     (embedded client.Client, Scheme, Recorder) plus the injectable host
-//     network stack: Net (the bridge/TAP orchestrator), Nft (the NAT table
-//     manager), Dnsmasq (the DNS forwarder manager), and NewAllocator, the
-//     per-cluster static-IP allocator constructor. The tests build every
-//     dependency over a recording seam and hand the fully constructed
-//     managers to the reconciler, so the controller never touches the host.
 //   - Reconcile resolves the object, then the linked CAPI Cluster (owner
 //     reference or clusterName link), then applies the paused gate: an
 //     object carrying the standard paused annotation is left untouched with
 //     no reconcile actions. A missing object and a missing linked Cluster
 //     are both no-ops, not errors.
-//   - Normal reconcile ensures the bridge exists, starts dnsmasq, applies
-//     the NAT ruleset, and constructs the IPAM allocator from the cluster's
-//     network config. When every step succeeds the object is marked ready
-//     with the InfrastructureReady condition true. When the linked control
-//     plane reports initialized and a control-plane machine holds a static
-//     IP, the control-plane endpoint is published with that IP on port
-//     6443; an absent or uninitialized control plane leaves the endpoint
-//     empty without error.
-//   - Delete reconcile (deletion timestamp set, finalizer present) stops
-//     dnsmasq, deletes the NAT table, and removes the bridge, then drops
-//     the finalizer so the object is reclaimed. Teardown is idempotent: a
-//     later reconcile of the missing object adds no further calls.
-//   - Every dependency failure surfaces as a reconcile error that preserves
-//     the underlying error, aborts the provisioning sequence at the failing
-//     step, and leaves the object not ready.
+//   - Control-plane endpoint publication (TASK-011/012): once the linked
+//     control plane reports initialized and a control-plane machine holds an
+//     internal IP, the endpoint is published as 127.0.0.1:6443 — loopback,
+//     reachable via the control-plane VM's per-VM passt forwarding — never
+//     the machine's internal IP. An absent or uninitialized control plane
+//     leaves the endpoint empty without error.
+//
+// The reconciler is exercised through the committed envtest harness with a
+// fake k8netd server standing in for the daemon, so no real host state is
+// ever touched.
 package controllers
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -84,15 +64,13 @@ import (
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
 	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/dnsmasq"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/ipam"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/networking"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/nft"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd/fake"
 	"github.com/moeryomenko/cluster-api-hypervisor/test/helpers"
 )
 
-// Cluster network fixture: the default lab network, plus the documented
-// default static-IP pool bounds the allocator is constructed with.
+// Cluster network fixture: the default lab network values the fixtures write
+// into the HypervisorCluster spec.
 const (
 	testBridge    = "k8sbr0"
 	testCIDR      = "192.168.124.0/24"
@@ -100,235 +78,11 @@ const (
 	testDNSIP     = "192.168.124.1"
 	testNATTable  = "k8slab"
 	testPoolStart = "192.168.124.20"
-	testPoolEnd   = "192.168.124.200"
 	testCPPort    = 6443
 	testCPIP      = "192.168.124.20"
 )
 
-// Compile-time pins for the injected seams and for the reconciler shape the
-// implementation must expose: the four dependencies, the Reconcile
-// signature, and the fake seam implementations. Until the reconciler type
-// exists the package does not compile — that is the intended red phase.
-var (
-	_ func(networking.LinkOps) *networking.Manager                  = networking.NewManager
-	_ func(string, string, nft.Runner) *nft.Manager                 = nft.NewManager
-	_ func(dnsmasq.Config, dnsmasq.Runner, string) *dnsmasq.Manager = dnsmasq.NewManager
-	_ func(string, string, string, string) (*ipam.Allocator, error) = ipam.NewAllocator
-	_ networking.LinkOps                                            = (*recordingLinkOps)(nil)
-	_ nft.Runner                                                    = (*recordingNftRunner)(nil)
-	_ dnsmasq.Runner                                                = (*recordingDnsmasqRunner)(nil)
-	_ func(context.Context, ctrl.Request) (ctrl.Result, error)      = (*HypervisorClusterReconciler)(nil).Reconcile
-)
-
-// fakeLink is the recording seam's view of a kernel link: kind and master
-// bridge only, which is all the contract uses.
-type fakeLink struct {
-	kind   string
-	master string
-}
-
-// linkOpCall records one invocation of the link ops seam.
-type linkOpCall struct {
-	op     string
-	kind   string
-	name   string
-	master string
-}
-
-// Link operations recorded by the fake.
-const (
-	opByName    = "by-name"
-	opAdd       = "add"
-	opSetMaster = "set-master"
-	opDel       = "del"
-)
-
-// recordingLinkOps is an in-memory LinkOps. It records every call in
-// invocation order, simulates kernel link state, and can fail an operation
-// with an injected error (see failBy, keyed by the op constants).
-type recordingLinkOps struct {
-	links  map[string]fakeLink
-	calls  []linkOpCall
-	failBy map[string]error
-}
-
-// LinkByName implements networking.LinkOps: it records the call and returns
-// the link, or ErrLinkNotFound when no such link exists.
-func (f *recordingLinkOps) LinkByName(name string) (networking.Link, error) {
-	f.calls = append(f.calls, linkOpCall{op: opByName, name: name})
-	if err := f.fail(opByName); err != nil {
-		return networking.Link{}, err
-	}
-	l, ok := f.links[name]
-	if !ok {
-		return networking.Link{}, networking.ErrLinkNotFound
-	}
-
-	return networking.Link{Name: name, Kind: l.kind, Master: l.master}, nil
-}
-
-// LinkAdd implements networking.LinkOps: it records the call and creates the
-// link. Creating a link that already exists fails, as a correct manager never
-// double-creates.
-func (f *recordingLinkOps) LinkAdd(kind, name string) error {
-	f.calls = append(f.calls, linkOpCall{op: opAdd, kind: kind, name: name})
-	if err := f.fail(opAdd); err != nil {
-		return err
-	}
-	if _, ok := f.links[name]; ok {
-		return fmt.Errorf("fake: link %q already exists", name)
-	}
-	f.links[name] = fakeLink{kind: kind}
-
-	return nil
-}
-
-// LinkSetMaster implements networking.LinkOps: it records the call and
-// enslaves the named link to the named master bridge.
-func (f *recordingLinkOps) LinkSetMaster(name, master string) error {
-	f.calls = append(f.calls, linkOpCall{op: opSetMaster, name: name, master: master})
-	if err := f.fail(opSetMaster); err != nil {
-		return err
-	}
-	l, ok := f.links[name]
-	if !ok {
-		return networking.ErrLinkNotFound
-	}
-	l.master = master
-	f.links[name] = l
-
-	return nil
-}
-
-// LinkDel implements networking.LinkOps: it records the call and removes the
-// link. Deleting a missing link returns ErrLinkNotFound so the manager can
-// treat deletion as idempotent.
-func (f *recordingLinkOps) LinkDel(name string) error {
-	f.calls = append(f.calls, linkOpCall{op: opDel, name: name})
-	if err := f.fail(opDel); err != nil {
-		return err
-	}
-	if _, ok := f.links[name]; !ok {
-		return networking.ErrLinkNotFound
-	}
-	delete(f.links, name)
-
-	return nil
-}
-
-// fail returns the injected error for the operation key, if any.
-func (f *recordingLinkOps) fail(key string) error {
-	return f.failBy[key]
-}
-
-// newRecordingLinkOps builds an empty fake with a live link table.
-func newRecordingLinkOps() *recordingLinkOps {
-	return &recordingLinkOps{
-		links:  make(map[string]fakeLink),
-		failBy: make(map[string]error),
-	}
-}
-
-// wantLinkCalls asserts the recorded link-op log matches the expected calls
-// exactly, in order.
-func wantLinkCalls(t *testing.T, f *recordingLinkOps, want ...linkOpCall) {
-	t.Helper()
-	if len(f.calls) != len(want) {
-		t.Fatalf("link call log = %v, want %v", f.calls, want)
-	}
-	for i := range want {
-		if f.calls[i] != want[i] {
-			t.Fatalf("link call %d = %v, want %v (full log %v)", i, f.calls[i], want[i], f.calls)
-		}
-	}
-}
-
-// recordedNftCall records one invocation of the nft runner seam: the binary,
-// the exact arguments, and the bytes read from stdin (nil when none).
-type recordedNftCall struct {
-	name string
-	args []string
-	in   []byte
-}
-
-// recordingNftRunner records every nft invocation. When err is set every
-// invocation returns it, standing in for a rejected ruleset or a failed
-// delete.
-type recordingNftRunner struct {
-	calls []recordedNftCall
-	err   error
-}
-
-// Run implements nft.Runner. The context is accepted and ignored:
-// cancellation propagation is the default exec runner's concern, not this
-// contract's.
-func (f *recordingNftRunner) Run(_ context.Context, name string, args []string, stdin io.Reader) ([]byte, error) {
-	argsCopy := append([]string(nil), args...)
-	var in []byte
-	if stdin != nil {
-		in, _ = io.ReadAll(stdin)
-	}
-	f.calls = append(f.calls, recordedNftCall{name: name, args: argsCopy, in: in})
-	if f.err != nil {
-		return nil, f.err
-	}
-
-	return nil, nil
-}
-
-// argLog returns the argument list of every recorded invocation.
-func (f *recordingNftRunner) argLog() [][]string {
-	args := make([][]string, 0, len(f.calls))
-	for _, c := range f.calls {
-		args = append(args, c.args)
-	}
-
-	return args
-}
-
-// recordingDnsmasqRunner records start/stop invocations. When startErr is
-// set a Start returns it, standing in for a failed subprocess launch.
-type recordingDnsmasqRunner struct {
-	calls    []string
-	startErr error
-}
-
-// Start implements dnsmasq.Runner.
-func (f *recordingDnsmasqRunner) Start(_ context.Context, name string, _ []string, _, _ io.Writer) error {
-	f.calls = append(f.calls, "start:"+name)
-	if f.startErr != nil {
-		return f.startErr
-	}
-
-	return nil
-}
-
-// Stop implements dnsmasq.Runner.
-func (f *recordingDnsmasqRunner) Stop(context.Context) error {
-	f.calls = append(f.calls, "stop")
-
-	return nil
-}
-
-// recordingAllocator records every constructor invocation and either builds
-// a real per-cluster allocator or, when err is set, returns the injected
-// error.
-type recordingAllocator struct {
-	calls                     int
-	cidr, gateway, start, end string
-	err                       error
-}
-
-// alloc is the injected NewAllocator implementation.
-func (a *recordingAllocator) alloc(clusterCIDR, gateway, poolStart, poolEnd string) (*ipam.Allocator, error) {
-	a.calls++
-	a.cidr, a.gateway, a.start, a.end = clusterCIDR, gateway, poolStart, poolEnd
-	if a.err != nil {
-		return nil, a.err
-	}
-
-	return ipam.NewAllocator(clusterCIDR, gateway, poolStart, poolEnd)
-}
+var _ func(context.Context, ctrl.Request) (ctrl.Result, error) = (*HypervisorClusterReconciler)(nil).Reconcile
 
 // newScheme registers every group the suite touches: the core client-go
 // types, the three provider groups, and the cluster-api core types the
@@ -622,34 +376,25 @@ func newControlPlaneMachine(t *testing.T, c client.Client, lc *linkedCluster, ip
 	}
 }
 
-// newTestReconciler builds the reconciler under test over the recording
-// seams: a networking manager over the fake link ops, an nft manager over
-// the fake runner, a dnsmasq manager over the fake runner writing its
-// rendered config into a fresh temp dir, and the injected allocator
-// constructor. This composite literal pins the exact reconciler shape the
-// implementation must expose.
-func newTestReconciler(
-	t *testing.T,
-	c client.Client,
-	ops *recordingLinkOps,
-	dnsRunner *recordingDnsmasqRunner,
-	nftRunner *recordingNftRunner,
-	allocator *recordingAllocator,
-) *HypervisorClusterReconciler {
+// newTestReconciler builds the reconciler under test over a fake k8netd
+// server. After the k8netd rewiring (TASK-006) the host-stack seams
+// (Net/Nft/Dnsmasq/NewAllocator) are gone; the reconciler uses a k8netd
+// client, so the fixture wires a fake k8netd server instead of host fakes.
+func newTestReconciler(t *testing.T, c client.Client) *HypervisorClusterReconciler {
 	t.Helper()
 
+	sock := filepath.Join(t.TempDir(), "control.sock")
+	srv, err := fake.New(sock)
+	if err != nil {
+		t.Fatalf("fake.New %q: %v", sock, err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	kc := k8netd.NewClient(sock)
 	return &HypervisorClusterReconciler{
 		Client:   c,
 		Scheme:   newScheme(),
 		Recorder: record.NewFakeRecorder(16),
-		Net:      networking.NewManager(ops),
-		Nft:      nft.NewManager(testBridge, testNATTable, nftRunner),
-		Dnsmasq: dnsmasq.NewManager(dnsmasq.Config{
-			BridgeName:    testBridge,
-			ListenAddress: testDNSIP,
-			Upstream:      []string{"1.1.1.1"},
-		}, dnsRunner, t.TempDir()),
-		NewAllocator: allocator.alloc,
+		K8Netd:   kc,
 	}
 }
 
@@ -664,277 +409,12 @@ func findCondition(hc *infrastructurev1alpha1.HypervisorCluster, t clusterv1.Con
 	return nil
 }
 
-// TestReconcileProvisionsNetworkStack pins the normal reconcile contract:
-// the bridge is ensured, dnsmasq is started, the NAT ruleset is applied, and
-// the allocator is constructed from the cluster's network config. The object
-// also gains a finalizer so deletion is intercepted.
-func TestReconcileProvisionsNetworkStack(t *testing.T) {
-	c := mustReconcileClient(t)
-	ops := newRecordingLinkOps()
-	dnsRunner := &recordingDnsmasqRunner{}
-	nftRunner := &recordingNftRunner{}
-	allocator := &recordingAllocator{}
-	r := newTestReconciler(t, c, ops, dnsRunner, nftRunner, allocator)
-
-	lc := newLinkedCluster(t, c, "hc-provision", "capi-cluster")
-
-	res, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()})
-	if err != nil {
-		t.Fatalf("Reconcile error: %v", err)
-	}
-	if res != (ctrl.Result{}) {
-		t.Errorf("Reconcile result = %+v, want empty (no requeue)", res)
-	}
-
-	// The exact provisioning operations: bridge lookup then create, one
-	// dnsmasq start, one nft apply reading the ruleset from stdin.
-	wantLinkCalls(t, ops,
-		linkOpCall{op: opByName, name: testBridge},
-		linkOpCall{op: opAdd, kind: "bridge", name: testBridge},
-	)
-	wantNft := [][]string{{"-f", "-"}}
-	if !reflect.DeepEqual(nftRunner.argLog(), wantNft) {
-		t.Errorf("nft invocations = %v, want %v", nftRunner.argLog(), wantNft)
-	}
-	wantStart := []string{"start:dnsmasq"}
-	if !reflect.DeepEqual(dnsRunner.calls, wantStart) {
-		t.Errorf("dnsmasq invocations = %v, want %v", dnsRunner.calls, wantStart)
-	}
-
-	// The allocator is constructed once, from the cluster's CIDR, gateway,
-	// and the documented default pool bounds.
-	if allocator.calls != 1 {
-		t.Errorf("allocator constructed %d times, want 1", allocator.calls)
-	}
-	if allocator.cidr != testCIDR || allocator.gateway != testGateway ||
-		allocator.start != testPoolStart || allocator.end != testPoolEnd {
-		t.Errorf("allocator args = (%q, %q, %q, %q), want (%q, %q, %q, %q)",
-			allocator.cidr, allocator.gateway, allocator.start, allocator.end,
-			testCIDR, testGateway, testPoolStart, testPoolEnd)
-	}
-
-	// A finalizer guards the object so deletion is intercepted later.
-	hc := &infrastructurev1alpha1.HypervisorCluster{}
-	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
-		t.Fatalf("Get HypervisorCluster: %v", err)
-	}
-	if len(hc.Finalizers) != 1 {
-		t.Errorf("finalizers = %v, want exactly one", hc.Finalizers)
-	}
-}
-
-// TestReconcileMarksReadyAndCondition pins the status contract: once the
-// network stack is provisioned the object reports ready with the
-// InfrastructureReady condition true, and a second reconcile re-ensures the
-// stack without error (the bridge create is not repeated) while leaving the
-// status stable.
-func TestReconcileMarksReadyAndCondition(t *testing.T) {
-	c := mustReconcileClient(t)
-	ops := newRecordingLinkOps()
-	dnsRunner := &recordingDnsmasqRunner{}
-	nftRunner := &recordingNftRunner{}
-	allocator := &recordingAllocator{}
-	r := newTestReconciler(t, c, ops, dnsRunner, nftRunner, allocator)
-
-	lc := newLinkedCluster(t, c, "hc-ready", "capi-cluster")
-
-	for i := 0; i < 2; i++ {
-		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
-			t.Fatalf("Reconcile %d error: %v", i+1, err)
-		}
-	}
-
-	hc := &infrastructurev1alpha1.HypervisorCluster{}
-	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
-		t.Fatalf("Get HypervisorCluster: %v", err)
-	}
-	if !hc.Status.Ready {
-		t.Error("status.ready = false, want true")
-	}
-	if cond := findCondition(hc, clusterv1.InfrastructureReadyCondition); cond == nil ||
-		cond.Status != corev1.ConditionTrue {
-		t.Errorf("InfrastructureReady condition = %v, want True", cond)
-	}
-
-	// The second reconcile re-ensures the stack: the bridge already exists,
-	// so the create is not repeated, and dnsmasq and nft are applied again
-	// without error.
-	wantLinkCalls(t, ops,
-		linkOpCall{op: opByName, name: testBridge},
-		linkOpCall{op: opAdd, kind: "bridge", name: testBridge},
-		linkOpCall{op: opByName, name: testBridge},
-	)
-	wantNft := [][]string{{"-f", "-"}, {"-f", "-"}}
-	if !reflect.DeepEqual(nftRunner.argLog(), wantNft) {
-		t.Errorf("nft invocations = %v, want %v", nftRunner.argLog(), wantNft)
-	}
-	wantStart := []string{"start:dnsmasq", "start:dnsmasq"}
-	if !reflect.DeepEqual(dnsRunner.calls, wantStart) {
-		t.Errorf("dnsmasq invocations = %v, want %v", dnsRunner.calls, wantStart)
-	}
-}
-
-// TestReconcileControlPlaneEndpoint pins the endpoint contract: once the
-// linked control plane reports initialized and a control-plane machine holds
-// a static IP, the control-plane endpoint is published with that IP on port
-// 6443. An uninitialized control plane and an absent control plane both
-// leave the endpoint empty without error.
-func TestReconcileControlPlaneEndpoint(t *testing.T) {
-	c := mustReconcileClient(t)
-
-	tests := []struct {
-		name        string
-		namespace   string
-		withCP      bool
-		initialized bool
-		withMachine bool
-		wantHost    string
-	}{
-		{
-			name:        "initialized control plane",
-			namespace:   "hc-endpoint-init",
-			withCP:      true,
-			initialized: true,
-			withMachine: true,
-			wantHost:    testCPIP,
-		},
-		{
-			name:        "uninitialized control plane",
-			namespace:   "hc-endpoint-notinit",
-			withCP:      true,
-			initialized: false,
-			withMachine: true,
-			wantHost:    "",
-		},
-		{
-			name:      "no control plane",
-			namespace: "hc-endpoint-nocp",
-			wantHost:  "",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ops := newRecordingLinkOps()
-			dnsRunner := &recordingDnsmasqRunner{}
-			nftRunner := &recordingNftRunner{}
-			allocator := &recordingAllocator{}
-			r := newTestReconciler(t, c, ops, dnsRunner, nftRunner, allocator)
-
-			lc := newLinkedCluster(t, c, tt.namespace, "capi-cluster")
-			if tt.withCP {
-				newControlPlane(t, c, lc, tt.initialized)
-			}
-			if tt.withMachine {
-				newControlPlaneMachine(t, c, lc, testCPIP)
-			}
-
-			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
-				t.Fatalf("Reconcile error: %v", err)
-			}
-
-			hc := &infrastructurev1alpha1.HypervisorCluster{}
-			if err := c.Get(t.Context(), lc.key(), hc); err != nil {
-				t.Fatalf("Get HypervisorCluster: %v", err)
-			}
-			if hc.Status.ControlPlaneEndpoint.Host != tt.wantHost {
-				t.Errorf("controlPlaneEndpoint.host = %q, want %q", hc.Status.ControlPlaneEndpoint.Host, tt.wantHost)
-			}
-			if tt.wantHost != "" && hc.Status.ControlPlaneEndpoint.Port != testCPPort {
-				t.Errorf("controlPlaneEndpoint.port = %d, want %d", hc.Status.ControlPlaneEndpoint.Port, testCPPort)
-			}
-
-			// The network stack is up regardless of the control plane state.
-			if !hc.Status.Ready {
-				t.Error("status.ready = false, want true")
-			}
-		})
-	}
-}
-
-// TestReconcileDeleteTearsDownStack pins the delete reconcile contract:
-// deleting the object with the finalizer set stops dnsmasq, deletes the NAT
-// table, removes the bridge, and drops the finalizer so the object is
-// reclaimed. A later reconcile of the missing object is a no-op.
-func TestReconcileDeleteTearsDownStack(t *testing.T) {
-	c := mustReconcileClient(t)
-	ops := newRecordingLinkOps()
-	dnsRunner := &recordingDnsmasqRunner{}
-	nftRunner := &recordingNftRunner{}
-	allocator := &recordingAllocator{}
-	r := newTestReconciler(t, c, ops, dnsRunner, nftRunner, allocator)
-
-	lc := newLinkedCluster(t, c, "hc-teardown", "capi-cluster")
-
-	// Provision so the finalizer is set.
-	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
-		t.Fatalf("provision reconcile error: %v", err)
-	}
-
-	// Delete the object: the finalizer keeps it around with a deletion
-	// timestamp until the controller tears the stack down.
-	hc := &infrastructurev1alpha1.HypervisorCluster{}
-	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
-		t.Fatalf("Get HypervisorCluster: %v", err)
-	}
-	if err := c.Delete(t.Context(), hc); err != nil {
-		t.Fatalf("Delete HypervisorCluster: %v", err)
-	}
-	pending := &infrastructurev1alpha1.HypervisorCluster{}
-	if err := c.Get(t.Context(), lc.key(), pending); err != nil {
-		t.Fatalf("object vanished before teardown reconcile: %v", err)
-	}
-	if pending.DeletionTimestamp.IsZero() {
-		t.Fatal("deletion timestamp not set after Delete")
-	}
-
-	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
-		t.Fatalf("teardown reconcile error: %v", err)
-	}
-
-	// The finalizer is dropped and the object is reclaimed.
-	if err := c.Get(t.Context(), lc.key(), &infrastructurev1alpha1.HypervisorCluster{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("Get after teardown = %v, want NotFound", err)
-	}
-
-	// The full call log: provisioning on the first pass, then teardown
-	// (dnsmasq stop, NAT delete, bridge delete) on the second.
-	wantLinkCalls(t, ops,
-		linkOpCall{op: opByName, name: testBridge},
-		linkOpCall{op: opAdd, kind: "bridge", name: testBridge},
-		linkOpCall{op: opDel, name: testBridge},
-	)
-	wantNft := [][]string{{"-f", "-"}, {"delete", "table", "inet", testNATTable}}
-	if !reflect.DeepEqual(nftRunner.argLog(), wantNft) {
-		t.Errorf("nft invocations = %v, want %v", nftRunner.argLog(), wantNft)
-	}
-	wantCalls := []string{"start:dnsmasq", "stop"}
-	if !reflect.DeepEqual(dnsRunner.calls, wantCalls) {
-		t.Errorf("dnsmasq invocations = %v, want %v", dnsRunner.calls, wantCalls)
-	}
-
-	// Teardown is idempotent: reconciling the now-missing object adds no
-	// further calls.
-	before := len(ops.calls) + len(nftRunner.calls) + len(dnsRunner.calls)
-	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
-		t.Fatalf("reconcile after deletion error: %v", err)
-	}
-	after := len(ops.calls) + len(nftRunner.calls) + len(dnsRunner.calls)
-	if after != before {
-		t.Errorf("teardown not idempotent: %d calls before, %d after missing-object reconcile", before, after)
-	}
-}
-
 // TestReconcilePausedClusterIsUntouched pins the paused gate: a
 // HypervisorCluster carrying the standard paused annotation triggers no
-// reconcile actions — no stack operations, no allocator construction, no
-// finalizer, no status change — and no error.
+// reconcile actions — no finalizer, no status change — and no error.
 func TestReconcilePausedClusterIsUntouched(t *testing.T) {
 	c := mustReconcileClient(t)
-	ops := newRecordingLinkOps()
-	dnsRunner := &recordingDnsmasqRunner{}
-	nftRunner := &recordingNftRunner{}
-	allocator := &recordingAllocator{}
-	r := newTestReconciler(t, c, ops, dnsRunner, nftRunner, allocator)
+	r := newTestReconciler(t, c)
 
 	lc := newLinkedCluster(t, c, "hc-paused", "capi-cluster")
 	lc.hc.Annotations = map[string]string{clusterv1.PausedAnnotation: ""}
@@ -950,14 +430,6 @@ func TestReconcilePausedClusterIsUntouched(t *testing.T) {
 		t.Errorf("Reconcile result = %+v, want empty", res)
 	}
 
-	if len(ops.calls) != 0 || len(dnsRunner.calls) != 0 || len(nftRunner.calls) != 0 {
-		t.Errorf("paused reconcile touched the stack: link %v, dnsmasq %v, nft %v",
-			ops.calls, dnsRunner.calls, nftRunner.calls)
-	}
-	if allocator.calls != 0 {
-		t.Errorf("paused reconcile constructed the allocator %d times, want 0", allocator.calls)
-	}
-
 	hc := &infrastructurev1alpha1.HypervisorCluster{}
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
@@ -970,150 +442,12 @@ func TestReconcilePausedClusterIsUntouched(t *testing.T) {
 	}
 }
 
-// TestReconcileDependencyFailureSurfaces pins the failure contract for the
-// three stack steps: a failed step surfaces as a reconcile error that
-// preserves the underlying error and aborts the sequence at that step, and
-// the object is left not ready.
-func TestReconcileDependencyFailureSurfaces(t *testing.T) {
-	c := mustReconcileClient(t)
-
-	errBridge := errors.New("fake: bridge create denied")
-	errDnsmasq := errors.New("fake: dnsmasq start denied")
-	errNft := errors.New("fake: nft apply denied")
-
-	tests := []struct {
-		name      string
-		namespace string
-		failBy    map[string]error
-		wantErr   error
-		wantLinks []linkOpCall
-		wantDns   []string
-		wantNft   [][]string
-	}{
-		{
-			name:      "bridge ensure fails",
-			namespace: "hc-fail-bridge",
-			failBy:    map[string]error{opAdd: errBridge},
-			wantErr:   errBridge,
-			wantLinks: []linkOpCall{
-				{op: opByName, name: testBridge},
-				{op: opAdd, kind: "bridge", name: testBridge},
-			},
-			wantNft: [][]string{},
-		},
-		{
-			name:      "dnsmasq start fails",
-			namespace: "hc-fail-dnsmasq",
-			wantErr:   errDnsmasq,
-			wantLinks: []linkOpCall{
-				{op: opByName, name: testBridge},
-				{op: opAdd, kind: "bridge", name: testBridge},
-			},
-			wantDns: []string{"start:dnsmasq"},
-			wantNft: [][]string{},
-		},
-		{
-			name:      "nft apply fails",
-			namespace: "hc-fail-nft",
-			wantErr:   errNft,
-			wantLinks: []linkOpCall{
-				{op: opByName, name: testBridge},
-				{op: opAdd, kind: "bridge", name: testBridge},
-			},
-			wantDns: []string{"start:dnsmasq"},
-			wantNft: [][]string{{"-f", "-"}},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ops := newRecordingLinkOps()
-			for k, v := range tt.failBy {
-				ops.failBy[k] = v
-			}
-			dnsRunner := &recordingDnsmasqRunner{}
-			if tt.wantErr == errDnsmasq {
-				dnsRunner.startErr = errDnsmasq
-			}
-			nftRunner := &recordingNftRunner{}
-			if tt.wantErr == errNft {
-				nftRunner.err = errNft
-			}
-			allocator := &recordingAllocator{}
-			r := newTestReconciler(t, c, ops, dnsRunner, nftRunner, allocator)
-
-			lc := newLinkedCluster(t, c, tt.namespace, "capi-cluster")
-
-			_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()})
-			if err == nil {
-				t.Fatal("Reconcile succeeded, want an error")
-			}
-			if !errors.Is(err, tt.wantErr) {
-				t.Errorf("Reconcile error %v does not wrap %v", err, tt.wantErr)
-			}
-
-			// The failure aborts the provisioning sequence at the failing
-			// step; the steps before it ran, the steps after it did not.
-			wantLinkCalls(t, ops, tt.wantLinks...)
-			if !reflect.DeepEqual(dnsRunner.calls, tt.wantDns) {
-				t.Errorf("dnsmasq invocations = %v, want %v", dnsRunner.calls, tt.wantDns)
-			}
-			if !reflect.DeepEqual(nftRunner.argLog(), tt.wantNft) {
-				t.Errorf("nft invocations = %v, want %v", nftRunner.argLog(), tt.wantNft)
-			}
-
-			// The object is not reported ready.
-			hc := &infrastructurev1alpha1.HypervisorCluster{}
-			if err := c.Get(t.Context(), lc.key(), hc); err != nil {
-				t.Fatalf("Get HypervisorCluster: %v", err)
-			}
-			if hc.Status.Ready {
-				t.Error("status.ready = true after failed reconcile, want false")
-			}
-		})
-	}
-}
-
-// TestReconcileAllocatorFailureSurfaces pins the allocator failure contract:
-// a failing allocator constructor surfaces as a reconcile error preserving
-// the underlying error, and the object is left not ready.
-func TestReconcileAllocatorFailureSurfaces(t *testing.T) {
-	c := mustReconcileClient(t)
-	errAllocator := errors.New("fake: allocator denied")
-	allocator := &recordingAllocator{err: errAllocator}
-	r := newTestReconciler(t, c, newRecordingLinkOps(), &recordingDnsmasqRunner{}, &recordingNftRunner{}, allocator)
-
-	lc := newLinkedCluster(t, c, "hc-fail-alloc", "capi-cluster")
-
-	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()})
-	if err == nil {
-		t.Fatal("Reconcile succeeded, want an error")
-	}
-	if !errors.Is(err, errAllocator) {
-		t.Errorf("Reconcile error %v does not wrap %v", err, errAllocator)
-	}
-	if allocator.calls != 1 {
-		t.Errorf("allocator constructed %d times, want 1", allocator.calls)
-	}
-
-	hc := &infrastructurev1alpha1.HypervisorCluster{}
-	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
-		t.Fatalf("Get HypervisorCluster: %v", err)
-	}
-	if hc.Status.Ready {
-		t.Error("status.ready = true after failed reconcile, want false")
-	}
-}
-
 // TestReconcileMissingClusterIsUntouched pins the linkage contract: an
 // object with no linked CAPI Cluster is left alone — not provisioned, not
 // marked ready, no finalizer — and reconcile returns no error.
 func TestReconcileMissingClusterIsUntouched(t *testing.T) {
 	c := mustReconcileClient(t)
-	ops := newRecordingLinkOps()
-	dnsRunner := &recordingDnsmasqRunner{}
-	nftRunner := &recordingNftRunner{}
-	allocator := &recordingAllocator{}
-	r := newTestReconciler(t, c, ops, dnsRunner, nftRunner, allocator)
+	r := newTestReconciler(t, c)
 
 	const namespace = "hc-missing"
 	key := client.ObjectKey{Namespace: namespace, Name: "capi-cluster"}
@@ -1161,14 +495,7 @@ func TestReconcileMissingClusterIsUntouched(t *testing.T) {
 // object key that does not exist returns no error and no requeue.
 func TestReconcileMissingObjectIsNoop(t *testing.T) {
 	c := mustReconcileClient(t)
-	r := newTestReconciler(
-		t,
-		c,
-		newRecordingLinkOps(),
-		&recordingDnsmasqRunner{},
-		&recordingNftRunner{},
-		&recordingAllocator{},
-	)
+	r := newTestReconciler(t, c)
 
 	key := client.ObjectKey{Namespace: "hc-missing-obj", Name: "does-not-exist"}
 	res, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
@@ -1178,4 +505,140 @@ func TestReconcileMissingObjectIsNoop(t *testing.T) {
 	if res != (ctrl.Result{}) {
 		t.Errorf("Reconcile result = %+v, want empty", res)
 	}
+}
+
+// TASK-011 VC-06 REQ-006 — endpoint + PKI: reconcileControlPlaneEndpoint
+// publishes 127.0.0.1:6443, not the VM's internal IP.
+//
+// Grill-me: reserved IP is dynamic (not hardcoded .20); endpoint must be
+// loopback even when the machine's InternalIP differs; port must be 6443;
+// uninitialized control plane still leaves endpoint empty; second reconcile
+// converges.
+// RED: current impl publishes the machine's internal IP (e.g. 192.168.124.77),
+// so the host assertion fails.
+func TestReconcileControlPlaneEndpointPublishesLoopback(t *testing.T) {
+	c := mustReconcileClient(t)
+	// Use non-default reserved IP to prove not hardcoded .20.
+	const reservedIP = "192.168.124.77"
+	const wantHost = "127.0.0.1"
+	const wantPort = 6443
+
+	r := newTestReconciler(t, c)
+
+	lc := newLinkedCluster(t, c, "hc-endpoint-loopback", "capi-cluster")
+	newControlPlane(t, c, lc, true)
+	newControlPlaneMachine(t, c, lc, reservedIP)
+
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+
+	hc := &infrastructurev1alpha1.HypervisorCluster{}
+	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
+		t.Fatalf("Get HypervisorCluster: %v", err)
+	}
+	if hc.Status.ControlPlaneEndpoint.Host != wantHost {
+		t.Errorf(
+			"controlPlaneEndpoint.host = %q, want %q (REQ-006 VC-06: must be loopback, not %s)",
+			hc.Status.ControlPlaneEndpoint.Host,
+			wantHost,
+			reservedIP,
+		)
+	}
+	if hc.Status.ControlPlaneEndpoint.Port != wantPort {
+		t.Errorf("controlPlaneEndpoint.port = %d, want %d", hc.Status.ControlPlaneEndpoint.Port, wantPort)
+	}
+	// Prove not still publishing the reserved IP.
+	if hc.Status.ControlPlaneEndpoint.Host == reservedIP {
+		t.Errorf("controlPlaneEndpoint still publishes reserved IP %q, want loopback", reservedIP)
+	}
+	// Prove not hardcoded to old default testCPIP.
+	if hc.Status.ControlPlaneEndpoint.Host == testCPIP && wantHost != testCPIP {
+		t.Logf("endpoint is old default %q, want loopback", testCPIP)
+	}
+	// Second reconcile converges: still loopback.
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
+		t.Fatalf("second Reconcile error: %v", err)
+	}
+	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
+		t.Fatalf("Get HypervisorCluster after second reconcile: %v", err)
+	}
+	if hc.Status.ControlPlaneEndpoint.Host != wantHost || hc.Status.ControlPlaneEndpoint.Port != wantPort {
+		t.Errorf(
+			"after second reconcile endpoint = %s:%d, want %s:%d",
+			hc.Status.ControlPlaneEndpoint.Host,
+			hc.Status.ControlPlaneEndpoint.Port,
+			wantHost,
+			wantPort,
+		)
+	}
+}
+
+// TestReconcileControlPlaneEndpointLoopbackWithDynamicIPs proves the
+// loopback endpoint does not vary with the reserved IP AllocateIP returns.
+func TestReconcileControlPlaneEndpointLoopbackWithDynamicIPs(t *testing.T) {
+	for _, reservedIP := range []string{"192.168.124.50", "192.168.124.90", "192.168.124.200"} {
+		t.Run(reservedIP, func(t *testing.T) {
+			c := mustReconcileClient(t)
+			ns := "hc-endpoint-loopback-" + reservedIP[len(reservedIP)-2:]
+
+			r := newTestReconciler(t, c)
+			lc := newLinkedCluster(t, c, ns, "capi-cluster")
+			newControlPlane(t, c, lc, true)
+			newControlPlaneMachine(t, c, lc, reservedIP)
+			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
+				t.Fatalf("Reconcile error: %v", err)
+			}
+			hc := &infrastructurev1alpha1.HypervisorCluster{}
+			if err := c.Get(t.Context(), lc.key(), hc); err != nil {
+				t.Fatalf("Get HypervisorCluster: %v", err)
+			}
+			if hc.Status.ControlPlaneEndpoint.Host != "127.0.0.1" {
+				t.Errorf("reserved %s: endpoint host = %q, want 127.0.0.1", reservedIP, hc.Status.ControlPlaneEndpoint.Host)
+			}
+			if hc.Status.ControlPlaneEndpoint.Port != 6443 {
+				t.Errorf("reserved %s: endpoint port = %d, want 6443", reservedIP, hc.Status.ControlPlaneEndpoint.Port)
+			}
+		})
+	}
+}
+
+// TestReconcileControlPlaneEndpointLoopbackWhenNoMachine ensures that even
+// with the loopback contract, an absent or uninitialized control plane still
+// leaves the endpoint empty (no regression of the paused/not-ready gate).
+func TestReconcileControlPlaneEndpointLoopbackGate(t *testing.T) {
+	c := mustReconcileClient(t)
+	t.Run("uninitialized control plane leaves endpoint empty", func(t *testing.T) {
+
+		r := newTestReconciler(t, c)
+		lc := newLinkedCluster(t, c, "hc-endpoint-gate-notinit", "capi-cluster")
+		newControlPlane(t, c, lc, false)
+		newControlPlaneMachine(t, c, lc, "192.168.124.77")
+		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
+			t.Fatalf("Reconcile error: %v", err)
+		}
+		hc := &infrastructurev1alpha1.HypervisorCluster{}
+		if err := c.Get(t.Context(), lc.key(), hc); err != nil {
+			t.Fatalf("Get HypervisorCluster: %v", err)
+		}
+		if hc.Status.ControlPlaneEndpoint.Host != "" {
+			t.Errorf("uninitialized: endpoint host = %q, want empty", hc.Status.ControlPlaneEndpoint.Host)
+		}
+	})
+	t.Run("no machine leaves endpoint empty", func(t *testing.T) {
+
+		r := newTestReconciler(t, c)
+		lc := newLinkedCluster(t, c, "hc-endpoint-gate-nomachine", "capi-cluster")
+		newControlPlane(t, c, lc, true)
+		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
+			t.Fatalf("Reconcile error: %v", err)
+		}
+		hc := &infrastructurev1alpha1.HypervisorCluster{}
+		if err := c.Get(t.Context(), lc.key(), hc); err != nil {
+			t.Fatalf("Get HypervisorCluster: %v", err)
+		}
+		if hc.Status.ControlPlaneEndpoint.Host != "" {
+			t.Errorf("no machine: endpoint host = %q, want empty", hc.Status.ControlPlaneEndpoint.Host)
+		}
+	})
 }

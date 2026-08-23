@@ -77,9 +77,13 @@ package controllers
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -96,6 +100,9 @@ import (
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
 	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd/fake"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
 )
 
@@ -161,17 +168,18 @@ func (s *recordingCreateMachine) create(ctx context.Context, machine *clusterv1.
 	return machine, nil
 }
 
-// recordingCPPKI records every invocation and returns the canned cluster PKI,
+// recordingCPPKI records every invocation — the control-plane IP the
+// controller reserved through k8netd — and returns the canned cluster PKI,
 // or the injected error.
 type recordingCPPKI struct {
-	calls int
+	calls []string
 	pk    pki.ClusterPKI
 	err   error
 }
 
 // gen implements the GeneratePKI seam.
-func (s *recordingCPPKI) gen() (pki.ClusterPKI, error) {
-	s.calls++
+func (s *recordingCPPKI) gen(cpIP string) (pki.ClusterPKI, error) {
+	s.calls = append(s.calls, cpIP)
 	if s.err != nil {
 		return pki.ClusterPKI{}, s.err
 	}
@@ -189,6 +197,11 @@ type controlPlaneFixture struct {
 	health        *recordingHealthCheck
 }
 
+// testReservedCPIP is the non-default address the fixture's fake k8netd
+// server answers AllocateIP with; the PKI SAN input must be exactly this
+// reservation, never a pinned pool constant.
+const testReservedCPIP = "192.168.124.77"
+
 // newControlPlaneFixture builds the reconciler under test over the recording
 // seams with the canned cluster PKI fixture bytes.
 func newControlPlaneFixture(t *testing.T, c client.Client) *controlPlaneFixture {
@@ -200,9 +213,11 @@ func newControlPlaneFixture(t *testing.T, c client.Client) *controlPlaneFixture 
 // recording seams with the given cluster PKI. The composite literal pins the
 // exact reconciler shape the implementation must expose: the
 // controller-runtime wiring plus the injectable NewConfig, CreateMachine,
-// GeneratePKI, and CheckAPIServerHealth dependencies. The readiness tests
-// pass real generated PKI so the rendered kubeconfig is parseable; the
-// machine-creation suite keeps the canned fixture bytes.
+// GeneratePKI, K8Netd, and CheckAPIServerHealth dependencies. K8Netd is wired
+// to a fake k8netd server whose AllocateIP answers testReservedCPIP, so the
+// PKI SAN input flows from the reservation. The readiness tests pass real
+// generated PKI so the rendered kubeconfig is parseable; the machine-creation
+// suite keeps the canned fixture bytes.
 func newControlPlaneFixtureWithPKI(t *testing.T, c client.Client, pk pki.ClusterPKI) *controlPlaneFixture {
 	t.Helper()
 
@@ -210,6 +225,14 @@ func newControlPlaneFixtureWithPKI(t *testing.T, c client.Client, pk pki.Cluster
 	createMachine := &recordingCreateMachine{c: c}
 	genPKI := &recordingCPPKI{pk: pk}
 	health := &recordingHealthCheck{}
+
+	sock := filepath.Join(t.TempDir(), "control.sock")
+	srv, err := fake.New(sock)
+	if err != nil {
+		t.Fatalf("fake.New %q: %v", sock, err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	srv.SetResult("AllocateIP", testReservedCPIP)
 
 	r := &HypervisorControlPlaneReconciler{
 		Client:               c,
@@ -219,6 +242,7 @@ func newControlPlaneFixtureWithPKI(t *testing.T, c client.Client, pk pki.Cluster
 		CreateMachine:        createMachine.create,
 		GeneratePKI:          genPKI.gen,
 		CheckAPIServerHealth: health.check,
+		K8Netd:               k8netd.NewClient(sock),
 	}
 
 	return &controlPlaneFixture{r: r, newConfig: newConfig, createMachine: createMachine, genPKI: genPKI, health: health}
@@ -547,8 +571,8 @@ func TestControlPlanePKISecretCreated(t *testing.T) {
 
 		fx.reconcileControlPlane(t, lcp.cp)
 
-		if fx.genPKI.calls != 1 {
-			t.Errorf("GeneratePKI called %d times, want 1", fx.genPKI.calls)
+		if len(fx.genPKI.calls) != 1 {
+			t.Errorf("GeneratePKI called %d times, want 1", len(fx.genPKI.calls))
 		}
 
 		pkiKey := client.ObjectKey{Namespace: lc.namespace, Name: lc.name + "-pki"}
@@ -568,8 +592,8 @@ func TestControlPlanePKISecretCreated(t *testing.T) {
 
 		// A second reconcile does not regenerate or duplicate the Secret.
 		fx.reconcileControlPlane(t, lcp.cp)
-		if fx.genPKI.calls != 1 {
-			t.Errorf("GeneratePKI called %d times across two reconciles, want 1", fx.genPKI.calls)
+		if len(fx.genPKI.calls) != 1 {
+			t.Errorf("GeneratePKI called %d times across two reconciles, want 1", len(fx.genPKI.calls))
 		}
 		if got := countSecretsNamed(t, c, lc.namespace, lc.name+"-pki"); got != 1 {
 			t.Errorf("cluster PKI Secrets = %d, want exactly 1", got)
@@ -583,13 +607,83 @@ func TestControlPlanePKISecretCreated(t *testing.T) {
 
 		fx.reconcileControlPlane(t, lcp.cp)
 
-		if fx.genPKI.calls != 1 {
-			t.Errorf("GeneratePKI called %d times for two replicas, want 1", fx.genPKI.calls)
+		if len(fx.genPKI.calls) != 1 {
+			t.Errorf("GeneratePKI called %d times for two replicas, want 1", len(fx.genPKI.calls))
 		}
 		if got := countSecretsNamed(t, c, lc.namespace, lc.name+"-pki"); got != 1 {
 			t.Errorf("cluster PKI Secrets = %d, want exactly 1", got)
 		}
 	})
+}
+
+// TestControlPlanePKISANInputIsReservedIP pins REQ-006: the PKI SAN input is
+// the cp-0 internal IP reserved through k8netd AllocateIP — for the same MAC
+// derivation the machine controller uses for <control-plane-name>-0 on the
+// cluster's network — never a hardcoded pool address. The fake server answers
+// with a non-default address; the test proves the generator received exactly
+// that reservation and that the stored apiserver certificate carries it plus
+// loopback as its IP SANs.
+func TestControlPlanePKISANInputIsReservedIP(t *testing.T) {
+	c := mustReconcileClient(t)
+
+	sock := filepath.Join(t.TempDir(), "control.sock")
+	srv, err := fake.New(sock)
+	if err != nil {
+		t.Fatalf("fake.New %q: %v", sock, err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	var allocNetwork, allocMAC string
+	srv.Handle("AllocateIP", func(params json.RawMessage) (any, *fake.RPCError) {
+		var p map[string]string
+		_ = json.Unmarshal(params, &p)
+		allocNetwork, allocMAC = p["network"], p["mac"]
+		return testReservedCPIP, nil
+	})
+
+	lc := newLinkedCluster(t, c, "cp-pki-san-reserved", "capi-cluster")
+	machineName := lc.name + "-cp-0"
+	pk := mustGenerateClusterPKI(t, testReservedCPIP, machineName)
+	fx := newControlPlaneFixtureWithPKI(t, c, pk)
+	fx.r.K8Netd = k8netd.NewClient(sock)
+	lcp := newLinkedControlPlane(t, c, lc, lc.name+"-cp", 1, nil)
+
+	fx.reconcileControlPlane(t, lcp.cp)
+
+	if len(fx.genPKI.calls) != 1 || fx.genPKI.calls[0] != testReservedCPIP {
+		t.Fatalf("GeneratePKI inputs = %v, want exactly [%q] (the k8netd reservation)", fx.genPKI.calls, testReservedCPIP)
+	}
+	if allocNetwork != lc.name {
+		t.Errorf("AllocateIP network = %q, want the HypervisorCluster name %q", allocNetwork, lc.name)
+	}
+	if wantMAC := mac.Derive(lc.name, lcp.name+"-0"); allocMAC != wantMAC {
+		t.Errorf("AllocateIP mac = %q, want the cp-0 derivation %q", allocMAC, wantMAC)
+	}
+
+	// The stored apiserver certificate SANs carry the reserved IP and loopback.
+	secret := &corev1.Secret{}
+	pkiKey := client.ObjectKey{Namespace: lc.namespace, Name: lc.name + "-pki"}
+	if err := c.Get(t.Context(), pkiKey, secret); err != nil {
+		t.Fatalf("Get cluster PKI Secret %s: %v", pkiKey, err)
+	}
+	got, err := decodeClusterPKI(secret.Data)
+	if err != nil {
+		t.Fatalf("decode stored cluster PKI: %v", err)
+	}
+	block, _ := pem.Decode(got.APIServer)
+	if block == nil {
+		t.Fatal("stored apiserver certificate is not PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse stored apiserver certificate: %v", err)
+	}
+	sans := make(map[string]bool, len(cert.IPAddresses))
+	for _, ip := range cert.IPAddresses {
+		sans[ip.String()] = true
+	}
+	if !sans[testReservedCPIP] || !sans["127.0.0.1"] {
+		t.Errorf("apiserver certificate IP SANs = %v, want {%q 127.0.0.1}", sans, testReservedCPIP)
+	}
 }
 
 // TestControlPlaneMachineLabels pins the label propagation contract: every
@@ -694,9 +788,9 @@ func TestControlPlaneMachineMissingLinkedCluster(t *testing.T) {
 		t.Errorf("Reconcile result = %+v, want empty", res)
 	}
 
-	if len(fx.newConfig.calls) != 0 || len(fx.createMachine.calls) != 0 || fx.genPKI.calls != 0 {
+	if len(fx.newConfig.calls) != 0 || len(fx.createMachine.calls) != 0 || len(fx.genPKI.calls) != 0 {
 		t.Errorf("missing-cluster reconcile touched the seams: NewConfig %d, CreateMachine %d, GeneratePKI %d",
-			len(fx.newConfig.calls), len(fx.createMachine.calls), fx.genPKI.calls)
+			len(fx.newConfig.calls), len(fx.createMachine.calls), len(fx.genPKI.calls))
 	}
 	if machines := listControlPlaneMachines(t, c, namespace, "ghost-cluster"); len(machines) != 0 {
 		t.Errorf("missing-cluster reconcile created %d Machines, want 0", len(machines))
@@ -1082,7 +1176,7 @@ func TestControlPlaneReadinessWritesKubeconfig(t *testing.T) {
 		t.Fatalf("kubeconfig Secret has no %q data key (keys %v)", kubeconfigSecretDataKey, secret.Data)
 	}
 	doc := parseKubeconfig(t, data)
-	wantServer := fmt.Sprintf("https://%s:%d", testCPIP, testCPPort)
+	wantServer := "https://127.0.0.1:6443"
 	if len(doc.Clusters) != 1 || doc.Clusters[0].Cluster.Server != wantServer {
 		t.Errorf("kubeconfig server = %+v, want %q", doc.Clusters, wantServer)
 	}
@@ -1185,7 +1279,7 @@ func TestControlPlaneReadinessWaitsForMachineAddresses(t *testing.T) {
 
 // TestControlPlaneReadinessKubeconfigContent pins the rendered kubeconfig
 // content: the document is a Config whose single cluster entry serves
-// https://<cp-ip>:6443 and whose certificate-authority-data is exactly the
+// https://127.0.0.1:6443 and whose certificate-authority-data is exactly the
 // base64 encoding of the cluster PKI CA.
 func TestControlPlaneReadinessKubeconfigContent(t *testing.T) {
 	c := mustReconcileClient(t)
@@ -1206,7 +1300,7 @@ func TestControlPlaneReadinessKubeconfigContent(t *testing.T) {
 	if len(doc.Clusters) != 1 {
 		t.Fatalf("kubeconfig has %d cluster entries, want 1", len(doc.Clusters))
 	}
-	wantServer := fmt.Sprintf("https://%s:%d", testCPIP, testCPPort)
+	wantServer := "https://127.0.0.1:6443"
 	if got := doc.Clusters[0].Cluster.Server; got != wantServer {
 		t.Errorf("kubeconfig server = %q, want %q", got, wantServer)
 	}
@@ -1501,4 +1595,94 @@ func TestControlPlaneScaleVersion(t *testing.T) {
 	})
 	fx.reconcileControlPlane(t, lcp.cp)
 	wantControlPlaneVersion(t, getControlPlane(t, c, lcp.cp), "v1.36.0")
+}
+
+// TASK-011 VC-06 REQ-006 — endpoint + PKI: kubeconfig and readiness use loopback.
+//
+// Grill-me: reserved IP is dynamic (not hardcoded .20); rendered kubeconfig must
+// be https://127.0.0.1:6443 even when the VM's InternalIP differs; healthz seam
+// still polls the internal IP while the kubeconfig uses loopback; second
+// reconcile converges without duplicating the Secret.
+// RED: current impl renders https://<internal-IP>:6443, so the server assertion fails.
+func TestControlPlaneKubeconfigServerIsLoopback(t *testing.T) {
+	c := mustReconcileClient(t)
+	// Use a non-default reserved IP to prove not hardcoded .20.
+	const reservedIP = "192.168.124.77"
+	const wantServer = "https://127.0.0.1:6443"
+	lc := newLinkedCluster(t, c, "cp-kubeconfig-loopback", "capi-cluster")
+	machineName := lc.name + "-cp-0"
+	pk := mustGenerateClusterPKI(t, reservedIP, machineName)
+	fx := newControlPlaneFixtureWithPKI(t, c, pk)
+	fx.health.result = nil
+	lcp := newLinkedControlPlane(t, c, lc, lc.name+"-cp", 1, nil)
+	// First reconcile creates Machine + PKI Secret.
+	fx.reconcileControlPlane(t, lcp.cp)
+	// VM boots with the reserved internal IP (simulating AllocateIP result).
+	newControlPlaneInfraMachine(t, c, lcp, machineName, reservedIP)
+	fx.reconcileControlPlane(t, lcp.cp)
+
+	if len(fx.health.calls) == 0 {
+		t.Fatal("healthz seam never called")
+	}
+	// Health check must still be polled at the internal IP (VM address), not loopback.
+	if call := fx.health.calls[0]; call.cpIP != reservedIP {
+		t.Errorf("healthz polled IP %q, want reserved internal IP %q (must not be loopback)", call.cpIP, reservedIP)
+	}
+
+	secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+	data, ok := secret.Data[kubeconfigSecretDataKey]
+	if !ok {
+		t.Fatalf("kubeconfig Secret missing %q key", kubeconfigSecretDataKey)
+	}
+	doc := parseKubeconfig(t, data)
+	if len(doc.Clusters) != 1 || doc.Clusters[0].Cluster.Server != wantServer {
+		t.Errorf(
+			"kubeconfig server = %q, want %q (REQ-006 VC-06: must be loopback)",
+			doc.Clusters[0].Cluster.Server,
+			wantServer,
+		)
+	}
+	// Prove not hardcoded to old default: server must not be https://192.168.124.20:6443
+	if doc.Clusters[0].Cluster.Server == fmt.Sprintf("https://%s:%d", testCPIP, testCPPort) {
+		t.Errorf("kubeconfig server is still the old default %q, want loopback", doc.Clusters[0].Cluster.Server)
+	}
+	// Second reconcile converges: no duplicate Secret, still loopback.
+	fx.reconcileControlPlane(t, lcp.cp)
+	secret = wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+	data = secret.Data[kubeconfigSecretDataKey]
+	doc = parseKubeconfig(t, data)
+	if doc.Clusters[0].Cluster.Server != wantServer {
+		t.Errorf("after second reconcile kubeconfig server = %q, want %q", doc.Clusters[0].Cluster.Server, wantServer)
+	}
+	if count := countSecretsNamed(t, c, lc.namespace, lc.name+"-kubeconfig"); count != 1 {
+		t.Errorf("kubeconfig Secrets = %d after second reconcile, want 1", count)
+	}
+}
+
+// TestControlPlaneKubeconfigLoopbackWithDifferentReservedIPs ensures the
+// loopback contract holds regardless of which reserved IP AllocateIP returns.
+func TestControlPlaneKubeconfigLoopbackWithDifferentReservedIPs(t *testing.T) {
+	for _, reservedIP := range []string{"192.168.124.50", "192.168.124.90"} {
+		t.Run(reservedIP, func(t *testing.T) {
+			c := mustReconcileClient(t)
+			ns := "cp-kubeconfig-loopback-" + reservedIP[len(reservedIP)-2:]
+			lc := newLinkedCluster(t, c, ns, "capi-cluster")
+			machineName := lc.name + "-cp-0"
+			pk := mustGenerateClusterPKI(t, reservedIP, machineName)
+			fx := newControlPlaneFixtureWithPKI(t, c, pk)
+			lcp := newLinkedControlPlane(t, c, lc, lc.name+"-cp", 1, nil)
+			fx.reconcileControlPlane(t, lcp.cp)
+			newControlPlaneInfraMachine(t, c, lcp, machineName, reservedIP)
+			fx.reconcileControlPlane(t, lcp.cp)
+			secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+			doc := parseKubeconfig(t, secret.Data[kubeconfigSecretDataKey])
+			if doc.Clusters[0].Cluster.Server != "https://127.0.0.1:6443" {
+				t.Errorf(
+					"reserved %s: kubeconfig server = %q, want https://127.0.0.1:6443",
+					reservedIP,
+					doc.Clusters[0].Cluster.Server,
+				)
+			}
+		})
+	}
 }

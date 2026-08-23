@@ -28,8 +28,9 @@ import (
 // "Shutdown"); InfoErr, EnsureRunningErr, ShutdownErr and StopErr hold the
 // error each operation returns when set, and the operation succeeds when the
 // field is nil. Calls records each invoked operation by name in call order:
-// "EnsureRunning", "Shutdown", "Stop", "Info". The zero value is usable:
-// every operation succeeds and no state is reported.
+// "EnsureRunning", "Shutdown", "Stop", "Info". NetConfigs records every net
+// device string supplied through SetNetConfig, in call order. The zero value
+// is usable: every operation succeeds and no state is reported.
 type FakeClient struct {
 	State            ch.VMState
 	EnsureRunningErr error
@@ -37,6 +38,12 @@ type FakeClient struct {
 	StopErr          error
 	InfoErr          error
 	Calls            []string
+	NetConfigs       []string
+}
+
+// SetNetConfig records the net device string for assertions.
+func (f *FakeClient) SetNetConfig(netConfig string) {
+	f.NetConfigs = append(f.NetConfigs, netConfig)
 }
 
 // EnsureRunning records the call and returns the configured error, if any.

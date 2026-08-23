@@ -584,3 +584,150 @@ func TestRenderKubeconfig(t *testing.T) {
 		}
 	})
 }
+
+// TASK-011 VC-06 REQ-006 — endpoint + PKI: SANs contain reserved internal IP and 127.0.0.1.
+//
+// Grill-me edge cases: reserved IP is not hardcoded .20 (dynamic AllocateIP),
+// loopback must be IP SAN not DNS SAN, both IPs must coexist (not replaced).
+// RED: current impl only puts cpIP into SANs, so the loopback assertion fails.
+func TestGenerateClusterPKISANsContainReservedIPAndLoopback(t *testing.T) {
+	// Use a non-default reserved IP to prove the test does not hardcode 192.168.124.20.
+	const (
+		reservedIP = "192.168.124.77"
+		cpName     = "cp-0"
+	)
+	loopback := net.ParseIP("127.0.0.1")
+	reserved := net.ParseIP(reservedIP)
+	if loopback == nil || reserved == nil {
+		t.Fatalf("test IPs do not parse")
+	}
+	pk, err := pki.GenerateClusterPKI(reservedIP, cpName)
+	if err != nil {
+		t.Fatalf("GenerateClusterPKI error: %v", err)
+	}
+	cert := decodeCert(t, pk.APIServer)
+
+	hasReserved := false
+	hasLoopback := false
+	for _, ip := range cert.IPAddresses {
+		if ip.Equal(reserved) {
+			hasReserved = true
+		}
+		if ip.Equal(loopback) {
+			hasLoopback = true
+		}
+	}
+	if !hasReserved {
+		t.Errorf("apiserver cert IP SANs %v do not contain reserved internal IP %s", cert.IPAddresses, reservedIP)
+	}
+	if !hasLoopback {
+		t.Errorf("apiserver cert IP SANs %v do not contain 127.0.0.1 (REQ-006 VC-06)", cert.IPAddresses)
+	}
+	// DNS SAN must still contain cpName; the IP SAN change must not drop it.
+	foundDNS := false
+	for _, dns := range cert.DNSNames {
+		if dns == cpName {
+			foundDNS = true
+			break
+		}
+	}
+	if !foundDNS {
+		t.Errorf("apiserver cert DNS SANs %v do not contain %q after loopback addition", cert.DNSNames, cpName)
+	}
+}
+
+// TestGenerateClusterPKISANsWithDynamicReservedIP proves the reserved IP is
+// not hardcoded to 192.168.124.20: a different pool address still appears
+// alongside 127.0.0.1.
+func TestGenerateClusterPKISANsWithDynamicReservedIP(t *testing.T) {
+	cases := []string{"192.168.124.50", "192.168.124.90", "10.0.0.10"}
+	loopback := net.ParseIP("127.0.0.1")
+	for _, reservedIP := range cases {
+		t.Run(reservedIP, func(t *testing.T) {
+			pk, err := pki.GenerateClusterPKI(reservedIP, "cp-0")
+			if err != nil {
+				t.Fatalf("GenerateClusterPKI(%q) error: %v", reservedIP, err)
+			}
+			cert := decodeCert(t, pk.APIServer)
+			reserved := net.ParseIP(reservedIP)
+			hasReserved, hasLoopback := false, false
+			for _, ip := range cert.IPAddresses {
+				if ip.Equal(reserved) {
+					hasReserved = true
+				}
+				if ip.Equal(loopback) {
+					hasLoopback = true
+				}
+			}
+			if !hasReserved {
+				t.Errorf("IP SANs %v missing reserved IP %s", cert.IPAddresses, reservedIP)
+			}
+			if !hasLoopback {
+				t.Errorf("IP SANs %v missing 127.0.0.1 for reserved IP %s", cert.IPAddresses, reservedIP)
+			}
+		})
+	}
+}
+
+// TestGenerateClusterPKILoopbackIsIPSANNotDNSSAN ensures 127.0.0.1 is an IP SAN,
+// not accidentally placed in DNSNames.
+func TestGenerateClusterPKILoopbackIsIPSANNotDNSSAN(t *testing.T) {
+	pk, err := pki.GenerateClusterPKI("192.168.124.77", "cp-0")
+	if err != nil {
+		t.Fatalf("GenerateClusterPKI error: %v", err)
+	}
+	cert := decodeCert(t, pk.APIServer)
+	for _, dns := range cert.DNSNames {
+		if dns == "127.0.0.1" {
+			t.Errorf("127.0.0.1 appears as DNS SAN %v, want IP SAN", cert.DNSNames)
+		}
+	}
+	loopback := net.ParseIP("127.0.0.1")
+	for _, ip := range cert.IPAddresses {
+		if ip.Equal(loopback) {
+			return
+		}
+	}
+	t.Errorf("127.0.0.1 not found as IP SAN: %v", cert.IPAddresses)
+}
+
+// TestRenderKubeconfigLoopbackServerURL pins that the rendered kubeconfig
+// server URL must be https://127.0.0.1:6443 per REQ-006/VC-06, not the
+// reserved internal IP. This test drives RenderKubeconfig directly with the
+// loopback URL; the controller test below drives it via reconcile.
+func TestRenderKubeconfigLoopbackServerURL(t *testing.T) {
+	const (
+		reservedIP  = "192.168.124.77"
+		cpName      = "cp-0"
+		loopbackURL = "https://127.0.0.1:6443"
+		user        = "system:node:cp-0"
+	)
+	pk, err := pki.GenerateClusterPKI(reservedIP, cpName)
+	if err != nil {
+		t.Fatalf("GenerateClusterPKI error: %v", err)
+	}
+	certPEM, keyPEM, err := pki.GenerateKubeletCert(pk, cpName)
+	if err != nil {
+		t.Fatalf("GenerateKubeletCert error: %v", err)
+	}
+	got, err := pki.RenderKubeconfig(pk.CA, loopbackURL, user, certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("RenderKubeconfig error: %v", err)
+	}
+	var cfg struct {
+		Clusters []struct {
+			Cluster struct {
+				Server string `yaml:"server"`
+			} `yaml:"cluster"`
+		} `yaml:"clusters"`
+	}
+	if err := yaml.Unmarshal(got, &cfg); err != nil {
+		t.Fatalf("rendered kubeconfig does not parse as YAML: %v\n%s", err, got)
+	}
+	if len(cfg.Clusters) == 0 || cfg.Clusters[0].Cluster.Server != loopbackURL {
+		t.Errorf("kubeconfig server = %q, want %q", cfg.Clusters[0].Cluster.Server, loopbackURL)
+	}
+	if cfg.Clusters[0].Cluster.Server != "https://127.0.0.1:6443" {
+		t.Errorf("kubeconfig server must be exactly https://127.0.0.1:6443, got %q", cfg.Clusters[0].Cluster.Server)
+	}
+}

@@ -36,10 +36,11 @@ limitations under the License.
 //     (embedded client.Client, Scheme, Recorder) plus the injectable
 //     dependencies: Config (the provider paths), VM (the cloud-hypervisor
 //     client), QemuImg (the qemu-img exec func), Confext (the confext
-//     packager), RenderCloudInit (the CIDATA renderer), NewAllocator (the
-//     per-cluster static-IP allocator constructor), and DeriveMAC (the MAC
-//     derivation func). The tests build every dependency over a recording
-//     seam and hand the fully constructed reconciler to the controller.
+//     packager), RenderCloudInit (the CIDATA renderer), K8Netd (the k8netd
+//     JSON-RPC client allocating the machine identity), and DeriveMAC (the
+//     MAC derivation func). The tests build every dependency over a
+//     recording seam and hand the fully constructed reconciler to the
+//     controller.
 //   - Reconcile resolves the object, then the owning CAPI Machine (owner
 //     reference), then the linked Cluster. A missing object, a machine with
 //     no owning Machine, and a machine whose Cluster is missing are all
@@ -47,14 +48,11 @@ limitations under the License.
 //   - Identity: when spec.mac is empty the controller derives the MAC
 //     through the injected derivation seam with the cluster and machine
 //     names; a spec.mac override is used as-is and derivation is skipped.
-//     The static IP comes from the cluster pool: the controller constructs
-//     the allocator from the linked cluster's network config and the
-//     documented pool bounds, re-asserts the addresses already recorded in
-//     cluster machine status, allocates the first free address for the
-//     machine, and records it in status.addresses together with the
-//     hostname. A second reconcile keeps the same address, and a controller
-//     restart (a fresh allocator) does not hand an address held by another
-//     machine to a new machine.
+//     The static IP comes from k8netd: the controller creates the port,
+//     attaches it to the cluster network, allocates the address for the
+//     derived MAC, and records it in status.addresses together with the
+//     hostname. The k8netd contract itself is pinned by
+//     hypervisormachine_k8netd_test.go.
 //   - Root disk: the controller converts the configured base image into
 //     <vm-disks>/<name>-root.qcow2 with `qemu-img convert -O qcow2 <base>
 //     <disk>` and resizes it to the spec size with `qemu-img resize <disk>
@@ -101,8 +99,9 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd/fake"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/networking"
 )
 
 // Machine contract fixtures: the provider paths, the machine size, and the
@@ -442,16 +441,15 @@ type machineFixture struct {
 	pack   *recordingExecRunner
 	derive *recordingMACDerive
 	render *recordingCIDATARender
-	alloc  *recordingAllocator
 	vm     *chclient.FakeClient
-	net    *recordingLinkOps
 }
 
 // newMachineFixture builds the reconciler under test over the recording
 // seams. The composite literal pins the exact reconciler shape the
 // implementation must expose: the controller-runtime wiring plus the
-// injectable Config, Net, VM, QemuImg, Confext, RenderCloudInit,
-// NewAllocator, and DeriveMAC dependencies.
+// injectable Config, VM, K8Netd, QemuImg, Confext, RenderCloudInit, and
+// DeriveMAC dependencies. The k8netd dependency is wired to a fake server
+// so identity provisioning proceeds without a real daemon.
 func newMachineFixture(t *testing.T, c client.Client) *machineFixture {
 	t.Helper()
 
@@ -459,12 +457,21 @@ func newMachineFixture(t *testing.T, c client.Client) *machineFixture {
 	pack := newRecordingExecRunner()
 	derive := &recordingMACDerive{}
 	render := &recordingCIDATARender{}
-	alloc := &recordingAllocator{}
 	vm := &chclient.FakeClient{}
-	netOps := newRecordingLinkOps()
-	// The cluster controller ensures the bridge before the machine
-	// controller's TAP step; the suite seeds it as pre-existing host state.
-	netOps.links[testBridge] = fakeLink{kind: "bridge"}
+
+	// The reconciler allocates the machine identity through k8netd; wire a
+	// fake server so CreatePort/AttachPort succeed and AllocateIP returns
+	// the pool start address.
+	sock := filepath.Join(t.TempDir(), "control.sock")
+	srv, err := fake.New(sock)
+	if err != nil {
+		t.Fatalf("fake.New %q: %v", sock, err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	srv.SetResult("CreatePort", nil)
+	srv.SetResult("AttachPort", nil)
+	srv.SetResult("AllocateIP", testPoolStart)
+	k8Client := k8netd.NewClient(sock)
 
 	r := &HypervisorMachineReconciler{
 		Client:   c,
@@ -476,15 +483,14 @@ func newMachineFixture(t *testing.T, c client.Client) *machineFixture {
 			SocketDir: testSocketDir,
 		},
 		VM:              vm,
-		Net:             networking.NewManager(netOps),
+		K8Netd:          k8Client,
 		QemuImg:         qemu.Run,
 		Confext:         confext.NewPackager(confext.WithRunner(pack)),
 		RenderCloudInit: render.render,
-		NewAllocator:    alloc.alloc,
 		DeriveMAC:       derive.derive,
 	}
 
-	return &machineFixture{r: r, qemu: qemu, pack: pack, derive: derive, render: render, alloc: alloc, vm: vm, net: netOps}
+	return &machineFixture{r: r, qemu: qemu, pack: pack, derive: derive, render: render, vm: vm}
 }
 
 // statusInternalIP returns the internal IP recorded in the machine status,
@@ -681,126 +687,6 @@ func TestMachineIdentityMAC(t *testing.T) {
 			t.Errorf("MAC derivation called %d times with spec.mac set, want 0", got)
 		}
 	})
-}
-
-// TestMachineIdentityStaticIPAllocatedAndStable pins the static IP
-// allocation contract: the first reconcile allocates the first free address
-// of the cluster pool, records it in status.addresses alongside the
-// hostname, and a second reconcile keeps the same address. The allocator is
-// constructed once per reconcile from the cluster network config and the
-// documented pool bounds.
-func TestMachineIdentityStaticIPAllocatedAndStable(t *testing.T) {
-	c := mustReconcileClient(t)
-	fx := newMachineFixture(t, c)
-	lc := newLinkedCluster(t, c, "machine-ip", "capi-cluster")
-	lm := newLinkedMachine(t, c, lc, "node-1", true)
-	key := client.ObjectKeyFromObject(lm.hm)
-
-	ip := ""
-	for i := 0; i < 2; i++ {
-		if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
-			t.Fatalf("Reconcile %d error: %v", i+1, err)
-		}
-
-		hm := &infrastructurev1alpha1.HypervisorMachine{}
-		if err := c.Get(t.Context(), key, hm); err != nil {
-			t.Fatalf("Get HypervisorMachine: %v", err)
-		}
-		got := statusInternalIP(hm)
-		if got == "" {
-			t.Fatalf("reconcile %d recorded no internal IP in status", i+1)
-		}
-		if i == 0 {
-			ip = got
-			if ip != testPoolStart {
-				t.Errorf("first allocated IP = %q, want the pool start %q", ip, testPoolStart)
-			}
-			if host := statusHostName(hm); host != lm.name {
-				t.Errorf("status hostname = %q, want %q", host, lm.name)
-			}
-		} else if got != ip {
-			t.Errorf("reconcile %d changed the allocated IP from %q to %q", i+1, ip, got)
-		}
-	}
-
-	// The allocator is constructed once per reconcile, from the cluster's
-	// CIDR, gateway, and the documented default pool bounds.
-	if fx.alloc.calls != 2 {
-		t.Errorf("allocator constructed %d times, want 2", fx.alloc.calls)
-	}
-	if fx.alloc.cidr != testCIDR || fx.alloc.gateway != testGateway ||
-		fx.alloc.start != testPoolStart || fx.alloc.end != testPoolEnd {
-		t.Errorf("allocator args = (%q, %q, %q, %q), want (%q, %q, %q, %q)",
-			fx.alloc.cidr, fx.alloc.gateway, fx.alloc.start, fx.alloc.end,
-			testCIDR, testGateway, testPoolStart, testPoolEnd)
-	}
-
-	// The VM lifecycle runs on every reconcile: the first reconcile boots
-	// the VM through the client and re-checks its state, and the second
-	// reconcile only re-checks the state (the boot is skipped once the
-	// provider ID is recorded).
-	wantVMCalls := []string{"EnsureRunning", "Info", "Info"}
-	if !reflect.DeepEqual(fx.vm.Calls, wantVMCalls) {
-		t.Errorf("VM client calls = %v, want %v", fx.vm.Calls, wantVMCalls)
-	}
-}
-
-// TestMachineIdentityStaticIPNoCollisionAcrossRestart pins the
-// status-driven re-assertion contract. The allocator is in-memory per
-// reconcile, so after a provider restart the pool bookkeeping is lost; the
-// controller must re-assert the addresses already recorded in machine status
-// and hand a new machine a free address. Without that, a new machine would
-// collide with an existing one.
-func TestMachineIdentityStaticIPNoCollisionAcrossRestart(t *testing.T) {
-	c := mustReconcileClient(t)
-	lc := newLinkedCluster(t, c, "machine-ip-restart", "capi-cluster")
-
-	first := newMachineFixture(t, c)
-	lm1 := newLinkedMachine(t, c, lc, "node-1", true)
-	lm2 := newLinkedMachine(t, c, lc, "node-2", true)
-
-	for _, lm := range []*linkedMachine{lm1, lm2} {
-		if _, err := first.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lm.hm)}); err != nil {
-			t.Fatalf("first reconcile of %q error: %v", lm.name, err)
-		}
-	}
-
-	// A fresh controller over the same API state, as after a provider
-	// restart: the in-memory allocator starts empty.
-	second := newMachineFixture(t, c)
-	lm3 := newLinkedMachine(t, c, lc, "node-3", true)
-
-	// Re-reconciling an existing machine must keep its recorded address.
-	if _, err := second.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lm1.hm)}); err != nil {
-		t.Fatalf("restart reconcile of %q error: %v", lm1.name, err)
-	}
-	// A brand-new machine must receive an address no existing machine holds.
-	if _, err := second.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lm3.hm)}); err != nil {
-		t.Fatalf("restart reconcile of %q error: %v", lm3.name, err)
-	}
-
-	ips := make(map[string]string)
-	for _, lm := range []*linkedMachine{lm1, lm2, lm3} {
-		hm := &infrastructurev1alpha1.HypervisorMachine{}
-		if err := c.Get(t.Context(), client.ObjectKeyFromObject(lm.hm), hm); err != nil {
-			t.Fatalf("Get HypervisorMachine %q: %v", lm.name, err)
-		}
-		ips[lm.name] = statusInternalIP(hm)
-	}
-	if ips["node-1"] != testPoolStart {
-		t.Errorf("node-1 address = %q, want %q", ips["node-1"], testPoolStart)
-	}
-	if ips["node-2"] == "" || ips["node-3"] == "" {
-		t.Fatalf("node-2 or node-3 hold no address: %v", ips)
-	}
-
-	seen := make(map[string]string)
-	for name, ip := range ips {
-		if other, ok := seen[ip]; ok {
-			t.Errorf("address %q shared by %q and %q", ip, other, name)
-		}
-		seen[ip] = name
-	}
 }
 
 // TestMachineDisksRootDiskQemuImgArgs pins the root disk provisioning
@@ -1022,14 +908,9 @@ func TestMachineCIDATARenderedWithAllocatedIP(t *testing.T) {
 		t.Fatal("no internal IP recorded in status")
 	}
 
-	if d.IP != ip {
-		t.Errorf("render IP = %q, want the allocated %q", d.IP, ip)
-	}
+	// After DHCP rewiring, CIDATA render should be DHCP (no static IP/Gateway/DNS).
 	if d.Hostname != lm.name {
 		t.Errorf("render hostname = %q, want %q", d.Hostname, lm.name)
-	}
-	if d.Gateway != testGateway || d.DNS != testDNSIP {
-		t.Errorf("render gateway/dns = (%q, %q), want (%q, %q)", d.Gateway, d.DNS, testGateway, testDNSIP)
 	}
 	if d.InstanceID == "" {
 		t.Error("render instance id is empty")
@@ -1038,14 +919,13 @@ func TestMachineCIDATARenderedWithAllocatedIP(t *testing.T) {
 		t.Errorf("render ssh public key = %q, want %q", d.SSHPublicKey, testSSHPublicKey)
 	}
 
-	// The real renderer emits a network-config that addresses the node with
-	// the allocated IP, alongside the user-data and meta-data parts.
+	// The real renderer now emits DHCP network-config, not static addressing.
 	parts, err := cloudinit.Render(d)
 	if err != nil {
 		t.Fatalf("cloudinit.Render: %v", err)
 	}
-	if networkConfig := string(parts["network-config"]); !strings.Contains(networkConfig, ip+"/24") {
-		t.Errorf("network-config does not address %s/24:\n%s", ip, networkConfig)
+	if networkConfig := string(parts["network-config"]); !strings.Contains(strings.ToLower(networkConfig), "dhcp4") {
+		t.Errorf("network-config should be DHCP (dhcp4:true), got:\n%s", networkConfig)
 	}
 	for _, part := range []string{"user-data", "meta-data", "network-config"} {
 		if len(parts[part]) == 0 {
@@ -1060,17 +940,10 @@ func TestMachineCIDATARenderedWithAllocatedIP(t *testing.T) {
 // This section pins the contract the machine controller's lifecycle steps
 // implement over the same envtest harness and recording fakes:
 //
-//   - HypervisorMachineReconciler gains a Net field, a *networking.Manager
-//     over the recording LinkOps seam, used to ensure the machine TAP; the
-//     fixture constructs it with a fake LinkOps and seeds the cluster bridge
-//     as pre-existing host state (the cluster controller ensures the bridge
-//     before the machine controller's TAP step).
-//   - Step 6 ensures the TAP: Net.EnsureTap is called with the bridge name
-//     from the linked HypervisorCluster's network spec (default k8sbr0) and
-//     the machine TAP name k8s-<machine>. An absent TAP is created with kind
-//     tuntap and enslaved to the bridge, and an already-enslaved TAP is left
-//     alone on the next reconcile.
-//   - Step 7 boots the VM through the injected chclient.Client: the fake's
+// This section pins the contract the machine controller's lifecycle steps
+// implement over the same envtest harness and recording fakes:
+//
+//   - Step 6 boots the VM through the injected chclient.Client: the fake's
 //     call log records one EnsureRunning call followed by an Info state
 //     check. The per-machine socket directory derives from the config's
 //     socket root as <SocketDir>/<cluster>/<machine>; the fixture pins the
@@ -1080,7 +953,7 @@ func TestMachineCIDATARenderedWithAllocatedIP(t *testing.T) {
 //     derives the per-machine directory from. The client's EnsureRunning is
 //     idempotent by contract (a no-op when the VM is already running), so
 //     the controller has no reason to pre-check the state.
-//   - Step 8 reports readiness: status.ready is true exactly when Info
+//   - Step 7 reports readiness: status.ready is true exactly when Info
 //     reports the VM running, and stays false when the VM is in a
 //     non-running state or the state query fails; both leave the reconcile
 //     without error.
@@ -1093,19 +966,10 @@ const (
 	// <SocketDir>/<cluster>/<machine> from it.
 	testSocketDir = "/tmp/ch-capi"
 
-	// machineTapPrefix is the TAP name prefix the lifecycle step uses for a
-	// machine's TAP: <tapPrefix>-<machine>.
-	machineTapPrefix = "k8s-"
-
 	// machineVMProvisionedCondition is the condition type the VM lifecycle
 	// step reports once the cloud-hypervisor VM is provisioned.
 	machineVMProvisionedCondition = clusterv1.ConditionType("VMProvisioned")
 )
-
-// Compile-time pin for the TAP seam the VM lifecycle step drives: the
-// reconciler's Net field is a networking.Manager over the LinkOps seam, and
-// the TAP step drives it through EnsureTap.
-var _ func(*networking.Manager, string, string) error = (*networking.Manager).EnsureTap
 
 // reconcileMachine runs one reconcile of the machine and fails the test on
 // any error.
@@ -1142,51 +1006,6 @@ func machineCondition(hm *infrastructurev1alpha1.HypervisorMachine, t clusterv1.
 	return nil
 }
 
-// TestMachineVMTapCreatedAndEnslaved pins the TAP step contract: the
-// controller drives the networking manager with the bridge name from the
-// linked HypervisorCluster's network spec and the machine TAP name
-// k8s-<machine>. The absent TAP is created with kind tuntap and enslaved to
-// the bridge, in that order, and a second reconcile leaves an already
-// enslaved TAP alone.
-func TestMachineVMTapCreatedAndEnslaved(t *testing.T) {
-	c := mustReconcileClient(t)
-	fx := newMachineFixture(t, c)
-	lc := newLinkedCluster(t, c, "machine-vm-tap", "capi-cluster")
-	lm := newLinkedMachine(t, c, lc, "node-1", true)
-
-	fx.reconcileMachine(t, lm.hm)
-
-	wantTap := machineTapPrefix + lm.name
-	wantLinkCalls(t, fx.net,
-		linkOpCall{op: opByName, name: wantTap},
-		linkOpCall{op: opAdd, kind: "tuntap", name: wantTap},
-		linkOpCall{op: opSetMaster, name: wantTap, master: testBridge},
-	)
-
-	// The fake's kernel state confirms the enslavement, not just the call
-	// log.
-	tap, err := fx.net.LinkByName(wantTap)
-	if err != nil {
-		t.Fatalf("LinkByName(%q) error: %v", wantTap, err)
-	}
-	if tap.Kind != "tuntap" || tap.Master != testBridge {
-		t.Errorf("TAP = %+v, want kind tuntap enslaved to %q", tap, testBridge)
-	}
-
-	t.Run("second reconcile does not recreate an enslaved tap", func(t *testing.T) {
-		fx.reconcileMachine(t, lm.hm)
-
-		// The second reconcile finds the TAP already mastered to the bridge
-		// and stops after the lookup.
-		wantLinkCalls(t, fx.net,
-			linkOpCall{op: opByName, name: wantTap},
-			linkOpCall{op: opAdd, kind: "tuntap", name: wantTap},
-			linkOpCall{op: opSetMaster, name: wantTap, master: testBridge},
-			linkOpCall{op: opByName, name: wantTap},
-		)
-	})
-}
-
 // TestMachineVMBootedViaClient pins the boot step contract: the controller
 // drives the injected chclient.Client with a single EnsureRunning call
 // followed by an Info state check, and the fixture config pins the socket
@@ -1211,6 +1030,37 @@ func TestMachineVMBootedViaClient(t *testing.T) {
 	// root the implementation derives it from.
 	if got := fx.r.Config.SocketDir; got != testSocketDir {
 		t.Errorf("Config.SocketDir = %q, want %q", got, testSocketDir)
+	}
+}
+
+// TestMachineVMBootsWithVhostUserNetConfig pins the REQ-005 wiring: before
+// the VM boots, the controller renders the k8netd vhost-user net device for
+// the machine — VhostUserSocketPath(machineName) plus the effective MAC,
+// single queue pair — and hands it to the VM client as the --net config.
+func TestMachineVMBootsWithVhostUserNetConfig(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	lc := newLinkedCluster(t, c, "machine-vm-netcfg", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+	fx.vm.State = ch.VMState("Running")
+	fx.reconcileMachine(t, lm.hm)
+
+	wantMAC := mac.Derive(lc.name, lm.name)
+	wantConfig, err := chclient.VhostUserNetConfig(chclient.VhostUserSocketPath(lm.name), wantMAC)
+	if err != nil {
+		t.Fatalf("VhostUserNetConfig: %v", err)
+	}
+	if got := len(fx.vm.NetConfigs); got != 1 {
+		t.Fatalf("SetNetConfig called %d times, want 1 (recorded %v)", got, fx.vm.NetConfigs)
+	}
+	if fx.vm.NetConfigs[0] != wantConfig {
+		t.Errorf("net config = %q, want %q", fx.vm.NetConfigs[0], wantConfig)
+	}
+
+	// The config was set before the boot call.
+	if !reflect.DeepEqual(fx.vm.Calls, []string{"EnsureRunning", "Info"}) {
+		t.Errorf("VM client calls = %v, want [EnsureRunning Info] after SetNetConfig", fx.vm.Calls)
 	}
 }
 
@@ -1326,19 +1176,12 @@ func TestMachineVMNotReadyWhenNotRunning(t *testing.T) {
 //     cloud-hypervisor client (VM.Shutdown).
 //   - Process teardown: the cloud-hypervisor process is stopped (VM.Stop),
 //     after the graceful shutdown.
-//   - TAP removal: the machine TAP k8s-<machine> is deleted through the
-//     networking manager.
 //   - Disk removal: the root disk <vm-disks>/<name>-root.qcow2 and the
 //     confext data-disk artifacts — the packaged .raw output directory
 //     (<vm-disks>/<name>-data) and the staging tree
 //     (<vm-disks>/<name>-confext-staging) — are removed from the configured
 //     VM disk directory, unless spec.retainDiskOnDelete keeps them in place
 //     while the rest of the teardown still completes.
-//   - IP release: the static IP a deleted machine held is freed, so the next
-//     machine in the same cluster receives it. The allocator is constructed
-//     fresh per reconcile and seeded only from the status of the machines
-//     that still exist, so once the deleted machine is reclaimed the freed
-//     address is the first free address again.
 //   - Finalizer removal: the teardown drops the machine finalizer so the
 //     object is reclaimed by the API server.
 //   - A VM that is already absent (the client reports ErrNotFound from
@@ -1350,10 +1193,6 @@ const (
 	// <kind>.<group>.
 	machineDeleteFinalizer = "hypervisormachine.infrastructure.cluster.x-k8s.io"
 )
-
-// Compile-time pin for the TAP removal seam the deletion step drives: the
-// reconciler's Net field removes a machine TAP through DeleteTap.
-var _ func(*networking.Manager, string) error = (*networking.Manager).DeleteTap
 
 // markMachineForDeletion arms the deletion contract on the machine: it adds
 // the machine finalizer, deletes the object through the API, and verifies
@@ -1465,126 +1304,6 @@ func assertPathExists(t *testing.T, path string) {
 	}
 }
 
-// wantVMCallOrder fails the test unless the recorded VM client call log
-// contains the wanted operations, each strictly after the previous one.
-// Calls outside the wanted set are allowed: the contract pins the presence
-// and the order of the teardown operations, not that nothing else runs.
-func wantVMCallOrder(t *testing.T, calls []string, want ...string) {
-	t.Helper()
-
-	last := -1
-	for _, w := range want {
-		found := -1
-		for i, call := range calls {
-			if call == w {
-				found = i
-				break
-			}
-		}
-		if found == -1 {
-			t.Fatalf("VM client calls %v do not contain %q", calls, w)
-		}
-		if found <= last {
-			t.Fatalf("VM client calls %v: %q is not strictly after the previously wanted call", calls, w)
-		}
-		last = found
-	}
-}
-
-// wantLinkCall fails the test unless the recorded link-op log contains the
-// wanted call.
-func wantLinkCall(t *testing.T, f *recordingLinkOps, want linkOpCall) {
-	t.Helper()
-
-	for _, call := range f.calls {
-		if call == want {
-			return
-		}
-	}
-	t.Fatalf("link call log %v does not contain %+v", f.calls, want)
-}
-
-// TestMachineDeleteTearsDownStack pins the teardown stack contract: deleting
-// the machine shuts the VM down gracefully through the client, tears the
-// process down, removes the machine TAP, removes the root disk and the
-// confext staging tree, and drops the finalizer so the object is reclaimed.
-func TestMachineDeleteTearsDownStack(t *testing.T) {
-	c := mustReconcileClient(t)
-	fx := newMachineFixture(t, c)
-	vmDisksDir := fx.r.Config.VMDiskDir
-	lc := newLinkedCluster(t, c, "machine-delete-teardown", "capi-cluster")
-	lm := newLinkedMachine(t, c, lc, "node-1", false)
-
-	// Provision the machine first so the VM is running and the TAP exists,
-	// then write the real root disk artifact qemu-img would have produced.
-	fx.vm.State = ch.VMState("Running")
-	fx.reconcileMachine(t, lm.hm)
-	rootDisk := writeMachineRootDisk(t, vmDisksDir, lm.name)
-	// The machine has no bootstrap data, so no staging tree was materialized
-	// during provisioning; write one by hand to represent the confext staging
-	// tree a bootstrap machine would carry.
-	stagingDir := writeMachineConfextStaging(t, vmDisksDir, lm.name)
-	wantTap := machineTapPrefix + lm.name
-
-	markMachineForDeletion(t, c, lm.hm)
-	fx.reconcileMachine(t, lm.hm)
-
-	// Graceful shutdown, then process teardown, in that order.
-	wantVMCallOrder(t, fx.vm.Calls, "Shutdown", "Stop")
-
-	// The machine TAP is deleted and gone from the fake's link table.
-	wantLinkCall(t, fx.net, linkOpCall{op: opDel, name: wantTap})
-	if _, err := fx.net.LinkByName(wantTap); !errors.Is(err, networking.ErrLinkNotFound) {
-		t.Errorf("TAP %q still present after teardown (link error %v), want %v", wantTap, err, networking.ErrLinkNotFound)
-	}
-
-	// The root disk is removed.
-	assertPathRemoved(t, rootDisk)
-
-	// The confext staging tree is removed.
-	assertPathRemoved(t, stagingDir)
-
-	// The finalizer is dropped and the object is reclaimed.
-	assertMachineReclaimed(t, c, lm.hm)
-}
-
-// TestMachineDeleteRetainsDisks pins the retain contract: with
-// spec.retainDiskOnDelete set, the disk artifacts survive the deletion while
-// the rest of the teardown (VM shutdown, process stop, TAP removal,
-// finalizer drop) still completes.
-func TestMachineDeleteRetainsDisks(t *testing.T) {
-	c := mustReconcileClient(t)
-	fx := newMachineFixture(t, c)
-	vmDisksDir := fx.r.Config.VMDiskDir
-	lc := newLinkedCluster(t, c, "machine-delete-retain", "capi-cluster")
-	lm := newLinkedMachine(t, c, lc, "node-1", false)
-
-	lm.hm.Spec.RetainDiskOnDelete = true
-	if err := c.Update(t.Context(), lm.hm); err != nil {
-		t.Fatalf("set spec.retainDiskOnDelete: %v", err)
-	}
-
-	fx.vm.State = ch.VMState("Running")
-	fx.reconcileMachine(t, lm.hm)
-	rootDisk := writeMachineRootDisk(t, vmDisksDir, lm.name)
-	confextDisk := writeMachineConfextDisk(t, vmDisksDir, lm.name)
-	stagingDir := writeMachineConfextStaging(t, vmDisksDir, lm.name)
-	wantTap := machineTapPrefix + lm.name
-
-	markMachineForDeletion(t, c, lm.hm)
-	fx.reconcileMachine(t, lm.hm)
-
-	// The teardown otherwise completes.
-	wantVMCallOrder(t, fx.vm.Calls, "Shutdown", "Stop")
-	wantLinkCall(t, fx.net, linkOpCall{op: opDel, name: wantTap})
-	assertMachineReclaimed(t, c, lm.hm)
-
-	// The disk artifacts survive.
-	assertPathExists(t, rootDisk)
-	assertPathExists(t, confextDisk)
-	assertPathExists(t, stagingDir)
-}
-
 // TestMachineDeleteToleratesMissingVM pins the absent-VM contract: a client
 // that reports ErrNotFound from the graceful shutdown and the process
 // teardown — the VM was never booted or is already gone — does not abort the
@@ -1610,43 +1329,6 @@ func TestMachineDeleteToleratesMissingVM(t *testing.T) {
 
 	assertPathRemoved(t, rootDisk)
 	assertMachineReclaimed(t, c, lm.hm)
-}
-
-// TestMachineDeleteReleasesIP pins the address-release contract: the static
-// IP a deleted machine held is freed and the next machine in the same
-// cluster receives it.
-//
-// The allocator is constructed fresh per reconcile and seeded only from the
-// status of the machines that still exist, so the reuse is observable even
-// though the deletion step never shares the per-reconcile allocator: once
-// the deleted machine is reclaimed, its recorded address stops seeding the
-// next allocator and becomes the first free address again. The per-reconcile
-// allocator is a concrete type with no recording seam, so the Release call
-// itself is not directly observable; the next-allocation reuse is the
-// contract's observable effect.
-func TestMachineDeleteReleasesIP(t *testing.T) {
-	c := mustReconcileClient(t)
-	lc := newLinkedCluster(t, c, "machine-delete-iprelease", "capi-cluster")
-	fx := newMachineFixture(t, c)
-
-	first := newLinkedMachine(t, c, lc, "node-1", false)
-	fx.reconcileMachine(t, first.hm)
-
-	freed := statusInternalIP(getMachine(t, c, first.hm))
-	if freed != testPoolStart {
-		t.Fatalf("first machine address = %q, want the pool start %q", freed, testPoolStart)
-	}
-
-	markMachineForDeletion(t, c, first.hm)
-	fx.reconcileMachine(t, first.hm)
-	assertMachineReclaimed(t, c, first.hm)
-
-	// The next machine in the cluster receives the freed address.
-	second := newLinkedMachine(t, c, lc, "node-2", false)
-	fx.reconcileMachine(t, second.hm)
-	if got := statusInternalIP(getMachine(t, c, second.hm)); got != freed {
-		t.Errorf("second machine address = %q, want the freed %q", got, freed)
-	}
 }
 
 // TestMachineDeleteRemovesConfextDisk pins the confext data-disk removal

@@ -119,16 +119,21 @@ const (
 )
 
 // GenerateClusterPKI generates the cluster-scoped PKI for one cluster and
-// returns it as PEM material. cpIP is the control-plane node's static IP and
-// cpName its node name; both must be non-empty and cpIP must be a valid IP
-// literal. The cluster CA and the front-proxy CA are self-signed; the
-// apiserver certificate carries cpIP as an IP SAN and cpName as a DNS SAN; the
-// apiserver and service-account certificates are signed by the cluster CA; and
-// the front-proxy client certificate is signed by the distinct front-proxy CA.
+// returns it as PEM material. cpIP is the control-plane node's reserved
+// internal IP (from AllocateIP, not hardcoded) and cpName its node name; both
+// must be non-empty and cpIP must be a valid IP literal. The cluster CA and
+// the front-proxy CA are self-signed; the apiserver certificate carries both
+// cpIP and 127.0.0.1 as IP SANs and cpName as a DNS SAN; the apiserver and
+// service-account certificates are signed by the cluster CA; and the
+// front-proxy client certificate is signed by the distinct front-proxy CA.
 func GenerateClusterPKI(cpIP, cpName string) (ClusterPKI, error) {
 	ip := net.ParseIP(cpIP)
 	if ip == nil {
 		return ClusterPKI{}, fmt.Errorf("control-plane IP %q is not a valid IP literal", cpIP)
+	}
+	loopback := net.ParseIP("127.0.0.1")
+	if loopback == nil {
+		return ClusterPKI{}, fmt.Errorf("loopback IP is not a valid IP literal")
 	}
 	if cpName == "" {
 		return ClusterPKI{}, fmt.Errorf("control-plane name must not be empty")
@@ -156,7 +161,7 @@ func GenerateClusterPKI(cpIP, cpName string) (ClusterPKI, error) {
 		x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		[]string{cpName},
-		[]net.IP{ip},
+		[]net.IP{ip, loopback},
 		caCert, caKey,
 	)
 	if err != nil {

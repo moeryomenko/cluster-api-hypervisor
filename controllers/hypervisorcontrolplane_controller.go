@@ -41,6 +41,8 @@ import (
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
 	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
 )
 
@@ -95,8 +97,14 @@ type HypervisorControlPlaneReconciler struct {
 	// CreateMachine persists the per-replica CAPI Machine.
 	CreateMachine func(ctx context.Context, machine *clusterv1.Machine) (client.Object, error)
 	// GeneratePKI produces the cluster-scoped PKI material stored in the
-	// conventional <cluster>-pki Secret on the first replica.
-	GeneratePKI func() (pki.ClusterPKI, error)
+	// conventional <cluster>-pki Secret on the first replica. cpIP is the
+	// control-plane internal IP reserved through k8netd; it becomes the
+	// apiserver certificate IP SAN.
+	GeneratePKI func(cpIP string) (pki.ClusterPKI, error)
+	// K8Netd is the k8netd JSON-RPC client used to reserve the first
+	// control-plane Machine's IP before the cluster PKI is generated. It is
+	// injected from main.go via cfg.K8NetdSocket.
+	K8Netd *k8netd.Client
 	// CheckAPIServerHealth polls the workload apiserver healthz endpoint at
 	// https://cpIP:6443 with the cluster PKI material and returns nil exactly
 	// when the apiserver is healthy.
@@ -248,9 +256,10 @@ func (r *HypervisorControlPlaneReconciler) linkedCluster(
 
 // ensureClusterPKISecret generates and persists the cluster-scoped PKI in the
 // conventional <cluster>-pki Secret in the control plane's namespace, unless
-// the Secret already exists. The data keys are exactly the pki.ClusterPKI
-// field names, so a later reconcile reads the existing Secret and never
-// regenerates.
+// the Secret already exists. The apiserver SAN input is the cp-0 internal IP
+// reserved through k8netd (reserveControlPlaneIP), never a pinned address.
+// The data keys are exactly the pki.ClusterPKI field names, so a later
+// reconcile reads the existing Secret and never regenerates.
 func (r *HypervisorControlPlaneReconciler) ensureClusterPKISecret(
 	ctx context.Context,
 	cp *controlplanev1alpha1.HypervisorControlPlane,
@@ -264,7 +273,11 @@ func (r *HypervisorControlPlaneReconciler) ensureClusterPKISecret(
 		return fmt.Errorf("get cluster PKI Secret %q: %w", key, err)
 	}
 
-	pk, err := r.GeneratePKI()
+	cpIP, err := r.reserveControlPlaneIP(ctx, cp, cluster)
+	if err != nil {
+		return err
+	}
+	pk, err := r.GeneratePKI(cpIP)
 	if err != nil {
 		return fmt.Errorf("generate cluster PKI: %w", err)
 	}
@@ -277,6 +290,38 @@ func (r *HypervisorControlPlaneReconciler) ensureClusterPKISecret(
 	}
 
 	return nil
+}
+
+// reserveControlPlaneIP reserves the first control-plane Machine's internal
+// IP through k8netd before the cluster PKI is generated: the contract
+// reserves the control-plane IP before the VM boots so kubeadm/PKI config can
+// reference it (REQ-004/REQ-006). The MAC is derived exactly as the machine
+// controller derives it for <control-plane-name>-0 — same stable-hash family,
+// same cluster and machine names — so the machine controller's later
+// AllocateIP for that MAC returns this same reservation (idempotent by MAC).
+// The network name is the HypervisorCluster name per the k8netd naming
+// contract; a missing infrastructure link is an error so the reconcile
+// retries once the link appears.
+func (r *HypervisorControlPlaneReconciler) reserveControlPlaneIP(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	cluster *clusterv1.Cluster,
+) (string, error) {
+	hc, err := linkedHypervisorCluster(ctx, r.Client, cluster)
+	if err != nil {
+		return "", err
+	}
+	if hc == nil {
+		return "", fmt.Errorf("reserve control-plane IP: HypervisorCluster for Cluster %q not found", cluster.Name)
+	}
+
+	cp0MAC := mac.Derive(cluster.Name, fmt.Sprintf("%s-%d", cp.Name, 0))
+	ip, err := r.K8Netd.AllocateIP(ctx, hc.Name, cp0MAC)
+	if err != nil {
+		return "", fmt.Errorf("reserve control-plane IP for MAC %q on network %q: %w", cp0MAC, hc.Name, err)
+	}
+
+	return ip, nil
 }
 
 // machineFor builds the CAPI Machine for one replica: the deterministic name
@@ -552,7 +597,7 @@ func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 		return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
 	}
 
-	serverURL := fmt.Sprintf("https://%s:%d", cpIP, controlPlaneAPIServerPort)
+	serverURL := fmt.Sprintf("https://%s:%d", "127.0.0.1", controlPlaneAPIServerPort)
 	if err := r.ensureKubeconfigSecret(ctx, cp, cluster, serverURL, pk); err != nil {
 		return ctrl.Result{}, err
 	}

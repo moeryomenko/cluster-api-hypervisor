@@ -36,6 +36,11 @@ import (
 // concurrent use because the Machine controller reconciles from concurrent
 // workers.
 type Client interface {
+	// SetNetConfig supplies the cloud-hypervisor net device string (--net)
+	// used when the client next spawns the VM process. Call it before
+	// EnsureRunning so the VM boots with its k8netd vhost-user network
+	// attached.
+	SetNetConfig(netConfig string)
 	// EnsureRunning spawns the cloud-hypervisor process when it is not
 	// running and boots the VM through the API. It is a no-op when the VM is
 	// already running.
@@ -77,6 +82,12 @@ func NewVMClient(socketDir, binaryPath string) *VMClient {
 		client:  ch.NewClient(filepath.Join(socketDir, "api.sock")),
 		socket:  filepath.Join(socketDir, "api.sock"),
 	}
+}
+
+// SetNetConfig forwards the net device string to the process manager; it is
+// used at the next process spawn.
+func (c *VMClient) SetNetConfig(netConfig string) {
+	c.manager.SetNetConfig(netConfig)
 }
 
 // EnsureRunning spawns the cloud-hypervisor process when it is not running,

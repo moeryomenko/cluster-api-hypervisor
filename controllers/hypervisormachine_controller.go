@@ -36,8 +36,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 
-	"github.com/go-logr/logr"
-
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
 	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/ch"
@@ -45,8 +43,7 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/ipam"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/networking"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
 )
 
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachines,verbs=get;list;watch;create;update;patch;delete
@@ -64,10 +61,6 @@ const (
 	// the tree paths cannot be stored as literal Secret keys.
 	confextTreeKey = "tree.json"
 
-	// defaultMachineTapPrefix is the TAP name prefix for a machine TAP:
-	// <tapPrefix>-<machineName>.
-	defaultMachineTapPrefix = "k8s-"
-
 	// vmProvisionedCondition is the condition type reported once the
 	// cloud-hypervisor VM backing the machine is provisioned and running.
 	vmProvisionedCondition = clusterv1.ConditionType("VMProvisioned")
@@ -75,13 +68,11 @@ const (
 
 // HypervisorMachineReconciler reconciles a HypervisorMachine object: it
 // resolves the owning CAPI Machine and the linked Cluster, ensures the
-// machine identity (MAC and static IP), provisions the root disk, packages
-// the bootstrap Secret tree into the confext data disk, renders the
-// cloud-init CIDATA parts, ensures the machine TAP, boots the VM through the
-// cloud-hypervisor client, and reports readiness. Host-side effects run
-// behind injectable seams (QemuImg, Confext, RenderCloudInit, NewAllocator,
-// DeriveMAC, VM, Net), so the reconcile contract is testable without
-// qemu-img, mksquashfs, netlink, or a cloud-hypervisor process.
+// machine identity (MAC and k8netd-allocated IP), provisions the root disk,
+// packages the bootstrap Secret tree into the confext data disk, renders the
+// cloud-init CIDATA parts (DHCP), and drives the VM lifecycle through the
+// cloud-hypervisor client. The k8netd port is created and attached before the
+// VM starts, and detached/deleted after the VM stops on deletion.
 type HypervisorMachineReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -95,8 +86,9 @@ type HypervisorMachineReconciler struct {
 	// VM drives the machine's cloud-hypervisor VM.
 	VM chclient.Client
 
-	// Net orchestrates the machine TAP and the cluster bridge over netlink.
-	Net *networking.Manager
+	// K8Netd is the k8netd JSON-RPC client used to create ports and allocate
+	// IPs. It is injected from main.go via cfg.K8NetdSocket.
+	K8Netd *k8netd.Client
 
 	// QemuImg executes the qemu-img binary: Run(ctx, name, args...).
 	QemuImg func(ctx context.Context, name string, args ...string) ([]byte, error)
@@ -107,9 +99,6 @@ type HypervisorMachineReconciler struct {
 	// RenderCloudInit renders the three CIDATA parts for one machine.
 	RenderCloudInit func(data cloudinit.Data) (map[string][]byte, error)
 
-	// NewAllocator constructs the per-cluster static IP allocator.
-	NewAllocator func(clusterCIDR, gateway, poolStart, poolEnd string) (*ipam.Allocator, error)
-
 	// DeriveMAC derives the default machine MAC address.
 	DeriveMAC func(clusterName, machineName string) string
 }
@@ -118,16 +107,14 @@ type HypervisorMachineReconciler struct {
 // desired state. It resolves the object first; a missing object is a no-op.
 // When the object is being deleted (the deletion timestamp is set and a
 // finalizer still holds it), it tears the machine down instead of
-// provisioning it: graceful VM shutdown, process stop, TAP removal, disk
-// removal unless the spec retains the disks, static IP release, and finalizer
-// removal. On a normal reconcile it resolves the owning CAPI Machine, the
-// linked Cluster, and the infrastructure Cluster: a machine with no owning
-// Machine, or whose Cluster or infrastructure Cluster is missing, is a no-op,
-// not an error, and no dependency is touched. Then it ensures the machine
-// identity, provisions the root disk, packages the bootstrap data into
-// confext raws, renders the CIDATA parts, and drives the VM lifecycle: the
-// machine TAP, the VM boot through the client, the provider ID, the
-// provisioning condition, and readiness.
+// provisioning it: graceful VM shutdown, process stop, DetachPort/DeletePort,
+// disk removal unless the spec retains the disks, and finalizer removal. On a
+// normal reconcile it resolves the owning CAPI Machine, the linked Cluster,
+// and the infrastructure Cluster: a machine with no owning Machine, or whose
+// Cluster or infrastructure Cluster is missing, is a no-op, not an error, and
+// no dependency is touched. Then it ensures the machine identity via k8netd,
+// provisions the root disk, packages the bootstrap data into confext raws,
+// renders the CIDATA parts (DHCP), and drives the VM lifecycle.
 func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -143,7 +130,7 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// real CAPI teardown deletes the owning Machine at the same time, so
 	// teardown must not depend on the owner link surviving.
 	if !hm.DeletionTimestamp.IsZero() && len(hm.Finalizers) > 0 {
-		return r.reconcileDelete(ctx, log, hm)
+		return r.reconcileDelete(ctx, hm)
 	}
 
 	machine, ok, err := r.getOwnerMachine(ctx, hm)
@@ -164,7 +151,7 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	hc, err := r.getLinkedHypervisorCluster(ctx, cluster)
+	hc, err := linkedHypervisorCluster(ctx, r.Client, cluster)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -173,8 +160,12 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, nil
 	}
 
-	ip, err := r.reconcileIdentity(ctx, hm, machine, hc)
-	if err != nil {
+	// The MAC is derived once per reconcile and shared by the identity step
+	// (k8netd AllocateIP) and the VM lifecycle step (vhost-user net config),
+	// so both stages address the same NIC.
+	mac := r.effectiveMAC(hm, machine)
+
+	if _, err := r.reconcileIdentity(ctx, hm, machine, hc, mac); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -186,11 +177,11 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileCIDATA(ctx, hm, machine, hc, ip); err != nil {
+	if err := r.reconcileCIDATA(ctx, hm, machine); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileVMLifecycle(ctx, hm, machine, hc); err != nil {
+	if err := r.reconcileVMLifecycle(ctx, hm, machine, mac); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -201,14 +192,13 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 // finalizers so the object is reclaimed. The VM is shut down gracefully
 // through the client and the cloud-hypervisor process is stopped, in that
 // order; a VM that is already absent (the client reports ErrNotFound from
-// Shutdown or Stop) is tolerated. The machine TAP is deleted, and the root
-// disk and the confext data disk artifacts are removed from the VM disk
-// directory unless spec.retainDiskOnDelete keeps them in place. The static IP
-// the machine holds is released back to the cluster pool. Every step is
-// idempotent, so a repeated delete reconcile adds no further host calls.
+// Shutdown or Stop) is tolerated. After the VM stops, the k8netd port is
+// detached and deleted in order (both idempotent via NotFound). The root disk
+// and the confext data disk artifacts are removed from the VM disk directory
+// unless spec.retainDiskOnDelete keeps them in place. Every step is idempotent,
+// so a repeated delete reconcile adds no further host calls.
 func (r *HypervisorMachineReconciler) reconcileDelete(
 	ctx context.Context,
-	log logr.Logger,
 	hm *infrastructurev1alpha1.HypervisorMachine,
 ) (ctrl.Result, error) {
 	if err := r.VM.Shutdown(ctx); err != nil && !errors.Is(err, chclient.ErrNotFound) {
@@ -220,10 +210,16 @@ func (r *HypervisorMachineReconciler) reconcileDelete(
 		return ctrl.Result{}, fmt.Errorf("stop VM for %q: %w", hm.Name, err)
 	}
 
-	tapName := defaultMachineTapPrefix + hm.Name
-	if err := r.Net.DeleteTap(tapName); err != nil {
-		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to delete TAP %q: %v", tapName, err)
-		return ctrl.Result{}, fmt.Errorf("delete TAP %q: %w", tapName, err)
+	// After VM stop, detach and delete the k8netd port in order. Both are
+	// idempotent: NotFound is treated as success.
+	portName := hm.Name
+	if err := r.K8Netd.DetachPort(ctx, portName); err != nil && !errors.Is(err, k8netd.ErrNotFound) {
+		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to detach port %q: %v", portName, err)
+		return ctrl.Result{}, fmt.Errorf("detach port %q: %w", portName, err)
+	}
+	if err := r.K8Netd.DeletePort(ctx, portName); err != nil && !errors.Is(err, k8netd.ErrNotFound) {
+		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to delete port %q: %v", portName, err)
+		return ctrl.Result{}, fmt.Errorf("delete port %q: %w", portName, err)
 	}
 
 	if !hm.Spec.RetainDiskOnDelete {
@@ -233,72 +229,12 @@ func (r *HypervisorMachineReconciler) reconcileDelete(
 		}
 	}
 
-	if err := r.releaseMachineIP(ctx, log, hm); err != nil {
-		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to release static IP: %v", err)
-		return ctrl.Result{}, fmt.Errorf("release static IP for %q: %w", hm.Name, err)
-	}
-
 	hm.Finalizers = nil
 	if err := r.Update(ctx, hm); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove finalizers from HypervisorMachine %q: %w", hm.Name, err)
 	}
 
 	return ctrl.Result{}, nil
-}
-
-// releaseMachineIP frees the static IP the machine holds back to the cluster
-// pool. The per-reconcile allocator is constructed from the linked cluster's
-// network config, seeded from the addresses recorded in the status of the
-// cluster's surviving machines, and the machine's address is released, so the
-// freed address is the next one handed out. The release is best-effort: when
-// the owning Machine or the linked Cluster is already gone (as during a real
-// CAPI teardown) the address is freed automatically once the object is
-// reclaimed, because the fresh allocator of the next reconcile seeds only
-// from surviving machines.
-func (r *HypervisorMachineReconciler) releaseMachineIP(
-	ctx context.Context,
-	log logr.Logger,
-	hm *infrastructurev1alpha1.HypervisorMachine,
-) error {
-	machine, ok, err := r.getOwnerMachine(ctx, hm)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		log.Info("no owning Machine, skipping static IP release during teardown")
-		return nil
-	}
-
-	cluster, err := r.getLinkedCluster(ctx, machine)
-	if err != nil {
-		return err
-	}
-	if cluster == nil {
-		log.Info("linked Cluster not found, skipping static IP release during teardown")
-		return nil
-	}
-
-	hc, err := r.getLinkedHypervisorCluster(ctx, cluster)
-	if err != nil {
-		return err
-	}
-	if hc == nil {
-		log.Info("linked HypervisorCluster not found, skipping static IP release during teardown")
-		return nil
-	}
-
-	allocator, err := r.NewAllocator(hc.Spec.Network.CIDR, hc.Spec.Network.Gateway, defaultPoolStart, defaultPoolEnd)
-	if err != nil {
-		return fmt.Errorf("construct ipam allocator: %w", err)
-	}
-
-	if err := r.reassertClusterAddresses(ctx, allocator, machine); err != nil {
-		return err
-	}
-
-	allocator.Release(client.ObjectKeyFromObject(hm).String())
-
-	return nil
 }
 
 // removeMachineDisks removes the machine's root disk and the confext data
@@ -374,13 +310,13 @@ func (r *HypervisorMachineReconciler) getLinkedCluster(
 	return cluster, nil
 }
 
-// getLinkedHypervisorCluster resolves the HypervisorCluster the CAPI Cluster
+// linkedHypervisorCluster resolves the HypervisorCluster the CAPI Cluster
 // points at through its infrastructure reference; it carries the network
-// config the machine allocates from. A missing infrastructure reference or a
-// missing HypervisorCluster is reported as (nil, nil): the controller waits
-// for the link instead of erroring.
-func (r *HypervisorMachineReconciler) getLinkedHypervisorCluster(
+// config. A missing infrastructure reference or a missing HypervisorCluster is
+// reported as (nil, nil): callers wait for the link instead of erroring.
+func linkedHypervisorCluster(
 	ctx context.Context,
+	c client.Client,
 	cluster *clusterv1.Cluster,
 ) (*infrastructurev1alpha1.HypervisorCluster, error) {
 	ref := cluster.Spec.InfrastructureRef
@@ -393,7 +329,7 @@ func (r *HypervisorMachineReconciler) getLinkedHypervisorCluster(
 	}
 	hc := &infrastructurev1alpha1.HypervisorCluster{}
 	key := client.ObjectKey{Namespace: namespace, Name: ref.Name}
-	if err := r.Get(ctx, key, hc); err != nil {
+	if err := c.Get(ctx, key, hc); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -402,40 +338,69 @@ func (r *HypervisorMachineReconciler) getLinkedHypervisorCluster(
 	return hc, nil
 }
 
+// k8netdNetworkName returns the k8netd network name for the cluster. Per
+// plan assumption 1, the network name equals the HypervisorCluster name.
+func k8netdNetworkName(hc *infrastructurev1alpha1.HypervisorCluster) string {
+	return hc.Name
+}
+
+// effectiveMAC returns the MAC address for the machine: the spec value when
+// set, otherwise the derived address via the seam.
+func (r *HypervisorMachineReconciler) effectiveMAC(
+	hm *infrastructurev1alpha1.HypervisorMachine,
+	machine *clusterv1.Machine,
+) string {
+	if hm.Spec.MAC != "" {
+		return hm.Spec.MAC
+	}
+	return r.DeriveMAC(machine.Spec.ClusterName, machine.Name)
+}
+
 // reconcileIdentity ensures the machine identity: the MAC address (derived
-// through the seam when spec.mac is empty, the spec value otherwise) and the
-// static IP allocated from the cluster pool. The allocator is constructed
-// fresh per reconcile and seeded from the addresses already recorded in the
-// cluster's machine status, so a provider restart never hands an address an
-// existing machine holds. The allocated IP is recorded in status.addresses
-// together with the machine hostname and returned to the caller.
+// once per reconcile in Reconcile and passed in) and the k8netd port/IP. It
+// creates the port, attaches it to the cluster network, and allocates an IP
+// for the MAC, in order. AlreadyExists on create/attach is treated as success
+// for idempotency. The allocated IP is recorded in status.addresses together
+// with the machine hostname and returned.
 func (r *HypervisorMachineReconciler) reconcileIdentity(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
 	machine *clusterv1.Machine,
 	hc *infrastructurev1alpha1.HypervisorCluster,
+	mac string,
 ) (string, error) {
-	if hm.Spec.MAC == "" {
-		// The derived address is consumed by the VM lifecycle step in a
-		// later phase; running the derivation here pins the identity input.
-		_ = r.DeriveMAC(machine.Spec.ClusterName, machine.Name)
+	network := k8netdNetworkName(hc)
+	port := hm.Name
+
+	if err := r.K8Netd.CreatePort(ctx, port); err != nil {
+		if errors.Is(err, k8netd.ErrAlreadyExists) {
+			// Idempotent: port already exists.
+		} else {
+			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to create port %q: %v", port, err)
+			return "", fmt.Errorf("create port %q: %w", port, err)
+		}
 	}
 
-	allocator, err := r.NewAllocator(hc.Spec.Network.CIDR, hc.Spec.Network.Gateway, defaultPoolStart, defaultPoolEnd)
+	if err := r.K8Netd.AttachPort(ctx, port, network); err != nil {
+		if errors.Is(err, k8netd.ErrAlreadyExists) {
+			// Idempotent: already attached.
+		} else {
+			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to attach port %q to network %q: %v", port, network, err)
+			return "", fmt.Errorf("attach port %q to network %q: %w", port, network, err)
+		}
+	}
+
+	ip, err := r.K8Netd.AllocateIP(ctx, network, mac)
 	if err != nil {
-		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to construct ipam allocator: %v", err)
-		return "", fmt.Errorf("construct ipam allocator: %w", err)
-	}
-
-	if err := r.reassertClusterAddresses(ctx, allocator, machine); err != nil {
-		return "", err
-	}
-
-	key := client.ObjectKeyFromObject(hm).String()
-	ip, err := r.machineAddress(allocator, key, hm)
-	if err != nil {
-		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to allocate static IP: %v", err)
-		return "", fmt.Errorf("allocate static IP for %q: %w", machine.Name, err)
+		r.Recorder.Eventf(
+			hm,
+			corev1.EventTypeWarning,
+			"FailedProvision",
+			"failed to allocate IP for %q: %v",
+			machine.Name,
+			err,
+		)
+		return "", fmt.Errorf("allocate IP for %q: %w", machine.Name, err)
 	}
 
 	if err := r.recordAddresses(ctx, hm, machine, ip); err != nil {
@@ -445,54 +410,8 @@ func (r *HypervisorMachineReconciler) reconcileIdentity(
 	return ip, nil
 }
 
-// reassertClusterAddresses seeds the fresh per-reconcile allocator with the
-// addresses already recorded in the status of the cluster's machines, so a
-// new machine never receives an address an existing machine holds.
-func (r *HypervisorMachineReconciler) reassertClusterAddresses(
-	ctx context.Context,
-	allocator *ipam.Allocator,
-	machine *clusterv1.Machine,
-) error {
-	machines := &infrastructurev1alpha1.HypervisorMachineList{}
-	if err := r.List(ctx, machines, client.InNamespace(machine.Namespace)); err != nil {
-		return fmt.Errorf("list HypervisorMachines: %w", err)
-	}
-	for i := range machines.Items {
-		hm := &machines.Items[i]
-		if hm.Spec.ClusterName != machine.Spec.ClusterName {
-			continue
-		}
-		ip := machineInternalIPAddress(hm)
-		if ip == "" {
-			continue
-		}
-		key := client.ObjectKeyFromObject(hm).String()
-		if err := allocator.Reserve(key, ip); err != nil {
-			return fmt.Errorf("re-assert address %q for %q: %w", ip, key, err)
-		}
-	}
-	return nil
-}
-
-// machineAddress returns the static IP of hm: the address already recorded in
-// status when the machine holds one (re-asserted through Reserve so the key
-// keeps it), otherwise the first free address of the pool.
-func (r *HypervisorMachineReconciler) machineAddress(
-	allocator *ipam.Allocator,
-	key string,
-	hm *infrastructurev1alpha1.HypervisorMachine,
-) (string, error) {
-	if ip := machineInternalIPAddress(hm); ip != "" {
-		if err := allocator.Reserve(key, ip); err != nil {
-			return "", fmt.Errorf("re-assert address %q for %q: %w", ip, key, err)
-		}
-		return ip, nil
-	}
-	return allocator.Allocate(key)
-}
-
-// recordAddresses writes the allocated static IP and the machine hostname
-// into status.addresses.
+// recordAddresses writes the allocated IP and the machine hostname into
+// status.addresses.
 func (r *HypervisorMachineReconciler) recordAddresses(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
@@ -641,16 +560,14 @@ func decodeConfextTree(secret *corev1.Secret) (map[string][]byte, error) {
 }
 
 // reconcileCIDATA renders the three cloud-init parts for the machine through
-// the injected renderer with the allocated IP, the machine hostname, the
-// cluster gateway and DNS, and the SSH public key of the linked bootstrap
-// config. A machine with no linked bootstrap config has no key to inject and
-// skips rendering without error.
+// the injected renderer with the machine hostname and the SSH public key of the
+// linked bootstrap config. Network configuration is DHCP (no static IP). A
+// machine with no linked bootstrap config has no key to inject and skips
+// rendering without error.
 func (r *HypervisorMachineReconciler) reconcileCIDATA(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
 	machine *clusterv1.Machine,
-	hc *infrastructurev1alpha1.HypervisorCluster,
-	ip string,
 ) error {
 	ref := machine.Spec.Bootstrap.ConfigRef
 	if ref == nil || ref.Kind != "HypervisorConfig" || ref.Name == "" {
@@ -670,45 +587,45 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 		return fmt.Errorf("get bootstrap config %q: %w", key, err)
 	}
 
-	parts, err := r.RenderCloudInit(cloudinit.Data{
+	// The render itself is the identity contract pinned here: it validates
+	// that the three CIDATA parts render for this machine. The rendered parts
+	// feed the CIDATA disk of the VM boot step in a later phase.
+	if _, err := r.RenderCloudInit(cloudinit.Data{
 		InstanceID:   machine.Name,
 		Hostname:     machine.Name,
 		SSHPublicKey: config.Spec.SSHPublicKey,
-		IP:           ip,
-		Gateway:      hc.Spec.Network.Gateway,
-		DNS:          hc.Spec.Network.DNSIP,
-	})
-	if err != nil {
+	}); err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render cloud-init data: %v", err)
 		return fmt.Errorf("render cloud-init data for %q: %w", machine.Name, err)
 	}
-	// The rendered parts feed the CIDATA disk of the VM boot step in a later
-	// phase; the render itself is the identity contract pinned here.
-	_ = parts
 
 	return nil
 }
 
-// reconcileVMLifecycle drives the machine's VM (reconcile steps 6-8). On the
-// reconcile that first provisions the machine (no provider ID yet) it ensures
-// the machine TAP enslaved to the cluster bridge, boots the VM through the
-// injected client, and records the provider ID; on every reconcile it asks
-// the client for the VM state and reports the VMProvisioned condition and
-// readiness once the VM reports running. A VM that is not running yet, or
-// whose state query fails, is left not ready without error.
+// reconcileVMLifecycle drives the machine's VM. Before the first boot it
+// hands the k8netd vhost-user net device string — the port socket path of the
+// machine and its MAC, single queue pair (REQ-005) — to the VM client, then
+// boots the VM through the injected client and records the provider ID; on
+// every reconcile it asks the client for the VM state and reports the
+// VMProvisioned condition and readiness once the VM reports running. A VM
+// that is not running yet, or whose state query fails, is left not ready
+// without error. The k8netd port/IP is already ensured by reconcileIdentity
+// before this stage, so the port socket exists by the time the VM process
+// starts.
 func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
 	machine *clusterv1.Machine,
-	hc *infrastructurev1alpha1.HypervisorCluster,
+	mac string,
 ) error {
-	if hm.Status.ProviderID == nil {
-		tapName := defaultMachineTapPrefix + hm.Name
-		if err := r.Net.EnsureTap(effectiveBridgeName(&hc.Spec.Network), tapName); err != nil {
-			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to ensure TAP %q: %v", tapName, err)
-			return fmt.Errorf("ensure TAP %q: %w", tapName, err)
-		}
+	netConfig, err := chclient.VhostUserNetConfig(chclient.VhostUserSocketPath(hm.Name), mac)
+	if err != nil {
+		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render vhost-user net config for %q: %v", hm.Name, err)
+		return fmt.Errorf("render vhost-user net config for %q: %w", hm.Name, err)
+	}
+	r.VM.SetNetConfig(netConfig)
 
+	if hm.Status.ProviderID == nil {
 		if err := r.VM.EnsureRunning(ctx); err != nil {
 			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to boot VM for %q: %v", machine.Name, err)
 			return fmt.Errorf("boot VM for %q: %w", machine.Name, err)

@@ -56,11 +56,8 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confexttree"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/dnsmasq"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/ipam"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/networking"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/nft"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
 	providerwebhook "github.com/moeryomenko/cluster-api-hypervisor/internal/webhook"
 	"github.com/moeryomenko/cluster-api-hypervisor/version"
@@ -79,16 +76,6 @@ const (
 	// recorded and submitted to the API.
 	defaultEventBurstSize = 100
 
-	// defaultBridgeName is the lab bridge the provider owns on the host and
-	// the bridge the nftables rules and the dnsmasq forwarder operate on.
-	defaultBridgeName = "k8sbr0"
-	// defaultNATTable is the nftables inet table that carries the cluster
-	// NAT and forwarding rules.
-	defaultNATTable = "k8slab"
-	// defaultGateway is the lab bridge address: the default gateway of the
-	// cluster VMs and the address the dnsmasq forwarder binds and answers on.
-	defaultGateway = "192.168.124.1"
-
 	// controlPlaneRole is the node role the bootstrap data of a control-plane
 	// Machine is rendered for.
 	controlPlaneRole = "control-plane"
@@ -101,21 +88,15 @@ const (
 	// control-plane readiness poller.
 	apiserverHealthzTimeout = 10 * time.Second
 
-	// defaultControlPlanePKIIP and defaultControlPlanePKIName are the fixed
-	// apiserver certificate SAN inputs of the cluster PKI the control-plane
-	// controller generates on the first replica. The generation seam carries
-	// no control-plane identity, so the SANs are pinned to the first
-	// control-plane Machine's conventional identity: the first static IP of
-	// the default lab pool and the control-plane role name.
-	defaultControlPlanePKIIP   = "192.168.124.20"
+	// defaultControlPlanePKIName is the fixed DNS SAN input of the cluster
+	// PKI the control-plane controller generates on the first replica: the
+	// control-plane role name. The IP SAN input is not pinned here — it is
+	// the cp-0 internal IP reserved through k8netd AllocateIP before the PKI
+	// is generated.
 	defaultControlPlanePKIName = "control-plane"
 )
 
 var (
-	// defaultUpstreamResolvers are the upstream DNS resolvers the forwarder
-	// pins, matching the lab network defaults.
-	defaultUpstreamResolvers = []string{"1.1.1.1", "8.8.8.8"}
-
 	// scheme is the runtime scheme shared by the manager, the clients, and
 	// the webhook builders.
 	scheme = runtime.NewScheme()
@@ -327,26 +308,18 @@ func addHealthChecks(mgr ctrl.Manager) error {
 // setupControllers constructs the four controllers with their host-side and
 // PKI seams and registers them with the manager, each running at the
 // concurrency of its flag. The HypervisorCluster controller owns the cluster
-// network stack (bridge, dnsmasq, nftables); the HypervisorMachine controller
-// drives one cloud-hypervisor VM per machine; the HypervisorConfig controller
-// renders the role-split bootstrap confext trees into the conventional data
-// Secret; and the HypervisorControlPlane controller manages the control-plane
-// Machine set and polls the workload apiserver for readiness.
+// network via k8netd; the HypervisorMachine controller drives one
+// cloud-hypervisor VM per machine via k8netd ports; the HypervisorConfig
+// controller renders the role-split bootstrap confext trees into the
+// conventional data Secret; and the HypervisorControlPlane controller manages
+// the control-plane Machine set and polls the workload apiserver for
+// readiness.
 func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
-	allocator := ipam.NewAllocator
-
 	if err := (&controllers.HypervisorClusterReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("hypervisorcluster-controller"),
-		Net:      networking.NewManager(networking.NewNetlinkOps()),
-		Nft:      nft.NewManager(defaultBridgeName, defaultNATTable, nil),
-		Dnsmasq: dnsmasq.NewManager(dnsmasq.Config{
-			BridgeName:    defaultBridgeName,
-			ListenAddress: defaultGateway,
-			Upstream:      defaultUpstreamResolvers,
-		}, nil, cfg.StateDir),
-		NewAllocator: allocator,
+		K8Netd:   k8netd.NewClient(cfg.K8NetdSocket),
 	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: hypervisorClusterConcurrency}); err != nil {
 		return fmt.Errorf("unable to set up HypervisorCluster controller: %w", err)
 	}
@@ -357,13 +330,12 @@ func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
 		Recorder: mgr.GetEventRecorderFor("hypervisormachine-controller"),
 		Config:   cfg,
 		VM:       chclient.NewVMClient(cfg.SocketDir, cfg.CHBinary),
-		Net:      networking.NewManager(networking.NewNetlinkOps()),
+		K8Netd:   k8netd.NewClient(cfg.K8NetdSocket),
 		QemuImg: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, name, args...).CombinedOutput()
 		},
 		Confext:         confext.NewPackager(),
 		RenderCloudInit: cloudinit.Render,
-		NewAllocator:    allocator,
 		DeriveMAC:       mac.Derive,
 	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: hypervisorMachineConcurrency}); err != nil {
 		return fmt.Errorf("unable to set up HypervisorMachine controller: %w", err)
@@ -402,10 +374,11 @@ func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
 			}
 			return machine, nil
 		},
-		GeneratePKI: func() (pki.ClusterPKI, error) {
-			return pki.GenerateClusterPKI(defaultControlPlanePKIIP, defaultControlPlanePKIName)
+		GeneratePKI: func(cpIP string) (pki.ClusterPKI, error) {
+			return pki.GenerateClusterPKI(cpIP, defaultControlPlanePKIName)
 		},
 		CheckAPIServerHealth: checkAPIServerHealth,
+		K8Netd:               k8netd.NewClient(cfg.K8NetdSocket),
 	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: hypervisorControlPlaneConcurrency}); err != nil {
 		return fmt.Errorf("unable to set up HypervisorControlPlane controller: %w", err)
 	}

@@ -32,9 +32,6 @@ func validData() cloudinit.Data {
 		InstanceID:   "cah-lab-cp1",
 		Hostname:     "cp1",
 		SSHPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyForContractTests",
-		IP:           "192.168.124.20",
-		Gateway:      "192.168.124.1",
-		DNS:          "192.168.124.1",
 	}
 }
 
@@ -175,17 +172,13 @@ func TestRenderNetworkConfigPinsStaticAddressing(t *testing.T) {
 		t.Fatalf("Render with valid data returned error: %v", err)
 	}
 
+	// After DHCP rewiring (REQ-004), network-config is DHCP, not static.
 	want := "version: 2\n" +
 		"ethernets:\n" +
 		"  id0:\n" +
 		"    match:\n" +
 		"      driver: virtio_net\n" +
-		"    addresses:\n" +
-		"      - " + data.IP + "/24\n" +
-		"    gateway4: " + data.Gateway + "\n" +
-		"    nameservers:\n" +
-		"      addresses:\n" +
-		"        - " + data.DNS + "\n"
+		"    dhcp4: true\n"
 	if got := string(parts["network-config"]); got != want {
 		t.Errorf("network-config mismatch:\n got: %q\nwant: %q", got, want)
 	}
@@ -223,9 +216,6 @@ func TestRenderRejectsEmptyInputs(t *testing.T) {
 		{name: "empty instance id", mut: func(d *cloudinit.Data) { d.InstanceID = "" }},
 		{name: "empty hostname", mut: func(d *cloudinit.Data) { d.Hostname = "" }},
 		{name: "empty ssh public key", mut: func(d *cloudinit.Data) { d.SSHPublicKey = "" }},
-		{name: "empty ip", mut: func(d *cloudinit.Data) { d.IP = "" }},
-		{name: "empty gateway", mut: func(d *cloudinit.Data) { d.Gateway = "" }},
-		{name: "empty dns", mut: func(d *cloudinit.Data) { d.DNS = "" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

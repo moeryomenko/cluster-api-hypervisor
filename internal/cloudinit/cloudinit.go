@@ -19,22 +19,20 @@ limitations under the License.
 // to the machine's CIDATA disk. user-data injects the SSH public key into the
 // root user and carries the first-boot runcmd entries for the root-resize
 // helper and confext activation; meta-data pins the instance identity;
-// network-config carries the machine's static address, gateway and DNS
-// nameserver for the primary virtio interface.
+// network-config enables DHCP for the primary virtio interface (the guest
+// obtains its address from k8netd DHCP, not from static cloud-init).
 package cloudinit
 
 import "fmt"
 
 // Data carries the per-machine values the CIDATA renderer needs: the instance
-// identity, the SSH public key to inject into root, and the static network
-// addressing (IP, gateway, DNS) allocated for the machine.
+// identity and the SSH public key to inject into root. Network addressing is
+// obtained via DHCP from k8netd, so no static IP/Gateway/DNS fields are
+// required.
 type Data struct {
 	InstanceID   string
 	Hostname     string
 	SSHPublicKey string
-	IP           string
-	Gateway      string
-	DNS          string
 }
 
 // Render produces the three cloud-init NoCloud parts for one machine. The
@@ -46,9 +44,6 @@ func Render(d Data) (map[string][]byte, error) {
 		{name: "instance id", value: d.InstanceID},
 		{name: "hostname", value: d.Hostname},
 		{name: "ssh public key", value: d.SSHPublicKey},
-		{name: "ip", value: d.IP},
-		{name: "gateway", value: d.Gateway},
-		{name: "dns", value: d.DNS},
 	} {
 		if field.value == "" {
 			return nil, fmt.Errorf("cloudinit: %s must not be empty", field.name)
@@ -72,17 +67,12 @@ func Render(d Data) (map[string][]byte, error) {
 
 	metaData := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", d.InstanceID, d.Hostname)
 
-	networkConfig := fmt.Sprintf("version: 2\n"+
-		"ethernets:\n"+
-		"  id0:\n"+
-		"    match:\n"+
-		"      driver: virtio_net\n"+
-		"    addresses:\n"+
-		"      - %s/24\n"+
-		"    gateway4: %s\n"+
-		"    nameservers:\n"+
-		"      addresses:\n"+
-		"        - %s\n", d.IP, d.Gateway, d.DNS)
+	networkConfig := "version: 2\n" +
+		"ethernets:\n" +
+		"  id0:\n" +
+		"    match:\n" +
+		"      driver: virtio_net\n" +
+		"    dhcp4: true\n"
 
 	return map[string][]byte{
 		"user-data":      []byte(userData),
