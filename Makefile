@@ -108,6 +108,10 @@ envtest: ## Run the envtest suite (controllers CRD contract + helpers) against t
 image: ## Build the provider container image with podman
 	@podman build -t $(IMAGE) -f Containerfile .
 
+.PHONY: install-quadlet
+install-quadlet: ## Install the provider quadlet into the user systemd directory
+	@install -D -m 0644 deploy/cluster-api-hypervisor.container $(HOME)/.config/containers/systemd/cluster-api-hypervisor.container
+
 .PHONY: clean
 clean: ## Remove build artifacts and coverage output
 	@rm -f $(BINARY) $(COVER_FILE)

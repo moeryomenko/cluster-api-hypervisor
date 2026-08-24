@@ -1,0 +1,82 @@
+# cluster-api-hypervisor user quadlet (spec REQ-007 / VC-08 install clauses;
+# mirrors k8netd's deploy/k8netd.container pattern).
+#
+# Host paths render from two variables. Adjust BOTH to your layout before
+# installing (make install-quadlet copies this file verbatim); the defaults
+# match the k8labs layout:
+#
+#   K8SLAB_ROOT=~/.local/state/k8slab
+#     Lab build/state root. The baked base image, firmware, and vm-disks
+#     live under $K8SLAB_ROOT/build; provider PKI state persists in the
+#     root itself. Default: ~/.local/state/k8slab
+#
+#   CAPISHIM_STATE_ROOT=~/.local/share/capishim
+#     capishim state root. capishim provisions the provider identity
+#     inputs: webhook serving certs under
+#     $CAPISHIM_STATE_ROOT/webhook-certs/hypervisor and the management
+#     kubeconfig at $CAPISHIM_STATE_ROOT/kubeconfigs/hypervisor.kubeconfig.
+#     Default: ~/.local/share/capishim
+#
+# Build the image first: make image  (-> localhost/cluster-api-hypervisor:dev)
+# Install: make install-quadlet, then
+#   systemctl --user daemon-reload && systemctl --user start \
+#       cluster-api-hypervisor.service
+
+[Unit]
+Description=cluster-api-hypervisor provider manager (rootless podman quadlet)
+Wants=network-online.target
+Wants=k8netd.service capishim-pod.service
+After=network-online.target
+After=k8netd.service capishim-pod.service
+# Hard dependency: no management apiserver pod, no provider. k8netd stays a
+# soft dependency (Wants+After only): the provider dials its control socket
+# with bounded backoff and converges when the daemon appears or restarts.
+Requires=capishim-pod.service
+
+[Container]
+Image=localhost/cluster-api-hypervisor:dev
+Network=host
+# KVM acceleration for cloud-hypervisor subprocesses; access is granted by
+# the lab user's kvm group membership — no privileged mode, no added
+# capabilities.
+Device=/dev/kvm
+
+# Lab build dir: baked base image, firmware, and the writable per-machine
+# disk directory.
+Mount=type=bind,source=%h/.local/state/k8slab/build,target=/build
+# Provider state: cluster PKI artifacts between provider restarts.
+Mount=type=bind,source=%h/.local/state/k8slab,target=/state
+# k8netd control + vhost-user port sockets: identical paths both sides so
+# sockets dialed by cloud-hypervisor resolve to the daemon's own paths.
+Mount=type=bind,source=/run/user/1000/k8snet,target=/run/user/1000/k8snet
+# cloud-hypervisor API sockets: the provider writes one socket tree per VM.
+Mount=type=bind,source=/tmp/ch-capi,target=/tmp/ch-capi
+# Webhook serving certificate/key provisioned by capishim (tls.crt/tls.key).
+Mount=type=bind,source=%h/.local/share/capishim/webhook-certs/hypervisor,target=/tmp/k8s-webhook-server/serving-certs
+# Management apiserver kubeconfig issued by capishim for this provider.
+Mount=type=bind,source=%h/.local/share/capishim/kubeconfigs/hypervisor.kubeconfig,target=/etc/kubernetes/mgmt/hypervisor.kubeconfig,ro
+
+# Explicit pins — every HYPERVISOR_* value stated, no implicit defaults
+# (docs/install-contract.md section 3).
+Environment=HYPERVISOR_BASE_IMAGE=/build/k8labs-base.qcow2
+Environment=HYPERVISOR_FIRMWARE=/build/CLOUDHV.fd
+Environment=HYPERVISOR_VM_DISKS_DIR=/build/vm-disks
+Environment=HYPERVISOR_SOCKET_DIR=/tmp/ch-capi
+Environment=HYPERVISOR_STATE_DIR=/state
+Environment=HYPERVISOR_CH_BINARY=cloud-hypervisor
+Environment=HYPERVISOR_QEMU_IMG=qemu-img
+Environment=HYPERVISOR_K8NETD_SOCKET=/run/user/1000/k8snet/control.sock
+Environment=HYPERVISOR_NETWORK_CIDR=192.168.124.0/24
+
+# Manager flags pinned per docs/install-contract.md section 4.
+Exec=--kubeconfig=/etc/kubernetes/mgmt/hypervisor.kubeconfig
+Exec=--webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs
+Exec=--webhook-port=9443
+Exec=--health-addr=:9440
+Exec=--hypervisorcluster-concurrency=1
+Exec=--hypervisormachine-concurrency=1
+Exec=--hypervisorconfig-concurrency=1
+Exec=--hypervisorcontrolplane-concurrency=1
+
+[Service]
+Restart=always
