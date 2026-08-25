@@ -27,10 +27,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/predicates"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -50,7 +52,7 @@ import (
 const (
 	// controlPlaneReadyConditionType is the condition type the control plane
 	// reports once the workload apiserver is healthy.
-	controlPlaneReadyConditionType = clusterv1.ConditionType("ControlPlaneReady")
+	controlPlaneReadyConditionType = "ControlPlaneReady"
 
 	// controlPlaneKubeconfigDataKey is the data key the conventional
 	// <cluster>-kubeconfig Secret carries the rendered admin kubeconfig under.
@@ -72,7 +74,8 @@ const (
 // +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=hypervisorcontrolplanes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines,verbs=get;list;watch;create;delete
-// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachines,verbs=get;list;watch
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachines,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachinetemplates,verbs=get;list;watch
 // +kubebuilder:rbac:groups=bootstrap.cluster.x-k8s.io,resources=hypervisorconfigs,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
@@ -107,9 +110,11 @@ type HypervisorControlPlaneReconciler struct {
 	// injected from main.go via cfg.K8NetdSocket.
 	K8Netd *k8netd.Client
 	// CheckAPIServerHealth polls the workload apiserver healthz endpoint at
-	// https://cpIP:6443 with the cluster PKI material and returns nil exactly
-	// when the apiserver is healthy.
-	CheckAPIServerHealth func(ctx context.Context, cpIP string, clientCert, clientKey, caCert []byte) error
+	// https://host:port with the cluster PKI material and returns nil exactly
+	// when the apiserver is healthy. host/port are the published loopback
+	// endpoint recorded on the control-plane machine's status.publishedPorts —
+	// never the VM internal IP, which has no host route.
+	CheckAPIServerHealth func(ctx context.Context, host string, port int32, clientCert, clientKey, caCert []byte) error
 }
 
 // Reconcile moves the current state of the control-plane Machine set towards
@@ -119,7 +124,11 @@ type HypervisorControlPlaneReconciler struct {
 // when it does not exist yet. Each Machine carries the cluster-name and
 // control-plane role labels plus the machineTemplate metadata labels, its
 // bootstrap ref points at a generated HypervisorConfig persisted in the
-// control plane's namespace, and it is owned by the control plane. The
+// control plane's namespace with spec.clusterName from the linked Cluster and
+// spec.nodeName pinned to the Machine name, its infrastructureRef names the
+// concrete HypervisorMachine instantiated from the machineTemplate (created
+// idempotently per Machine, owned by the Machine), and it is owned by the
+// control plane. The
 // cluster-scoped PKI Secret is generated and persisted once on the first
 // replica; later reconciles read the existing Secret. Machines beyond the
 // desired replica count are deleted, and the replica counters and version are
@@ -159,41 +168,48 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 	for i := int32(0); i < replicas; i++ {
 		machineName := fmt.Sprintf("%s-%d", cp.Name, i)
 
-		existing := &clusterv1.Machine{}
-		if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: machineName}, existing); err == nil {
-			continue
-		} else if !apierrors.IsNotFound(err) {
+		machine := &clusterv1.Machine{}
+		err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: machineName}, machine)
+		if err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("get Machine %q: %w", machineName, err)
 		}
+		if apierrors.IsNotFound(err) {
+			if err := r.ensureClusterPKISecret(ctx, cp, cluster); err != nil {
+				r.Recorder.Eventf(cp, corev1.EventTypeWarning, "FailedClusterPKI", "failed to ensure cluster PKI Secret: %v", err)
+				return ctrl.Result{}, err
+			}
 
-		if err := r.ensureClusterPKISecret(ctx, cp, cluster); err != nil {
-			r.Recorder.Eventf(cp, corev1.EventTypeWarning, "FailedClusterPKI", "failed to ensure cluster PKI Secret: %v", err)
+			cfg := r.NewConfig(cp, machineName)
+			if cfg.Namespace == "" {
+				cfg.Namespace = cp.Namespace
+			}
+			cfg.Spec.ClusterName = cluster.Name
+			cfg.Spec.NodeName = machineName
+			if err := r.Create(ctx, cfg); err != nil && !apierrors.IsAlreadyExists(err) {
+				return ctrl.Result{}, fmt.Errorf("create HypervisorConfig %q: %w", client.ObjectKeyFromObject(cfg), err)
+			}
+
+			machine, err = r.machineFor(cp, cluster, machineName, cfg)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if _, err := r.CreateMachine(ctx, machine); err != nil {
+				r.Recorder.Eventf(
+					cp,
+					corev1.EventTypeWarning,
+					"FailedCreateMachine",
+					"failed to create Machine %q: %v",
+					machineName,
+					err,
+				)
+				return ctrl.Result{}, fmt.Errorf("create Machine %q: %w", machineName, err)
+			}
+		}
+
+		// The concrete HypervisorMachine is ensured for pre-existing Machines
+		// too, so a failed instantiation self-heals on the next reconcile.
+		if err := r.ensureHypervisorMachine(ctx, cp, cluster, machine); err != nil {
 			return ctrl.Result{}, err
-		}
-
-		cfg := r.NewConfig(cp, machineName)
-		if cfg.Namespace == "" {
-			cfg.Namespace = cp.Namespace
-		}
-		cfg.Spec.ClusterName = cluster.Name
-		if err := r.Create(ctx, cfg); err != nil && !apierrors.IsAlreadyExists(err) {
-			return ctrl.Result{}, fmt.Errorf("create HypervisorConfig %q: %w", client.ObjectKeyFromObject(cfg), err)
-		}
-
-		machine, err := r.machineFor(cp, cluster, machineName, cfg)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if _, err := r.CreateMachine(ctx, machine); err != nil {
-			r.Recorder.Eventf(
-				cp,
-				corev1.EventTypeWarning,
-				"FailedCreateMachine",
-				"failed to create Machine %q: %v",
-				machineName,
-				err,
-			)
-			return ctrl.Result{}, fmt.Errorf("create Machine %q: %w", machineName, err)
 		}
 	}
 
@@ -242,13 +258,10 @@ func (r *HypervisorControlPlaneReconciler) linkedCluster(
 	for i := range clusters.Items {
 		cluster := &clusters.Items[i]
 		ref := cluster.Spec.ControlPlaneRef
-		if ref == nil || ref.Name != cp.Name {
+		if !ref.IsDefined() || ref.Name != cp.Name {
 			continue
 		}
 		if ref.Kind != "" && ref.Kind != "HypervisorControlPlane" {
-			continue
-		}
-		if ref.Namespace != "" && ref.Namespace != cp.Namespace {
 			continue
 		}
 		return cluster, nil
@@ -329,9 +342,10 @@ func (r *HypervisorControlPlaneReconciler) reserveControlPlaneIP(
 // machineFor builds the CAPI Machine for one replica: the deterministic name
 // <control-plane-name>-<index>, the cluster-name and control-plane role
 // labels plus the machineTemplate metadata labels, the linked Cluster's name,
-// the machineTemplate infrastructureRef, a bootstrap configRef naming the
-// generated HypervisorConfig, and a controller owner reference to the control
-// plane.
+// an infrastructureRef naming the concrete HypervisorMachine instantiated
+// from the machineTemplate (never the template kind), a bootstrap configRef
+// naming the generated HypervisorConfig, and a controller owner reference to
+// the control plane.
 func (r *HypervisorControlPlaneReconciler) machineFor(
 	cp *controlplanev1alpha1.HypervisorControlPlane,
 	cluster *clusterv1.Cluster,
@@ -355,14 +369,17 @@ func (r *HypervisorControlPlaneReconciler) machineFor(
 		Spec: clusterv1.MachineSpec{
 			ClusterName: cluster.Name,
 			Bootstrap: clusterv1.Bootstrap{
-				ConfigRef: &corev1.ObjectReference{
-					APIVersion: bootstrapv1alpha1.GroupVersion.String(),
-					Kind:       "HypervisorConfig",
-					Name:       cfg.Name,
-					Namespace:  cfg.Namespace,
+				ConfigRef: clusterv1.ContractVersionedObjectReference{
+					APIGroup: bootstrapv1alpha1.GroupVersion.Group,
+					Kind:     "HypervisorConfig",
+					Name:     cfg.Name,
 				},
 			},
-			InfrastructureRef: cp.Spec.MachineTemplate.InfrastructureRef,
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+				APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+				Kind:     "HypervisorMachine",
+				Name:     machineName,
+			},
 		},
 	}
 
@@ -371,6 +388,85 @@ func (r *HypervisorControlPlaneReconciler) machineFor(
 	}
 
 	return machine, nil
+}
+
+// ensureHypervisorMachine instantiates the concrete HypervisorMachine for one
+// control-plane Machine: get-or-create named after the Machine, with the spec
+// copied from the HypervisorMachineTemplate the control plane's
+// machineTemplate.infrastructureRef references — the same template-cloning
+// contract core CAPI applies to worker Machines — plus the cluster-name label
+// and a controller owner reference to the Machine so the machine controller
+// reconciles it. The Machine's infrastructureRef points at this concrete
+// object; instantiating it here is what lets the machine controller ever find
+// its infrastructure.
+func (r *HypervisorControlPlaneReconciler) ensureHypervisorMachine(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	cluster *clusterv1.Cluster,
+	machine *clusterv1.Machine,
+) error {
+	key := client.ObjectKey{Namespace: cp.Namespace, Name: machine.Name}
+	existing := &infrastructurev1alpha1.HypervisorMachine{}
+	if err := r.Get(ctx, key, existing); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get HypervisorMachine %q: %w", machine.Name, err)
+	}
+
+	ref := cp.Spec.MachineTemplate.InfrastructureRef
+	templateNamespace := ref.Namespace
+	if templateNamespace == "" {
+		templateNamespace = cp.Namespace
+	}
+	tmpl := &infrastructurev1alpha1.HypervisorMachineTemplate{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: templateNamespace, Name: ref.Name}, tmpl); err != nil {
+		return fmt.Errorf("get HypervisorMachineTemplate %q: %w", client.ObjectKey{Namespace: templateNamespace, Name: ref.Name}, err)
+	}
+
+	labels := map[string]string{}
+	for k, v := range tmpl.Spec.Template.ObjectMeta.Labels {
+		labels[k] = v
+	}
+	for k, v := range machine.Labels {
+		labels[k] = v
+	}
+	labels[clusterv1.ClusterNameLabel] = cluster.Name
+
+	groupKind := ref.Kind
+	if gv, err := schema.ParseGroupVersion(ref.APIVersion); err == nil && gv.Group != "" {
+		groupKind = groupKind + "." + gv.Group
+	}
+
+	hm := &infrastructurev1alpha1.HypervisorMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      machine.Name,
+			Namespace: cp.Namespace,
+			Labels:    labels,
+			Annotations: map[string]string{
+				clusterv1.TemplateClonedFromNameAnnotation:      ref.Name,
+				clusterv1.TemplateClonedFromGroupKindAnnotation: groupKind,
+			},
+		},
+		Spec: tmpl.Spec.Template.Spec,
+	}
+	hm.Spec.ClusterName = cluster.Name
+
+	if err := controllerutil.SetControllerReference(machine, hm, r.Scheme); err != nil {
+		return fmt.Errorf("set controller owner reference on HypervisorMachine %q: %w", machine.Name, err)
+	}
+	if err := r.Create(ctx, hm); err != nil && !apierrors.IsAlreadyExists(err) {
+		r.Recorder.Eventf(
+			cp,
+			corev1.EventTypeWarning,
+			"FailedCreateHypervisorMachine",
+			"failed to create HypervisorMachine %q: %v",
+			machine.Name,
+			err,
+		)
+		return fmt.Errorf("create HypervisorMachine %q: %w", machine.Name, err)
+	}
+
+	return nil
 }
 
 // controlPlaneMachines lists the control-plane Machines of the linked Cluster:
@@ -532,33 +628,30 @@ func (r *HypervisorControlPlaneReconciler) clusterToHypervisorControlPlane(
 	}
 
 	ref := cluster.Spec.ControlPlaneRef
-	if ref == nil || ref.Kind != "HypervisorControlPlane" || ref.Name == "" {
+	if !ref.IsDefined() || ref.Kind != "HypervisorControlPlane" || ref.Name == "" {
 		return nil
-	}
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = cluster.Namespace
 	}
 
 	return []reconcile.Request{{
-		NamespacedName: client.ObjectKey{Namespace: namespace, Name: ref.Name},
+		NamespacedName: client.ObjectKey{Namespace: cluster.Namespace, Name: ref.Name},
 	}}
 }
 
 // reconcileReadiness advances the control-plane readiness contract: it
 // resolves the first control-plane Machine and its linked HypervisorMachine,
-// and once the VM reports an InternalIP it polls the workload apiserver
-// healthz endpoint through the CheckAPIServerHealth seam with the cluster PKI
-// material. A healthy poll renders the admin kubeconfig into the conventional
-// <cluster>-kubeconfig Secret — with the server URL taken from the 6443
-// allocation recorded on the machine's status.publishedPorts (REQ-009); a
-// machine without a recorded allocation has no endpoint to render and requeues
-// rather than falling back to a static port — and marks the control plane
-// initialized and ready. After readiness, the kubeconfig keeps reconciling to
-// the currently recorded allocation so a changed endpoint updates the existing
-// Secret in place. A VM with no address yet, or an apiserver that is not yet
-// healthy, is not an error: the reconcile requeues after
-// controlPlaneReadinessPollInterval so the later boot is eventually noticed.
+// and once the VM reports an InternalIP it reads the 6443 allocation recorded
+// on status.publishedPorts — a machine without one requeues, there is no
+// fallback to the VM IP because the host has no route into the k8netd L2
+// segment. The workload apiserver healthz endpoint is polled through the
+// CheckAPIServerHealth seam at https://127.0.0.1:<hostPort> with the cluster
+// PKI material. A healthy poll renders the admin kubeconfig into the
+// conventional <cluster>-kubeconfig Secret with the same server URL (REQ-009)
+// and marks the control plane initialized and ready. After readiness, the
+// kubeconfig keeps reconciling to the currently recorded allocation so a
+// changed endpoint updates the existing Secret in place. A VM with no address
+// yet, no recorded allocation, or an apiserver that is not yet healthy is not
+// an error: the reconcile requeues after controlPlaneReadinessPollInterval so
+// the later boot is eventually noticed.
 func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 	ctx context.Context,
 	cp *controlplanev1alpha1.HypervisorControlPlane,
@@ -590,29 +683,30 @@ func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 		return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
 	}
 
-	pk, err := r.clusterPKI(ctx, cp, cluster)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	if !cp.Status.Ready {
-		if r.CheckAPIServerHealth == nil {
-			log.Info("apiserver healthz seam not wired, waiting", "controlPlane", cp.Name)
-			return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
-		}
-		if err := r.CheckAPIServerHealth(ctx, cpIP, pk.CA, pk.CAKey, pk.CA); err != nil {
-			log.Info("workload apiserver not healthy yet, waiting", "ip", cpIP, "error", err)
-			return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
-		}
-	}
-
 	apiHostPort, ok := publishedHostPort(hm.Status.PublishedPorts, controlPlaneAPIServerPort)
 	if !ok {
 		log.Info("control-plane VM has no recorded apiserver port allocation yet, waiting", "machine", machine.Name)
 		return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
 	}
 
+	pk, err := r.clusterPKI(ctx, cp, cluster)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	serverURL := fmt.Sprintf("https://%s:%d", "127.0.0.1", apiHostPort)
+
+	if !cp.Status.Ready {
+		if r.CheckAPIServerHealth == nil {
+			log.Info("apiserver healthz seam not wired, waiting", "controlPlane", cp.Name)
+			return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
+		}
+		if err := r.CheckAPIServerHealth(ctx, "127.0.0.1", apiHostPort, pk.CA, pk.CAKey, pk.CA); err != nil {
+			log.Info("workload apiserver not healthy yet, waiting", "endpoint", serverURL, "error", err)
+			return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
+		}
+	}
+
 	if err := r.ensureKubeconfigSecret(ctx, cp, cluster, serverURL, pk); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -620,7 +714,7 @@ func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 	if !cp.Status.Ready {
 		cp.Status.Initialized = true
 		cp.Status.Ready = true
-		markControlPlaneReady(cp, corev1.ConditionTrue, "ControlPlaneReady", "control plane apiserver is healthy")
+		markControlPlaneReady(cp, metav1.ConditionTrue, "ControlPlaneReady", "control plane apiserver is healthy")
 		if err := r.Status().Update(ctx, cp); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update HypervisorControlPlane readiness status: %w", err)
 		}
@@ -735,27 +829,13 @@ func (r *HypervisorControlPlaneReconciler) ensureKubeconfigSecret(
 // plane status with the given status, preserving any other conditions.
 func markControlPlaneReady(
 	cp *controlplanev1alpha1.HypervisorControlPlane,
-	status corev1.ConditionStatus,
+	status metav1.ConditionStatus,
 	reason, message string,
 ) {
-	for i := range cp.Status.Conditions {
-		if cp.Status.Conditions[i].Type != controlPlaneReadyConditionType {
-			continue
-		}
-		if cp.Status.Conditions[i].Status == status {
-			return
-		}
-		cp.Status.Conditions[i].Status = status
-		cp.Status.Conditions[i].Reason = reason
-		cp.Status.Conditions[i].Message = message
-		cp.Status.Conditions[i].LastTransitionTime = metav1.Now()
-		return
-	}
-	cp.Status.Conditions = append(cp.Status.Conditions, clusterv1.Condition{
-		Type:               controlPlaneReadyConditionType,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
+	meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{
+		Type:    controlPlaneReadyConditionType,
+		Status:  status,
+		Reason:  reason,
+		Message: message,
 	})
 }

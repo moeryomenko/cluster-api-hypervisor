@@ -1,13 +1,15 @@
 // Contract tests for the HypervisorConfig defaulting and validation webhook.
 //
 // This file pins the exact behavior the webhook in this package must
-// implement. Defaulting is a no-op: every spec field keeps its value — the
-// cluster name, the role, the node name, and the optional SSH public key are
-// all left untouched. Validation requires the role to be exactly one of the
-// enum values "control-plane" or "worker" (case-sensitive; empty and any other
-// value are rejected), a non-empty node name, and a non-empty cluster name;
-// the optional SSH public key is not validated. The same rules apply on create
-// and update, where the new object is validated; deletion is always allowed.
+// implement. Defaulting fills spec.nodeName with metadata.name when it is
+// empty — a HypervisorConfig is per-machine and named after its Machine — and
+// leaves every other spec field untouched: the cluster name, the role, and
+// the optional SSH public key keep their values. Validation requires the role
+// to be exactly one of the enum values "control-plane" or "worker"
+// (case-sensitive; empty and any other value are rejected), a non-empty node
+// name, and a non-empty cluster name; the optional SSH public key is not
+// validated. The same rules apply on create and update, where the new object
+// is validated; deletion is always allowed.
 // The compile-time pins below force the webhook type to implement the
 // controller-runtime defaulter and validator interfaces with the exact method
 // signatures this file calls.
@@ -80,8 +82,9 @@ func withSSHPublicKey(obj *bootstrapv1alpha1.HypervisorConfig, key string) *boot
 	return obj
 }
 
-// TestHypervisorConfigDefaulting pins the mutating webhook as a no-op: a
-// zero-value config stays zero, a populated config keeps every spec field
+// TestHypervisorConfigDefaulting pins the mutating webhook contract:
+// spec.nodeName defaults to metadata.name when empty (a per-machine config is
+// named after its Machine), and every other spec field keeps its value,
 // including the optional SSH public key. Any non-HypervisorConfig or nil
 // object is rejected.
 func TestHypervisorConfigDefaulting(t *testing.T) {
@@ -94,6 +97,16 @@ func TestHypervisorConfigDefaulting(t *testing.T) {
 			name: "zero-value config is not modified",
 			give: &bootstrapv1alpha1.HypervisorConfig{},
 			want: bootstrapv1alpha1.HypervisorConfigSpec{},
+		},
+		{
+			name: "empty nodeName defaults to metadata.name",
+			give: withNodeName(validConfig(), ""),
+			want: bootstrapv1alpha1.HypervisorConfigSpec{
+				ClusterName:  "lab-cluster",
+				Role:         "control-plane",
+				NodeName:     "cp-1",
+				SSHPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample contract-fixture",
+			},
 		},
 		{
 			name: "populated config is not modified",

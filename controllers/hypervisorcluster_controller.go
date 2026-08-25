@@ -27,11 +27,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/annotations"
 	"sigs.k8s.io/cluster-api/util/predicates"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -68,6 +69,7 @@ const (
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachines,verbs=get;list;watch
 // +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=hypervisorcontrolplanes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch;update
 
 // HypervisorClusterReconciler reconciles a HypervisorCluster object.
 type HypervisorClusterReconciler struct {
@@ -205,13 +207,7 @@ func isInfrastructureReady(hc *infrastructurev1alpha1.HypervisorCluster) bool {
 	if !hc.Status.Ready {
 		return false
 	}
-	for i := range hc.Status.Conditions {
-		if hc.Status.Conditions[i].Type == clusterv1.InfrastructureReadyCondition &&
-			hc.Status.Conditions[i].Status == corev1.ConditionTrue {
-			return true
-		}
-	}
-	return false
+	return meta.IsStatusConditionTrue(hc.Status.Conditions, clusterv1.InfrastructureReadyCondition)
 }
 
 // reconcileControlPlaneEndpoint publishes status.controlPlaneEndpoint when the
@@ -224,18 +220,13 @@ func (r *HypervisorClusterReconciler) reconcileControlPlaneEndpoint(
 	cluster *clusterv1.Cluster,
 	hc *infrastructurev1alpha1.HypervisorCluster,
 ) error {
-	if cluster.Spec.ControlPlaneRef == nil {
+	if !cluster.Spec.ControlPlaneRef.IsDefined() {
 		return nil
 	}
 
 	cpRef := cluster.Spec.ControlPlaneRef
-	namespace := cpRef.Namespace
-	if namespace == "" {
-		namespace = cluster.Namespace
-	}
-
 	cp := &controlplanev1alpha1.HypervisorControlPlane{}
-	key := client.ObjectKey{Namespace: namespace, Name: cpRef.Name}
+	key := client.ObjectKey{Namespace: cluster.Namespace, Name: cpRef.Name}
 	if err := r.Get(ctx, key, cp); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
@@ -282,15 +273,10 @@ func (r *HypervisorClusterReconciler) machineInternalIP(
 	}
 
 	// Infrastructure references are namespaced to the machine by CAPI
-	// convention; the reference's namespace may be dropped by the API
-	// round-trip, so fall back to the machine's own namespace.
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = machine.Namespace
-	}
-
+	// convention; the contract-versioned reference carries no namespace, so
+	// the machine's own namespace names the infrastructure object.
 	hm := &infrastructurev1alpha1.HypervisorMachine{}
-	key := client.ObjectKey{Namespace: namespace, Name: ref.Name}
+	key := client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}
 	if err := r.Get(ctx, key, hm); err != nil {
 		if apierrors.IsNotFound(err) {
 			return "", false, nil
@@ -385,7 +371,7 @@ func (r *HypervisorClusterReconciler) clusterToHypervisorCluster(
 	}
 
 	ref := cluster.Spec.InfrastructureRef
-	if ref == nil || ref.Kind != "HypervisorCluster" || ref.Name == "" {
+	if !ref.IsDefined() || ref.Kind != "HypervisorCluster" || ref.Name == "" {
 		return nil
 	}
 
@@ -414,21 +400,9 @@ func (r *HypervisorClusterReconciler) machineToHypervisorCluster(
 // markInfrastructureReady upserts the InfrastructureReady condition as true on
 // the cluster status, preserving any other conditions.
 func markInfrastructureReady(hc *infrastructurev1alpha1.HypervisorCluster) {
-	for i := range hc.Status.Conditions {
-		if hc.Status.Conditions[i].Type != clusterv1.InfrastructureReadyCondition {
-			continue
-		}
-		if hc.Status.Conditions[i].Status == corev1.ConditionTrue {
-			return
-		}
-		hc.Status.Conditions[i].Status = corev1.ConditionTrue
-		hc.Status.Conditions[i].LastTransitionTime = metav1.Now()
-		return
-	}
-
-	hc.Status.Conditions = append(hc.Status.Conditions, clusterv1.Condition{
-		Type:               clusterv1.InfrastructureReadyCondition,
-		Status:             corev1.ConditionTrue,
-		LastTransitionTime: metav1.Now(),
+	meta.SetStatusCondition(&hc.Status.Conditions, metav1.Condition{
+		Type:   clusterv1.InfrastructureReadyCondition,
+		Status: metav1.ConditionTrue,
+		Reason: "InfrastructureProvisioned",
 	})
 }

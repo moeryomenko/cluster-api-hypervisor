@@ -42,7 +42,7 @@ package controllers
 import (
 	"testing"
 
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -167,7 +167,8 @@ func TestControlPlaneKubeconfigUpdatesInPlaceWhenAllocationChanges(t *testing.T)
 
 // TestControlPlaneKubeconfigWaitsForPublishedAllocation pins the missing-
 // allocation gate: a cp machine that reports an address but has no recorded
-// 6443 allocation yet cannot yield an endpoint — the reconcile requeues, no
+// 6443 allocation yet cannot yield an endpoint — the reconcile requeues
+// without polling the apiserver (TASK-021 P3: no fallback to the VM IP), no
 // kubeconfig Secret is written, and the control plane stays not-ready rather
 // than falling back to the colliding static 6443.
 func TestControlPlaneKubeconfigWaitsForPublishedAllocation(t *testing.T) {
@@ -182,9 +183,42 @@ func TestControlPlaneKubeconfigWaitsForPublishedAllocation(t *testing.T) {
 	}
 	wantRequeue(t, res)
 
+	if got := len(fx.health.calls); got != 0 {
+		t.Errorf("apiserver healthz seam called %d times with no recorded allocation, want 0", got)
+	}
+
 	wantNoKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
 	got := getControlPlane(t, c, lcp.cp)
 	wantCPStatus(t, got, false, false)
+}
+
+// TestControlPlaneHealthProbeUsesAllocatedHostPort pins the TASK-021 P3 fix:
+// the readiness probe dials https://127.0.0.1:<hostPort> — exactly the 6443
+// allocation recorded on the cp machine's status.publishedPorts, like the
+// kubeconfig server URL — never the VM internal IP and never a static port.
+func TestControlPlaneHealthProbeUsesAllocatedHostPort(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx, _, lcp := newKubeconfigAllocationFixture(t, c, "cp-probe-allocation")
+
+	const allocatedHostPort = int32(30123)
+	hm := newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+	setHMPublishedPorts(t, c, hm, infrastructurev1alpha1.MachinePublishedPort{
+		VMPort:   6443,
+		HostPort: allocatedHostPort,
+	})
+
+	fx.reconcileControlPlane(t, lcp.cp)
+
+	if len(fx.health.calls) == 0 {
+		t.Fatal("apiserver healthz seam never called")
+	}
+	call := fx.health.calls[0]
+	if call.host != "127.0.0.1" || call.port != allocatedHostPort {
+		t.Errorf("healthz polled endpoint %s:%d, want 127.0.0.1:%d (the recorded allocation)", call.host, call.port, allocatedHostPort)
+	}
+	if call.host == testCPIP {
+		t.Errorf("healthz polled the VM internal IP %q, which has no host route", call.host)
+	}
 }
 
 // TestControlPlaneEndpointResolutionIgnoresWorkerMachines pins the worker

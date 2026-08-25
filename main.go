@@ -40,7 +40,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	cgrecord "k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	"k8s.io/klog/v2"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -51,7 +52,6 @@ import (
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
 	infrav1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
 	"github.com/moeryomenko/cluster-api-hypervisor/controllers"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/chclient"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confexttree"
@@ -79,10 +79,6 @@ const (
 	// controlPlaneRole is the node role the bootstrap data of a control-plane
 	// Machine is rendered for.
 	controlPlaneRole = "control-plane"
-
-	// workloadAPIServerPort is the port the workload apiserver serves on and
-	// the readiness healthz poller targets.
-	workloadAPIServerPort = 6443
 
 	// apiserverHealthzTimeout bounds one apiserver healthz request of the
 	// control-plane readiness poller.
@@ -115,7 +111,7 @@ var (
 )
 
 // init registers the scheme: the client-go core types, the CAPI core types
-// (v1beta1), and the three provider API groups. The manager needs all of them
+// (v1beta2), and the three provider API groups. The manager needs all of them
 // to watch and reconcile management-plane objects.
 func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
@@ -182,6 +178,11 @@ func initFlags(fs *pflag.FlagSet) {
 func main() {
 	initFlags(pflag.CommandLine)
 	pflag.Parse()
+
+	// Wire the controller-runtime root logger to klog: without an explicit
+	// SetLogger call controller-runtime installs NullLogSink 30 seconds after
+	// startup and silently drops every log line, including reconcile errors.
+	ctrl.SetLogger(klog.Background())
 
 	restConfig, err := managerRestConfig()
 	if err != nil {
@@ -329,7 +330,6 @@ func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("hypervisormachine-controller"),
 		Config:   cfg,
-		VM:       chclient.NewVMClient(cfg.SocketDir, cfg.CHBinary),
 		K8Netd:   k8netd.NewClient(cfg.K8NetdSocket),
 		QemuImg: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, name, args...).CombinedOutput()
@@ -413,12 +413,13 @@ func buildConfextTree(
 }
 
 // checkAPIServerHealth polls the workload apiserver healthz endpoint at
-// https://cpIP:6443 with an HTTP client that trusts caCert and authenticates
+// https://host:port with an HTTP client that trusts caCert and authenticates
 // with the clientCert/clientKey pair, returning nil exactly when the apiserver
-// answers 200 OK. The cluster CA doubles as the client certificate in the
-// control-plane readiness flow, mirroring the KTHW apiserver client-ca-file
-// authentication.
-func checkAPIServerHealth(ctx context.Context, cpIP string, clientCert, clientKey, caCert []byte) error {
+// answers 200 OK. host/port are the published loopback endpoint recorded on
+// the control-plane machine's status.publishedPorts. The cluster CA doubles as
+// the client certificate in the control-plane readiness flow, mirroring the
+// KTHW apiserver client-ca-file authentication.
+func checkAPIServerHealth(ctx context.Context, host string, port int32, clientCert, clientKey, caCert []byte) error {
 	caPool := x509.NewCertPool()
 	if !caPool.AppendCertsFromPEM(caCert) {
 		return fmt.Errorf("cluster CA bytes are not a PEM certificate")
@@ -439,7 +440,7 @@ func checkAPIServerHealth(ctx context.Context, cpIP string, clientCert, clientKe
 		Timeout: apiserverHealthzTimeout,
 	}
 
-	url := "https://" + net.JoinHostPort(cpIP, strconv.Itoa(workloadAPIServerPort)) + "/healthz"
+	url := "https://" + net.JoinHostPort(host, strconv.Itoa(int(port))) + "/healthz"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("build apiserver healthz request for %q: %w", url, err)

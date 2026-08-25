@@ -17,12 +17,10 @@ import (
 	"testing"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
 )
@@ -37,11 +35,11 @@ var configFixedTransitionTime = time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
 // configContractConditions returns the conditions carried by the populated
 // fixture: the DataSecretAvailable condition that REQ-007 assigns to the
 // bootstrap contract (spec REQ-007).
-func configContractConditions() clusterv1.Conditions {
-	return clusterv1.Conditions{
+func configContractConditions() []metav1.Condition {
+	return []metav1.Condition{
 		{
-			Type:               clusterv1.ConditionType("DataSecretAvailable"),
-			Status:             corev1.ConditionTrue,
+			Type:               "DataSecretAvailable",
+			Status:             metav1.ConditionTrue,
 			LastTransitionTime: metav1.Time{Time: configFixedTransitionTime},
 			Reason:             "BootstrapSecretRendered",
 			Message:            "bootstrap secret data is available",
@@ -266,9 +264,9 @@ func TestHypervisorConfigDeepCopyNonAliasing(t *testing.T) {
 		{
 			name: "status.conditions append",
 			mutate: func(c *bootstrapv1alpha1.HypervisorConfig) {
-				c.Status.Conditions = append(c.Status.Conditions, clusterv1.Condition{
-					Type:               clusterv1.ConditionType("RenderedFilesValidated"),
-					Status:             corev1.ConditionUnknown,
+				c.Status.Conditions = append(c.Status.Conditions, metav1.Condition{
+					Type:               "RenderedFilesValidated",
+					Status:             metav1.ConditionUnknown,
 					LastTransitionTime: metav1.Time{Time: configFixedTransitionTime},
 					Reason:             "Unknown",
 					Message:            "appended condition",
@@ -319,7 +317,7 @@ func TestHypervisorConfigDeepCopyNonAliasing(t *testing.T) {
 }
 
 // TestHypervisorConfigConditionsContract verifies the GetConditions and
-// SetConditions methods round-trip a clusterv1.Conditions list, satisfying
+// SetConditions methods round-trip a []metav1.Condition list, satisfying
 // the conditions accessor contract used by the CAPI conditions package.
 func TestHypervisorConfigConditionsContract(t *testing.T) {
 	t.Run("unset conditions return nil", func(t *testing.T) {
@@ -330,20 +328,19 @@ func TestHypervisorConfigConditionsContract(t *testing.T) {
 	})
 
 	conditions := configContractConditions()
-	second := clusterv1.Condition{
-		Type:               clusterv1.ConditionType("RenderedFilesValidated"),
-		Status:             corev1.ConditionFalse,
-		Severity:           clusterv1.ConditionSeverityWarning,
+	second := metav1.Condition{
+		Type:               "RenderedFilesValidated",
+		Status:             metav1.ConditionFalse,
 		LastTransitionTime: metav1.Time{Time: configFixedTransitionTime},
 		Reason:             "ValidationFailed",
 		Message:            "tree files failed validation",
 	}
 	tests := []struct {
 		name string
-		give clusterv1.Conditions
+		give []metav1.Condition
 	}{
-		{name: "single condition", give: clusterv1.Conditions{conditions[0]}},
-		{name: "multiple conditions preserve order", give: clusterv1.Conditions{conditions[0], second}},
+		{name: "single condition", give: conditions[:1]},
+		{name: "multiple conditions preserve order", give: []metav1.Condition{conditions[0], second}},
 		{name: "nil conditions", give: nil},
 	}
 	for _, tt := range tests {

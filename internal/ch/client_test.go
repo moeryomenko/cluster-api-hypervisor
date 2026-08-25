@@ -49,6 +49,7 @@ package ch_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -56,6 +57,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -261,6 +265,121 @@ func TestClientInfo(t *testing.T) {
 	}
 }
 
+// TestClientCreate pins the vm.create contract: PUT /api/v1/vm.create with
+// the VmConfig as the JSON body, nil for a 2xx response, and a typed
+// StatusError carrying the status code for any non-2xx response. The body is
+// decoded on the server side and must carry the firmware path, every disk
+// path, and the vhost-user net parameters verbatim.
+func TestClientCreate(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		payload    string
+		wantErr    bool
+		wantStatus int
+	}{
+		{name: "no content", status: http.StatusNoContent},
+		{
+			name:       "bad request",
+			status:     http.StatusBadRequest,
+			payload:    `["Failed to deserialize JSON","missing field"]`,
+			wantErr:    true,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "already created",
+			status:     http.StatusInternalServerError,
+			payload:    `["Error from API","The VM could not be created","VM is already created"]`,
+			wantErr:    true,
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := newRecorder(tt.status, tt.payload)
+			client := mustNewClient(t, newSocketServer(t, rec))
+
+			cfg := ch.VmConfig{
+				Payload: &ch.PayloadConfig{Firmware: "/build/CLOUDHV.fd"},
+				Memory:  &ch.MemoryConfig{Size: 512 * 1024 * 1024, Shared: true},
+				Disks: []ch.DiskConfig{
+					{Path: "/build/vm-disks/node-1-root.qcow2"},
+					{Path: "/build/vm-disks/node-1-data/z-kubelet.raw"},
+				},
+				Net: []ch.NetConfig{
+					{VhostUser: true, VhostSocket: "/run/user/1000/k8snet/node-1.sock", MAC: "c6:e5:50:1c:ec:ab", NumQueues: 2},
+				},
+			}
+			err := client.Create(t.Context(), cfg)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Create returned nil for a non-2xx response, want error")
+				}
+				assertStatusError(t, err, tt.wantStatus)
+			} else if err != nil {
+				t.Fatalf("Create returned %v for a 2xx response, want nil", err)
+			}
+
+			method, path, body := rec.snapshot()
+			if method != http.MethodPut {
+				t.Errorf("Create method = %q, want %q", method, http.MethodPut)
+			}
+			if path != "/api/v1/vm.create" {
+				t.Errorf("Create path = %q, want %q", path, "/api/v1/vm.create")
+			}
+
+			var got map[string]any
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Fatalf("Create body is not valid JSON: %v (body %q)", err, body)
+			}
+			assertJSONPath(t, got, "payload.firmware", cfg.Payload.Firmware)
+			assertJSONPath(t, got, "memory.size", float64(cfg.Memory.Size))
+			assertJSONPath(t, got, "memory.shared", true)
+			assertJSONPath(t, got, "disks.0.path", cfg.Disks[0].Path)
+			assertJSONPath(t, got, "disks.1.path", cfg.Disks[1].Path)
+			assertJSONPath(t, got, "net.0.vhost_user", true)
+			assertJSONPath(t, got, "net.0.vhost_socket", cfg.Net[0].VhostSocket)
+			assertJSONPath(t, got, "net.0.mac", cfg.Net[0].MAC)
+			assertJSONPath(t, got, "net.0.num_queues", float64(cfg.Net[0].NumQueues))
+		})
+	}
+}
+
+// assertJSONPath walks a decoded JSON object along a dotted path of keys and
+// numeric indices and fails unless the leaf equals want (compared with
+// reflect.DeepEqual).
+func assertJSONPath(t *testing.T, doc map[string]any, path string, want any) {
+	t.Helper()
+
+	cur := any(doc)
+	for _, seg := range strings.Split(path, ".") {
+		switch node := cur.(type) {
+		case map[string]any:
+			next, ok := node[seg]
+			if !ok {
+				t.Fatalf("JSON path %q: key %q missing in %v", path, seg, node)
+			}
+			cur = next
+		case []any:
+			idx, err := strconv.Atoi(seg)
+			if err != nil {
+				t.Fatalf("JSON path %q: segment %q is not an index", path, seg)
+			}
+			if idx >= len(node) {
+				t.Fatalf("JSON path %q: index %d out of range (%d entries)", path, idx, len(node))
+			}
+			cur = node[idx]
+		default:
+			t.Fatalf("JSON path %q: segment %q traverses non-container %T", path, seg, cur)
+		}
+	}
+
+	if !reflect.DeepEqual(cur, want) {
+		t.Errorf("JSON path %q = %v (%T), want %v (%T)", path, cur, cur, want, want)
+	}
+}
+
 // TestClientConnectionFailure pins the transport-failure contract: when the
 // socket does not exist (the VM is gone or never started), the API call fails
 // with a transport error, never a StatusError.
@@ -352,6 +471,43 @@ func TestClientContextDeadline(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("Boot error = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+// TestClientStatusErrorMessage pins that a non-2xx answer's body travels
+// with the StatusError: the controller surfaces the API's own reason (for
+// example ["The VM could not boot","VM config is missing"]) in events and
+// logs instead of a bare status code. An empty body leaves the message bare.
+func TestClientStatusErrorMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		payload string
+		want    string
+	}{
+		{
+			name:    "body included",
+			status:  http.StatusInternalServerError,
+			payload: `["Error from API","The VM could not boot","VM config is missing"]`,
+			want:    `cloud-hypervisor API returned status 500: ["Error from API","The VM could not boot","VM config is missing"]`,
+		},
+		{
+			name:   "empty body",
+			status: http.StatusNotFound,
+			want:   "cloud-hypervisor API returned status 404",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := newRecorder(tt.status, tt.payload)
+			client := mustNewClient(t, newSocketServer(t, rec))
+
+			err := client.Boot(t.Context())
+			assertStatusError(t, err, tt.status)
+			if err.Error() != tt.want {
+				t.Errorf("Boot error = %q, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

@@ -40,14 +40,24 @@ FROM alpine:edge@sha256:266f29255458134745f2bf588cb23ed1ed1768b96ff2580a05d70a8a
 # available in the edge/testing repository; the remaining tools are in
 # edge/main. Each pin is the exact package version shipped by Alpine today.
 ARG CLOUD_HYPERVISOR_VERSION=48.0-r0
-ARG QEMU_IMG_VERSION=11.0.3-r1
+ARG QEMU_IMG_VERSION=11.1.0-r0
 ARG SQUASHFS_TOOLS_VERSION=4.7.5-r0
+ARG LIBCAP_VERSION=2.78-r0
 
+# libcap ships setcap, used below to strip the file capability the Alpine
+# cloud-hypervisor package carries (security.capability xattr cap_net_admin=ep).
+# A rootless container whose capability set lacks CAP_NET_ADMIN cannot execve a
+# file with that xattr (fork/exec fails with EPERM), and k8labs uses userspace
+# vhost-user networking, so cloud-hypervisor needs no file caps here. The strip
+# is best-effort: an image build for an environment where the package no longer
+# ships the xattr must not fail.
 RUN apk add --no-cache \
         --repository https://dl-cdn.alpinelinux.org/alpine/edge/testing \
         cloud-hypervisor=${CLOUD_HYPERVISOR_VERSION} \
         qemu-img=${QEMU_IMG_VERSION} \
-        squashfs-tools=${SQUASHFS_TOOLS_VERSION}
+        squashfs-tools=${SQUASHFS_TOOLS_VERSION} \
+        libcap=${LIBCAP_VERSION} \
+    && (setcap -r /usr/bin/cloud-hypervisor || true)
 
 COPY --from=builder /out/cluster-api-hypervisor /usr/local/bin/cluster-api-hypervisor
 

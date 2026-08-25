@@ -32,14 +32,29 @@ After=k8netd.service capishim-pod.service
 # soft dependency (Wants+After only): the provider dials its control socket
 # with bounded backoff and converges when the daemon appears or restarts.
 Requires=capishim-pod.service
+# Cold-start race: capishim setup needs ~106s on first boot while this
+# unit crash-restarts ~1s apart; disable the start rate limit so the
+# provider outlives the setup window instead of hitting the default
+# 5-starts/10s ceiling and dying before the management plane exists.
+# [Unit], not [Service]: current systemd logs "Unknown key" and ignores
+# these when placed under [Service].
+StartLimitIntervalSec=0
+StartLimitBurst=0
 
 [Container]
 Image=localhost/cluster-api-hypervisor:dev
 Network=host
 # KVM acceleration for cloud-hypervisor subprocesses; access is granted by
 # the lab user's kvm group membership — no privileged mode, no added
-# capabilities.
-Device=/dev/kvm
+# capabilities. Passed via PodmanArgs: podman 6.x quadlet has no Device=
+# [Container] key, and an unsupported key aborts unit generation.
+PodmanArgs=--device /dev/kvm
+# Rootless lab tradeoff: disable podman's default seccomp profile so the
+# cloud-hypervisor subprocess survives its own config push (CH v48's internal
+# filter SIGSYS-kills its API thread under container profiles; we spawn it
+# with --seccomp false and let it run unfiltered inside the container). No
+# capabilities added, no privileged mode.
+PodmanArgs=--security-opt seccomp=unconfined
 
 # Lab build dir: baked base image, firmware, and the writable per-machine
 # disk directory.
@@ -55,6 +70,14 @@ Mount=type=bind,source=/tmp/ch-capi,target=/tmp/ch-capi
 Mount=type=bind,source=%h/.local/share/capishim/webhook-certs/hypervisor,target=/tmp/k8s-webhook-server/serving-certs
 # Management apiserver kubeconfig issued by capishim for this provider.
 Mount=type=bind,source=%h/.local/share/capishim/kubeconfigs/hypervisor.kubeconfig,target=/etc/kubernetes/mgmt/hypervisor.kubeconfig,ro
+# Provider PKI: the kubeconfig references CA/client material by absolute
+# host paths under <capishim-state>/pki; bind the subtree at the identical
+# in-container path so clientcmd resolves those refs unchanged. Literal
+# home path: podman 6.x quadlet emits Mount= into ExecStart without
+# expanding %h in the mount target (verified via systemctl --user cat),
+# so the documented k8labs default is spelled out; it assumes the
+# uid-1000 lab user, matching the /run/user/1000 k8netd mount above.
+Mount=type=bind,source=/home/eryoma/.local/share/capishim/pki,target=/home/eryoma/.local/share/capishim/pki,ro
 
 # Explicit pins — every HYPERVISOR_* value stated, no implicit defaults
 # (docs/install-contract.md section 3).
@@ -67,16 +90,12 @@ Environment=HYPERVISOR_CH_BINARY=cloud-hypervisor
 Environment=HYPERVISOR_QEMU_IMG=qemu-img
 Environment=HYPERVISOR_K8NETD_SOCKET=/run/user/1000/k8snet/control.sock
 Environment=HYPERVISOR_NETWORK_CIDR=192.168.124.0/24
+Environment=HYPERVISOR_SSH_PUBLIC_KEY_FILE=/build/ssh-lab.pub
 
-# Manager flags pinned per docs/install-contract.md section 4.
-Exec=--kubeconfig=/etc/kubernetes/mgmt/hypervisor.kubeconfig
-Exec=--webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs
-Exec=--webhook-port=9443
-Exec=--health-addr=:9440
-Exec=--hypervisorcluster-concurrency=1
-Exec=--hypervisormachine-concurrency=1
-Exec=--hypervisorconfig-concurrency=1
-Exec=--hypervisorcontrolplane-concurrency=1
+# Manager flags pinned per docs/install-contract.md section 4. ONE Exec=
+# line with all flags space-separated: podman 6.x quadlet treats repeated
+# Exec= as last-wins, so separate lines drop every flag except the last.
+Exec=--kubeconfig=/etc/kubernetes/mgmt/hypervisor.kubeconfig --webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs --webhook-port=9443 --health-addr=:9440 --hypervisorcluster-concurrency=1 --hypervisormachine-concurrency=1 --hypervisorconfig-concurrency=1 --hypervisorcontrolplane-concurrency=1
 
 [Service]
 Restart=always

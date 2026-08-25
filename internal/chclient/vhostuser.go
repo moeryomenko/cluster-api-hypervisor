@@ -56,12 +56,12 @@ func VhostUserSocketPath(portName string) string {
 // vhost-user backend. socketPath is the vhost-user socket produced by
 // VhostUserSocketPath; mac is the machine MAC (derived via internal/mac).
 // The returned string contains vhost_user=true, socket=<path>, mac=<mac>,
-// and num_queues=1 with a single queue pair and no TAP reference. Invalid
+// and num_queues=2 with no TAP reference. Invalid
 // inputs return a non-nil error.
 //
 // Example output:
 //
-//	vhost_user=true,socket=/run/user/1000/k8snet/machine-a.sock,mac=c6:e5:50:1c:ec:ab,num_queues=1
+//	vhost_user=true,socket=/run/user/1000/k8snet/machine-a.sock,mac=c6:e5:50:1c:ec:ab,num_queues=2
 func VhostUserNetConfig(socketPath, mac string) (string, error) {
 	if strings.TrimSpace(socketPath) == "" {
 		return "", fmt.Errorf("chclient: socket path must not be empty")
@@ -97,6 +97,9 @@ func VhostUserNetConfig(socketPath, mac string) (string, error) {
 		return "", fmt.Errorf("chclient: socket path %q must be under %s", socketPath, k8netdSocketBase)
 	}
 
-	cfg := fmt.Sprintf("vhost_user=true,socket=%s,mac=%s,num_queues=1", socketPath, macNorm)
+	// cloud-hypervisor v48+ rejects boot with fewer than 2 virtio-net queues
+	// ("Number of queues to virtio_net less than 2"); this matches the >=2
+	// floor documented on ch.NetConfig and enforced by ch.ParseNetConfig.
+	cfg := fmt.Sprintf("vhost_user=true,socket=%s,mac=%s,num_queues=2", socketPath, macNorm)
 	return cfg, nil
 }

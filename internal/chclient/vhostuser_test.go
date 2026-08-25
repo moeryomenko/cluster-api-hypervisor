@@ -20,7 +20,7 @@ limitations under the License.
 //
 //	vhost_user=true, socket=/run/user/1000/k8snet/<port>.sock, mac=<mac>
 //
-// with a single queue pair and no tap reference.
+// with num_queues=2 (cloud-hypervisor v48+ minimum) and no tap reference.
 //
 // Current implementation uses TAP (Net.EnsureTap / LinkAdd tuntap) and has no
 // vhost-user rendering. All tests in this file are expected to FAIL against
@@ -39,15 +39,16 @@ limitations under the License.
 //
 //	func VhostUserNetConfig(socketPath, mac string) (string, error)
 //	  Returns the cloud-hypervisor net device string. Must contain
-//	  vhost_user=true, socket=<socketPath>, mac=<mac>, single queue pair
-//	  (num_queues=1 or equivalent), and must NOT contain any tap reference.
+//	  vhost_user=true, socket=<socketPath>, mac=<mac>, num_queues=2
+//	  (cloud-hypervisor v48+ rejects fewer than 2 queues), and must NOT
+//	  contain any tap reference.
 //	  Invalid inputs (empty socket, malformed MAC) must return a non-nil error.
 //
 // Grill coverage:
 //   - exact string shape, field order independent
 //   - socket derived from port name, not hardcoded machine
 //   - MAC is the machine's derived MAC (via internal/mac.Derive)
-//   - single queue pair only, no multi-queue flags
+//   - num_queues=2 exactly, no other multi-queue flags
 //   - no tap / ifname / tuntap substring (case-insensitive)
 //   - empty / malformed inputs, long names, special chars, upper-case MAC
 //   - socket path length / unix socket limit (108)
@@ -310,7 +311,7 @@ func TestVhostUserNetConfig_RendersMAC(t *testing.T) {
 	}
 }
 
-func TestVhostUserNetConfig_SingleQueuePair(t *testing.T) {
+func TestVhostUserNetConfig_MinimumQueues(t *testing.T) {
 	t.Parallel()
 
 	socket := chclient.VhostUserSocketPath("machine-a")
@@ -321,22 +322,25 @@ func TestVhostUserNetConfig_SingleQueuePair(t *testing.T) {
 		t.Fatalf("VhostUserNetConfig error: %v", err)
 	}
 
-	// Must have single queue pair — require num_queues=1 present
-	assertContains(t, cfg, "num_queues=1", "VC-05: single queue pair requires num_queues=1")
-	// Queue pair must be exactly 1, not 0
-	if strings.Contains(cfg, "num_queues=0") {
-		t.Errorf("cfg %q contains num_queues=0, want 1", cfg)
+	// cloud-hypervisor v48+ rejects boot with fewer than 2 virtio-net queues
+	// ("Number of queues to virtio_net less than 2") — require num_queues=2
+	assertContains(t, cfg, "num_queues=2", "VC-05: CH v48+ minimum requires num_queues=2")
+	// Queue count must be exactly 2, not 0 or 1
+	for _, bad := range []string{"num_queues=0", "num_queues=1"} {
+		if strings.Contains(cfg, bad) {
+			t.Errorf("cfg %q contains %q — below CH v48+ minimum of 2", cfg, bad)
+		}
 	}
 
-	// No multi-queue flags
-	for _, forbid := range []string{"num_queues=2", "num_queues=4", "num_queues=8", "mq=on", "mq=true"} {
+	// No multi-queue flags beyond num_queues
+	for _, forbid := range []string{"num_queues=4", "num_queues=8", "mq=on", "mq=true"} {
 		if strings.Contains(cfg, forbid) {
-			t.Errorf("cfg %q contains multi-queue flag %q — VC-05 forbids multi-queue", cfg, forbid)
+			t.Errorf("cfg %q contains multi-queue flag %q — VC-05 forbids extra multi-queue flags", cfg, forbid)
 		}
 	}
 	// Vectors implies multi-queue
 	if strings.Contains(cfg, "vectors=") {
-		t.Errorf("cfg %q contains vectors= (multi-queue hint), want single queue only", cfg)
+		t.Errorf("cfg %q contains vectors= (multi-queue hint), want only num_queues=2", cfg)
 	}
 }
 
@@ -379,7 +383,7 @@ func TestVhostUserNetConfig_ExactShape(t *testing.T) {
 		"vhost_user=true",
 		"socket=" + socket,
 		"mac=" + strings.ToLower(macAddr), // allow lowercased
-		"num_queues=1",
+		"num_queues=2",
 	}
 	for _, want := range required {
 		if !strings.Contains(cfg, want) && !strings.Contains(cfg, strings.ToUpper(want)) {
@@ -529,26 +533,19 @@ func TestVhostUserNetConfig_NoMultiQueueFlagsComprehensive(t *testing.T) {
 	forbidden := []string{
 		"mq=",
 		"multi_queue",
-		"num_queues=2",
+		"num_queues=1",
 		"num_queues=4",
 		"vectors",
 		"queue_size=0", // zero queue size is invalid
 	}
 	for _, f := range forbidden {
 		if strings.Contains(strings.ToLower(cfg), strings.ToLower(f)) {
-			// Special case: num_queues=1 is allowed, others are not
-			if f == "num_queues=2" && strings.Contains(cfg, "num_queues=1") {
-				continue
-			}
-			// generic forbid
-			if f == "mq=" || f == "vectors" || f == "multi_queue" {
-				t.Errorf("cfg %q contains multi-queue flag %q", cfg, f)
-			}
+			t.Errorf("cfg %q contains forbidden flag %q", cfg, f)
 		}
 	}
-	// Explicitly assert the only allowed num_queues is 1
-	if strings.Contains(cfg, "num_queues=") && !strings.Contains(cfg, "num_queues=1") {
-		t.Errorf("cfg %q has num_queues but not =1, want exactly 1", cfg)
+	// Explicitly assert the only allowed num_queues is 2 (CH v48+ minimum)
+	if strings.Contains(cfg, "num_queues=") && !strings.Contains(cfg, "num_queues=2") {
+		t.Errorf("cfg %q has num_queues but not =2, want exactly 2", cfg)
 	}
 }
 

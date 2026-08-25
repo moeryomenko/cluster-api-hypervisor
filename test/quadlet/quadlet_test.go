@@ -153,11 +153,15 @@ func (u *quadletUnit) mounts() []bindMount {
 }
 
 // execFlagValue returns the value assigned to flag across all Exec=
-// directives (e.g. "--kubeconfig"), or "" when the flag is absent.
+// directives (e.g. "--kubeconfig"), or "" when the flag is absent. Flags
+// share a single space-separated Exec= line (podman 6.x quadlet is
+// last-wins on repeated Exec=), so each directive is tokenized.
 func (u *quadletUnit) execFlagValue(flag string) string {
 	for _, v := range u.values("Container", "Exec") {
-		if assigned, ok := strings.CutPrefix(v, flag+"="); ok {
-			return assigned
+		for _, token := range strings.Fields(v) {
+			if assigned, ok := strings.CutPrefix(token, flag+"="); ok {
+				return assigned
+			}
 		}
 	}
 	return ""
@@ -173,7 +177,11 @@ func TestUnitArtifactExists(t *testing.T) {
 }
 
 // TestUnitCoreDirectives covers REQ-007: Image=localhost/..., Network=host,
-// Device=/dev/kvm, no privileged mode, no added capabilities.
+// KVM passthrough via PodmanArgs --device /dev/kvm (podman 6.x quadlet has
+// no Device= key), seccomp=unconfined via PodmanArgs (CH v48's internal
+// filter SIGSYS-kills its API thread under container profiles; we disable
+// podman's default profile at the container boundary instead), no privileged
+// mode, no added capabilities.
 func TestUnitCoreDirectives(t *testing.T) {
 	u := mustLoadUnit(t)
 
@@ -192,13 +200,23 @@ func TestUnitCoreDirectives(t *testing.T) {
 	}
 
 	var kvmDevice bool
-	for _, v := range u.values("Container", "Device") {
-		if v == "/dev/kvm" {
+	for _, v := range u.values("Container", "PodmanArgs") {
+		if strings.Contains(v, "--device /dev/kvm") {
 			kvmDevice = true
 		}
 	}
 	if !kvmDevice {
-		t.Errorf("[Container] Device = %v, want /dev/kvm among values", u.values("Container", "Device"))
+		t.Errorf("[Container] PodmanArgs = %v, want --device /dev/kvm among values", u.values("Container", "PodmanArgs"))
+	}
+
+	var seccompUnconfined bool
+	for _, v := range u.values("Container", "PodmanArgs") {
+		if strings.Contains(v, "--security-opt seccomp=unconfined") {
+			seccompUnconfined = true
+		}
+	}
+	if !seccompUnconfined {
+		t.Errorf("[Container] PodmanArgs = %v, want --security-opt seccomp=unconfined among values", u.values("Container", "PodmanArgs"))
 	}
 
 	for _, v := range u.values("Container", "PodmanArgs") {
@@ -213,10 +231,41 @@ func TestUnitCoreDirectives(t *testing.T) {
 	}
 }
 
+// TestUnitSingleExecLine covers REQ-007: the manager flags ride exactly ONE
+// Exec= directive. podman 6.x quadlet treats repeated Exec= as last-wins,
+// so multiple lines silently drop every flag except the last and the
+// manager exits via GetConfigOrDie.
+func TestUnitSingleExecLine(t *testing.T) {
+	u := mustLoadUnit(t)
+
+	execLines := u.values("Container", "Exec")
+	if len(execLines) != 1 {
+		t.Fatalf("[Container] Exec = %v, want exactly one directive (podman 6.x quadlet is last-wins on repeated Exec=)", execLines)
+	}
+
+	flags := []string{
+		"--kubeconfig=",
+		"--webhook-cert-dir=",
+		"--webhook-port=",
+		"--health-addr=",
+		"--hypervisorcluster-concurrency=",
+		"--hypervisormachine-concurrency=",
+		"--hypervisorconfig-concurrency=",
+		"--hypervisorcontrolplane-concurrency=",
+	}
+	for _, flag := range flags {
+		if !strings.Contains(execLines[0], flag) {
+			t.Errorf("single Exec= line %q misses flag %s", execLines[0], strings.TrimSuffix(flag, "="))
+		}
+	}
+}
+
 // TestUnitMounts covers REQ-007 mount clauses: lab build dir at /build,
 // k8netd runtime dir and ch socket dir at their absolute host paths, the
-// capishim webhook-cert subtree at --webhook-cert-dir, and the capishim
-// hypervisor kubeconfig read-only at --kubeconfig.
+// capishim webhook-cert subtree at --webhook-cert-dir, the capishim
+// hypervisor kubeconfig read-only at --kubeconfig, and the capishim pki
+// subtree read-only at the identical in-container path (the kubeconfig
+// references pki material by absolute host path).
 func TestUnitMounts(t *testing.T) {
 	u := mustLoadUnit(t)
 	mounts := u.mounts()
@@ -290,6 +339,17 @@ func TestUnitMounts(t *testing.T) {
 	if kubeconfig.target != wantKubeconfigTarget {
 		t.Errorf("kubeconfig mount target = %q, want the --kubeconfig value %q", kubeconfig.target, wantKubeconfigTarget)
 	}
+
+	pki := findSourceContaining("capishim/pki")
+	if pki == nil {
+		t.Fatalf("no Mount sources <capishim-state>/pki; the mgmt kubeconfig references PKI material by absolute host path; mounts = %+v", mounts)
+	}
+	if !pki.readonly {
+		t.Errorf("pki mount (source %q) is not read-only; REQ-007 requires ro", pki.source)
+	}
+	if pki.source != pki.target {
+		t.Errorf("pki mount source %q != target %q; want the same-path bind mount pattern", pki.source, pki.target)
+	}
 }
 
 // TestUnitEnvironmentSurface covers REQ-007: the Environment block carries
@@ -327,7 +387,10 @@ func TestUnitEnvironmentSurface(t *testing.T) {
 }
 
 // TestUnitOrderingAndRestart covers REQ-007 ordering clauses: After=/Wants=
-// on k8netd.service and the capishim pod unit, and Restart=always.
+// on k8netd.service and the capishim pod unit, Restart=always, and the
+// disabled start rate limit ([Unit]; current systemd ignores these keys
+// under [Service]) that lets the provider outlive long capishim setup
+// windows.
 func TestUnitOrderingAndRestart(t *testing.T) {
 	u := mustLoadUnit(t)
 
@@ -343,6 +406,13 @@ func TestUnitOrderingAndRestart(t *testing.T) {
 
 	if got := u.values("Service", "Restart"); len(got) == 0 || got[0] != "always" {
 		t.Errorf("[Service] Restart = %v, want always", got)
+	}
+
+	if got := u.values("Unit", "StartLimitIntervalSec"); len(got) == 0 || got[0] != "0" {
+		t.Errorf("[Unit] StartLimitIntervalSec = %v, want 0 (rate limiting disabled)", got)
+	}
+	if got := u.values("Unit", "StartLimitBurst"); len(got) == 0 || got[0] != "0" {
+		t.Errorf("[Unit] StartLimitBurst = %v, want 0 (rate limiting disabled)", got)
 	}
 }
 

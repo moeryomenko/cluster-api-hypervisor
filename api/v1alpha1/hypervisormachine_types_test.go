@@ -14,12 +14,11 @@ import (
 	"testing"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
 	"github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
 )
@@ -32,21 +31,20 @@ import (
 var machineFixedTransitionTime = time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
 
 // machineContractConditions returns the conditions carried by the populated
-// fixture: the VMProvisioned condition plus the BootstrapReady condition with
-// a failing state that exercises the Severity field.
-func machineContractConditions() clusterv1.Conditions {
-	return clusterv1.Conditions{
+// fixture: the VMProvisioned condition plus the deprecated v1beta1
+// BootstrapReady condition with a failing state.
+func machineContractConditions() []metav1.Condition {
+	return []metav1.Condition{
 		{
-			Type:               clusterv1.ConditionType("VMProvisioned"),
-			Status:             corev1.ConditionTrue,
+			Type:               "VMProvisioned",
+			Status:             metav1.ConditionTrue,
 			LastTransitionTime: metav1.Time{Time: machineFixedTransitionTime},
 			Reason:             "VMIsRunning",
 			Message:            "cloud-hypervisor process is running",
 		},
 		{
-			Type:               clusterv1.BootstrapReadyCondition,
-			Status:             corev1.ConditionFalse,
-			Severity:           clusterv1.ConditionSeverityWarning,
+			Type:               string(clusterv1.BootstrapReadyV1Beta1Condition),
+			Status:             metav1.ConditionFalse,
 			LastTransitionTime: metav1.Time{Time: machineFixedTransitionTime},
 			Reason:             "BootstrapNotReady",
 			Message:            "bootstrap secret not yet available",
@@ -253,9 +251,9 @@ func TestHypervisorMachineDeepCopyNonAliasing(t *testing.T) {
 		{
 			name: "status.conditions append",
 			mutate: func(m *v1alpha1.HypervisorMachine) {
-				m.Status.Conditions = append(m.Status.Conditions, clusterv1.Condition{
-					Type:               clusterv1.ConditionType("DiskProvisioned"),
-					Status:             corev1.ConditionUnknown,
+				m.Status.Conditions = append(m.Status.Conditions, metav1.Condition{
+					Type:               "DiskProvisioned",
+					Status:             metav1.ConditionUnknown,
 					LastTransitionTime: metav1.Time{Time: machineFixedTransitionTime},
 					Reason:             "Unknown",
 					Message:            "appended condition",
@@ -304,7 +302,7 @@ func TestHypervisorMachineDeepCopyNonAliasing(t *testing.T) {
 }
 
 // TestHypervisorMachineConditionsContract verifies the GetConditions and
-// SetConditions methods round-trip a clusterv1.Conditions list, satisfying
+// SetConditions methods round-trip a []metav1.Condition list, satisfying
 // the conditions accessor contract used by the CAPI conditions package.
 func TestHypervisorMachineConditionsContract(t *testing.T) {
 	t.Run("unset conditions return nil", func(t *testing.T) {
@@ -317,9 +315,9 @@ func TestHypervisorMachineConditionsContract(t *testing.T) {
 	conditions := machineContractConditions()
 	tests := []struct {
 		name string
-		give clusterv1.Conditions
+		give []metav1.Condition
 	}{
-		{name: "single condition", give: clusterv1.Conditions{conditions[0]}},
+		{name: "single condition", give: conditions[:1]},
 		{name: "multiple conditions preserve order", give: conditions},
 		{name: "nil conditions", give: nil},
 	}

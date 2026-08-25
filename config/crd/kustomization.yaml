@@ -1,9 +1,21 @@
-# The CRD base of the provider release: the five controller-gen CRDs emitted
+# The CRD bases of the provider release: the eight controller-gen CRDs emitted
 # by make generate into config/crd/bases. The release overlay builds from this
-# base so the components artifacts always carry the generated schemas.
+# base so the components artifacts always carry the generated schemas. The
+# three *Template CRDs are the ClusterClass-compatible template kinds; they
+# carry no webhooks.
+#
+# The contract-version label tells CAPI which API contract version this
+# provider implements; without it the ClusterClass reconciler fails to match
+# provider versions ("cannot find any versions matching contract versions").
+commonLabels:
+  cluster.x-k8s.io/v1beta2: v1alpha1
+
 resources:
 - bases/bootstrap.cluster.x-k8s.io_hypervisorconfigs.yaml
+- bases/bootstrap.cluster.x-k8s.io_hypervisorconfigtemplates.yaml
 - bases/controlplane.cluster.x-k8s.io_hypervisorcontrolplanes.yaml
+- bases/controlplane.cluster.x-k8s.io_hypervisorcontrolplanetemplates.yaml
 - bases/infrastructure.cluster.x-k8s.io_hypervisorclusters.yaml
+- bases/infrastructure.cluster.x-k8s.io_hypervisorclustertemplates.yaml
 - bases/infrastructure.cluster.x-k8s.io_hypervisormachines.yaml
 - bases/infrastructure.cluster.x-k8s.io_hypervisormachinetemplates.yaml

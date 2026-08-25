@@ -66,12 +66,18 @@ func (w *HypervisorConfigWebhook) SetupWebhookWithManager(mgr ctrl.Manager) erro
 		Complete()
 }
 
-// Default is a no-op: every HypervisorConfig spec field keeps its value,
-// including the optional SSH public key. Any non-HypervisorConfig object is
-// rejected.
+// Default fills spec.nodeName with metadata.name when it is empty: a
+// HypervisorConfig is per-machine and named after its Machine, so an unset
+// node name defaults to the object name. Every other spec field keeps its
+// value, including the optional SSH public key. Any non-HypervisorConfig
+// object is rejected.
 func (w *HypervisorConfigWebhook) Default(_ context.Context, obj runtime.Object) error {
-	if _, ok := obj.(*bootstrapv1alpha1.HypervisorConfig); !ok {
+	config, ok := obj.(*bootstrapv1alpha1.HypervisorConfig)
+	if !ok {
 		return apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorConfig but got a %T", obj))
+	}
+	if config.Spec.NodeName == "" {
+		config.Spec.NodeName = config.Name
 	}
 	return nil
 }

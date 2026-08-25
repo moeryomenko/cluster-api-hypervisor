@@ -88,7 +88,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -108,7 +108,7 @@ const (
 
 	// configDataSecretAvailableCondition is the condition type the spec
 	// requires once the bootstrap Secret exists.
-	configDataSecretAvailableCondition = clusterv1.ConditionType("DataSecretAvailable")
+	configDataSecretAvailableCondition = "DataSecretAvailable"
 
 	// testFixtureKubeletCert and testFixtureKubeletKey are the deterministic
 	// per-machine kubelet certificate and key the injected generator returns.
@@ -379,12 +379,19 @@ func newLinkedConfig(
 		ObjectMeta: metav1.ObjectMeta{Name: machineName, Namespace: lc.namespace, Labels: labels},
 		Spec: clusterv1.MachineSpec{
 			ClusterName: clusterName,
-			Bootstrap:   clusterv1.Bootstrap{},
-			InfrastructureRef: corev1.ObjectReference{
-				APIVersion: infrastructurev1alpha1.GroupVersion.String(),
-				Kind:       "HypervisorMachine",
-				Name:       machineName,
-				Namespace:  lc.namespace,
+			// spec.bootstrap is required by the v1beta2 Machine API; the ref
+			// names the HypervisorConfig this fixture creates below.
+			Bootstrap: clusterv1.Bootstrap{
+				ConfigRef: clusterv1.ContractVersionedObjectReference{
+					APIGroup: bootstrapv1alpha1.GroupVersion.Group,
+					Kind:     "HypervisorConfig",
+					Name:     machineName + "-config",
+				},
+			},
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+				APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+				Kind:     "HypervisorMachine",
+				Name:     machineName,
 			},
 		},
 	}
@@ -513,7 +520,7 @@ func configSecretTree(t *testing.T, c client.Client, key client.ObjectKey) map[s
 }
 
 // configCondition returns the status condition with the given type, or nil.
-func configCondition(cfg *bootstrapv1alpha1.HypervisorConfig, t clusterv1.ConditionType) *clusterv1.Condition {
+func configCondition(cfg *bootstrapv1alpha1.HypervisorConfig, t string) *metav1.Condition {
 	for i := range cfg.Status.Conditions {
 		if cfg.Status.Conditions[i].Type == t {
 			return &cfg.Status.Conditions[i]
@@ -851,8 +858,8 @@ func TestConfigReadyAndDataSecretAvailable(t *testing.T) {
 	if cond == nil {
 		t.Fatalf("condition %q missing from status.conditions: %v", configDataSecretAvailableCondition, cfg.Status.Conditions)
 	}
-	if cond.Status != corev1.ConditionTrue {
-		t.Errorf("condition %q status = %q, want %q", configDataSecretAvailableCondition, cond.Status, corev1.ConditionTrue)
+	if cond.Status != metav1.ConditionTrue {
+		t.Errorf("condition %q status = %q, want %q", configDataSecretAvailableCondition, cond.Status, metav1.ConditionTrue)
 	}
 }
 

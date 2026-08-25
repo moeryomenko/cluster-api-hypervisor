@@ -5,17 +5,21 @@
 # for the hypervisor providers. `make components` copies it into the provider
 # release tree as out/<provider-label>/v0.1.0/cluster-template.yaml.
 #
-# The stream contains exactly two YAML documents:
+# The stream contains exactly five YAML documents:
 #
-#   - document 1: the ClusterClass hypervisor-cluster-template, identical to
-#     the committed templates/clusterclass.yaml
-#   - document 2: a topology Cluster referencing that class, parameterized
+#   - document 1: the ClusterClass hypervisor-cluster-template, structurally
+#     identical to the committed templates/clusterclass.yaml with the
+#     ${CLUSTER_NAME} marker in the bootstrap template resource
+#   - documents 2-4: the three template objects the class references
+#     (HypervisorClusterTemplate, HypervisorControlPlaneTemplate,
+#     HypervisorConfigTemplate)
+#   - document 5: a topology Cluster referencing that class, parameterized
 #     with clusterctl-style ${VARIABLE} markers
 #
-# The ${VARIABLE} markers are substituted at generate time. Their literal
-# defaults are documented by the example Cluster templates/cluster-example.yaml
-# (k8labs, namespace default, version v1.32.13, 1 control-plane machine, 3
-# worker machines), the twin of document 2:
+# The ${VARIABLE} markers are substituted at generate time across every
+# document. Their literal defaults are documented by the example Cluster
+# templates/cluster-example.yaml (k8labs, namespace default, version v1.32.13,
+# 1 control-plane machine, 3 worker machines), the twin of document 5:
 #
 #   clusterctl generate cluster k8labs \
 #     --infrastructure hypervisor \
@@ -26,52 +30,105 @@
 # ClusterClass for cluster-api-hypervisor. Template copy of
 # templates/clusterclass.yaml.
 #
-# The topology-driven Cluster in document 2 of this file references this class
-# by name. All template references resolve to the committed API kinds of this
-# repository:
+# The topology-driven Cluster in the last document of this file references
+# this class by name. All template references resolve to the committed API
+# kinds of this repository, and every kind ends in "Template" per the
+# ClusterClass contract:
 #
-#   - infrastructure.cluster.x-k8s.io/v1alpha1: HypervisorCluster,
+#   - infrastructure.cluster.x-k8s.io/v1alpha1: HypervisorClusterTemplate,
 #     HypervisorMachineTemplate
-#   - controlplane.cluster.x-k8s.io/v1alpha1: HypervisorControlPlane
-#   - bootstrap.cluster.x-k8s.io/v1alpha1: HypervisorConfig
+#   - controlplane.cluster.x-k8s.io/v1alpha1: HypervisorControlPlaneTemplate
+#   - bootstrap.cluster.x-k8s.io/v1alpha1: HypervisorConfigTemplate
 #
-# Control-plane bootstrap is not referenced here: the v1beta1 ControlPlaneClass
-# has no bootstrap template field. The HypervisorControlPlane controller
-# generates the HypervisorConfig for control-plane Machines at runtime.
-apiVersion: cluster.x-k8s.io/v1beta1
+# The three referenced template objects follow in the next documents.
+# Control-plane bootstrap is not referenced here: the v1beta2
+# ControlPlaneClass has no bootstrap template field. The
+# HypervisorControlPlane controller generates the HypervisorConfig for
+# control-plane Machines at runtime.
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: ClusterClass
 metadata:
   name: hypervisor-cluster-template
 spec:
   infrastructure:
-    ref:
+    templateRef:
       apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
-      kind: HypervisorCluster
-      name: hypervisor-cluster-template
+      kind: HypervisorClusterTemplate
+      name: hypervisor-cluster
   controlPlane:
-    ref:
+    templateRef:
       apiVersion: controlplane.cluster.x-k8s.io/v1alpha1
-      kind: HypervisorControlPlane
-      name: hypervisor-control-plane
+      kind: HypervisorControlPlaneTemplate
+      name: hypervisor-control-plane-template
     machineInfrastructure:
-      ref:
+      templateRef:
         apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
         kind: HypervisorMachineTemplate
         name: hypervisor-control-plane-machine-template
   workers:
     machineDeployments:
       - class: default-worker
-        template:
-          bootstrap:
-            ref:
-              apiVersion: bootstrap.cluster.x-k8s.io/v1alpha1
-              kind: HypervisorConfig
-              name: hypervisor-worker-bootstrap
-          infrastructure:
-            ref:
-              apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
-              kind: HypervisorMachineTemplate
-              name: hypervisor-worker-machine-template
+        bootstrap:
+          templateRef:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1alpha1
+            kind: HypervisorConfigTemplate
+            name: hypervisor-worker-bootstrap-template
+        infrastructure:
+          templateRef:
+            apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+            kind: HypervisorMachineTemplate
+            name: hypervisor-worker-machine-template
+---
+# HypervisorClusterTemplate referenced by the class infrastructure ref. The
+# topology controller clones it into a concrete HypervisorCluster. Network
+# values are the lab host network defaults: bridge k8sbr0 on 192.168.124.0/24
+# with gateway/DNS 192.168.124.1, NAT in the inet k8slab nftables table.
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: HypervisorClusterTemplate
+metadata:
+  name: hypervisor-cluster
+spec:
+  template:
+    spec:
+      network:
+        cidr: 192.168.124.0/24
+        gateway: 192.168.124.1
+        dnsIP: 192.168.124.1
+        bridgeName: k8sbr0
+        natTable: k8slab
+---
+# HypervisorControlPlaneTemplate referenced by the class controlPlane ref. The
+# topology controller clones spec.template into a concrete HypervisorControlPlane.
+# Replicas and version are intentionally unset here: the Cluster topology
+# controls both on the cloned object (topology.controlPlane.replicas and
+# topology.version).
+apiVersion: controlplane.cluster.x-k8s.io/v1alpha1
+kind: HypervisorControlPlaneTemplate
+metadata:
+  name: hypervisor-control-plane-template
+spec:
+  template:
+    spec:
+      machineTemplate:
+        infrastructureRef:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+          kind: HypervisorMachineTemplate
+          name: hypervisor-control-plane-machine-template
+---
+# HypervisorConfigTemplate referenced by the default-worker class bootstrap
+# ref. CAPI clones spec.template into a concrete HypervisorConfig per worker
+# Machine; nodeName stays unset and defaults to each owning Machine's name.
+# clusterName carries the ${CLUSTER_NAME} marker so every generated cluster
+# names its PKI secret after itself; role pins this template to worker nodes.
+apiVersion: bootstrap.cluster.x-k8s.io/v1alpha1
+kind: HypervisorConfigTemplate
+metadata:
+  name: hypervisor-worker-bootstrap-template
+spec:
+  template:
+    spec:
+      clusterName: ${CLUSTER_NAME}
+      role: worker
 ---
 # Topology Cluster rendered from this template. The ${VARIABLE} markers are
 # substituted by clusterctl at generate time; the literal defaults they stand
@@ -83,14 +140,15 @@ spec:
 #   ${KUBERNETES_VERSION}          -> v1.32.13
 #   ${CONTROL_PLANE_MACHINE_COUNT} -> 1
 #   ${WORKER_MACHINE_COUNT}        -> 3
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
 metadata:
   name: ${CLUSTER_NAME}
   namespace: ${NAMESPACE}
 spec:
   topology:
-    class: hypervisor-cluster-template
+    classRef:
+      name: hypervisor-cluster-template
     version: ${KUBERNETES_VERSION}
     controlPlane:
       replicas: ${CONTROL_PLANE_MACHINE_COUNT}

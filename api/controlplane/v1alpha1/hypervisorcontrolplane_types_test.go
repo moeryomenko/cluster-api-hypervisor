@@ -23,7 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
 )
@@ -38,11 +38,11 @@ var cpFixedTransitionTime = time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 // cpContractConditions returns the conditions carried by the populated
 // fixture: the ControlPlaneReady condition that REQ-010 assigns to the
 // control-plane contract (spec REQ-010).
-func cpContractConditions() clusterv1.Conditions {
-	return clusterv1.Conditions{
+func cpContractConditions() []metav1.Condition {
+	return []metav1.Condition{
 		{
-			Type:               clusterv1.ConditionType("ControlPlaneReady"),
-			Status:             corev1.ConditionTrue,
+			Type:               "ControlPlaneReady",
+			Status:             metav1.ConditionTrue,
 			LastTransitionTime: metav1.Time{Time: cpFixedTransitionTime},
 			Reason:             "APIServerHealthy",
 			Message:            "apiserver is healthy",
@@ -265,9 +265,9 @@ func TestHypervisorControlPlaneDeepCopyNonAliasing(t *testing.T) {
 		{
 			name: "status.conditions append",
 			mutate: func(c *controlplanev1alpha1.HypervisorControlPlane) {
-				c.Status.Conditions = append(c.Status.Conditions, clusterv1.Condition{
-					Type:               clusterv1.ConditionType("MachinesCreated"),
-					Status:             corev1.ConditionUnknown,
+				c.Status.Conditions = append(c.Status.Conditions, metav1.Condition{
+					Type:               "MachinesCreated",
+					Status:             metav1.ConditionUnknown,
 					LastTransitionTime: metav1.Time{Time: cpFixedTransitionTime},
 					Reason:             "Unknown",
 					Message:            "appended condition",
@@ -310,7 +310,7 @@ func TestHypervisorControlPlaneDeepCopyNonAliasing(t *testing.T) {
 }
 
 // TestHypervisorControlPlaneConditionsContract verifies the GetConditions and
-// SetConditions methods round-trip a clusterv1.Conditions list, satisfying
+// SetConditions methods round-trip a []metav1.Condition list, satisfying
 // the conditions accessor contract used by the CAPI conditions package.
 func TestHypervisorControlPlaneConditionsContract(t *testing.T) {
 	t.Run("unset conditions return nil", func(t *testing.T) {
@@ -321,20 +321,19 @@ func TestHypervisorControlPlaneConditionsContract(t *testing.T) {
 	})
 
 	conditions := cpContractConditions()
-	second := clusterv1.Condition{
-		Type:               clusterv1.ConditionType("MachinesCreated"),
-		Status:             corev1.ConditionFalse,
-		Severity:           clusterv1.ConditionSeverityWarning,
+	second := metav1.Condition{
+		Type:               "MachinesCreated",
+		Status:             metav1.ConditionFalse,
 		LastTransitionTime: metav1.Time{Time: cpFixedTransitionTime},
 		Reason:             "MachinesNotCreated",
 		Message:            "no control-plane machines exist",
 	}
 	tests := []struct {
 		name string
-		give clusterv1.Conditions
+		give []metav1.Condition
 	}{
-		{name: "single condition", give: clusterv1.Conditions{conditions[0]}},
-		{name: "multiple conditions preserve order", give: clusterv1.Conditions{conditions[0], second}},
+		{name: "single condition", give: conditions[:1]},
+		{name: "multiple conditions preserve order", give: []metav1.Condition{conditions[0], second}},
 		{name: "nil conditions", give: nil},
 	}
 	for _, tt := range tests {

@@ -114,20 +114,23 @@ func (c *Client) GetPort(ctx context.Context, name string) (*Port, error) {
 	return &out, nil
 }
 
-// AttachPort attaches a port to a network. The port identity travels under
-// the single canonical "port" key per the contract envelope.
-func (c *Client) AttachPort(ctx context.Context, port, network string) error {
+// AttachPort attaches a port to a network under the given MAC address. The
+// params travel under exactly the three canonical keys "port", "network",
+// and "mac": the daemon's handler requires all three and binds the IPAM
+// reservation to the MAC.
+func (c *Client) AttachPort(ctx context.Context, port, network, mac string) error {
 	params := map[string]string{
 		"port":    port,
 		"network": network,
+		"mac":     mac,
 	}
 	return c.call(ctx, "AttachPort", params, nil)
 }
 
 // DetachPort detaches a port from its network. The port identity travels
-// under the single canonical "port" key per the contract envelope.
+// under the canonical "name" key, matching the daemon's DetachPort handler.
 func (c *Client) DetachPort(ctx context.Context, port string) error {
-	params := map[string]string{"port": port}
+	params := map[string]string{"name": port}
 	return c.call(ctx, "DetachPort", params, nil)
 }
 

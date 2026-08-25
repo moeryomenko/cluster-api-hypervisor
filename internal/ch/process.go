@@ -52,10 +52,6 @@ type Manager struct {
 	// socketDir is the directory that holds the API socket. When empty,
 	// Start auto-creates a "ch-capi-*" directory under os.TempDir.
 	socketDir string
-	// netConfig is the cloud-hypervisor --net device string (for example the
-	// vhost-user config rendered by internal/chclient) spawned with the
-	// process. An empty value spawns without a net device.
-	netConfig string
 
 	cmd    *exec.Cmd
 	done   chan struct{}
@@ -130,32 +126,22 @@ func WithSocketDir(dir string) ManagerOption {
 	return func(m *Manager) { m.socketDir = dir }
 }
 
-// WithNetConfig sets the cloud-hypervisor --net device string spawned with
-// the process. An empty value (the default) spawns without a net device.
-func WithNetConfig(netConfig string) ManagerOption {
-	return func(m *Manager) { m.netConfig = netConfig }
-}
-
-// SetNetConfig sets the --net device string used at the next process spawn.
-// Call it before Start; after Start it only affects a subsequent process
-// lifetime, because Start is idempotent and never re-spawns a running
-// process.
-func (m *Manager) SetNetConfig(netConfig string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.netConfig = netConfig
-}
-
-// Start spawns the cloud-hypervisor process with the two argv entries
+// Start spawns the cloud-hypervisor process with the argv entries
 // "--api-socket" and "path=<sock>", where <sock> is <socketDir>/api.sock,
-// plus "--net <netConfig>" when a net device was configured through
-// WithNetConfig or SetNetConfig, and returns the socket path. The socket
-// directory is created if it does not exist. If the process exits within
-// roughly half a second of spawning, Start returns an error that includes
-// the captured stderr and an empty socket path. Start is idempotent: a
-// second call returns the existing socket path without spawning again. The
-// context controls startup only: cancelling it kills the process and cleans
-// up.
+// followed by "--seccomp false" (v48's filter kills its own API thread with
+// SIGSYS under container profiles), and returns the socket path. No device configuration rides the argv: any
+// cloud-hypervisor device argument requires a boot medium at parse time, so
+// the full VM config (firmware, disks, net devices) is pushed over the REST
+// API instead, before vm.boot. The socket directory is created if it does
+// not exist, and an existing file at the socket path is removed first: a
+// previous unclean kill leaves the pathname behind (a bind mount persists it
+// across provider restarts) and unix bind(2) on an existing path fails with
+// AddrInUse even with no listener. If the process exits within roughly half a
+// second of spawning,
+// Start returns an error that includes the captured stderr and an empty
+// socket path. Start is idempotent: a second call returns the existing
+// socket path without spawning again. The context controls startup only:
+// cancelling it kills the process and cleans up.
 func (m *Manager) Start(ctx context.Context) (string, error) {
 	m.mu.Lock()
 	if m.stopped {
@@ -182,11 +168,22 @@ func (m *Manager) Start(ctx context.Context) (string, error) {
 	}
 	m.socketDir = dir
 	socket := m.socketPath()
+	// A stale socket pathname from a previous unclean kill must go before
+	// the spawn: the child's bind(2) on an existing path fails with
+	// AddrInUse even with no listener, crash-looping every retry.
+	if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+		m.mu.Unlock()
+		return "", fmt.Errorf("remove stale API socket %q: %w", socket, err)
+	}
 	m.stderr = new(lockedBuffer)
 	args := []string{"--api-socket", "path=" + socket}
-	if m.netConfig != "" {
-		args = append(args, "--net", m.netConfig)
-	}
+	// cloud-hypervisor v48's built-in seccomp allowlist is missing rt_sigaction
+	// for its HTTP-API thread: the first config push (vm.create) triggers the
+	// syscall and the kernel delivers SIGSYS (SYS_SECCOMP), crash-looping every
+	// VM under container profiles that do not mask it. Disable CH's own filter
+	// at spawn; confinement remains podman's job (see
+	// deploy/cluster-api-hypervisor.container).
+	args = append(args, "--seccomp", "false")
 	cmd := exec.Command(binary, args...)
 	cmd.Stderr = m.stderr
 	if err := cmd.Start(); err != nil {

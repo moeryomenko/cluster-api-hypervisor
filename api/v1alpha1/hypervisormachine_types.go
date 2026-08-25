@@ -18,7 +18,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
 // HypervisorMachineSpec defines the desired state of HypervisorMachine.
@@ -82,7 +82,7 @@ type HypervisorMachineStatus struct {
 	FailureMessage string `json:"failureMessage,omitempty"`
 
 	// Conditions defines current service state of the HypervisorMachine.
-	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -98,12 +98,12 @@ type HypervisorMachine struct {
 }
 
 // GetConditions returns the status conditions of the machine.
-func (m *HypervisorMachine) GetConditions() clusterv1.Conditions {
+func (m *HypervisorMachine) GetConditions() []metav1.Condition {
 	return m.Status.Conditions
 }
 
 // SetConditions sets the status conditions of the machine.
-func (m *HypervisorMachine) SetConditions(conditions clusterv1.Conditions) {
+func (m *HypervisorMachine) SetConditions(conditions []metav1.Condition) {
 	m.Status.Conditions = conditions
 }
 

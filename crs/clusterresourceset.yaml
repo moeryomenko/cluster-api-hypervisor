@@ -19,7 +19,7 @@
 #
 # The resources are listed in apply order: the rbac set must be applied before
 # the cilium sets. See README.md for the ordering contract.
-apiVersion: addons.cluster.x-k8s.io/v1beta1
+apiVersion: addons.cluster.x-k8s.io/v1beta2
 kind: ClusterResourceSet
 metadata:
   name: cluster-ops

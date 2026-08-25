@@ -19,7 +19,7 @@ package controlplanev1alpha1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
 // HypervisorControlPlaneSpec defines the desired state of
@@ -49,7 +49,7 @@ type HypervisorControlPlaneMachineTemplate struct {
 	// Metadata is the standard object's metadata of the machines created from
 	// this template.
 	// +optional
-	Metadata clusterv1.ObjectMeta `json:"metadata,omitempty"`
+	Metadata clusterv1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 }
 
 // HypervisorControlPlaneStatus defines the observed state of
@@ -114,7 +114,7 @@ type HypervisorControlPlaneStatus struct {
 
 	// Conditions defines current service state of the HypervisorControlPlane.
 	// +optional
-	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -130,12 +130,12 @@ type HypervisorControlPlane struct {
 }
 
 // GetConditions returns the status conditions of the control plane.
-func (c *HypervisorControlPlane) GetConditions() clusterv1.Conditions {
+func (c *HypervisorControlPlane) GetConditions() []metav1.Condition {
 	return c.Status.Conditions
 }
 
 // SetConditions sets the status conditions of the control plane.
-func (c *HypervisorControlPlane) SetConditions(conditions clusterv1.Conditions) {
+func (c *HypervisorControlPlane) SetConditions(conditions []metav1.Condition) {
 	c.Status.Conditions = conditions
 }
 

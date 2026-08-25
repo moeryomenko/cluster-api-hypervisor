@@ -24,14 +24,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -63,7 +66,7 @@ const (
 
 	// vmProvisionedCondition is the condition type reported once the
 	// cloud-hypervisor VM backing the machine is provisioned and running.
-	vmProvisionedCondition = clusterv1.ConditionType("VMProvisioned")
+	vmProvisionedCondition = "VMProvisioned"
 
 	// controlPlaneSSHPort is the VM-side SSH port the machine controller
 	// publishes for control-plane machines next to the apiserver port
@@ -85,11 +88,22 @@ type HypervisorMachineReconciler struct {
 
 	// Config is the provider configuration: BaseImage and VMDiskDir drive
 	// the root disk and confext output paths, and SocketDir is the root the
-	// per-machine VM socket directory derives from.
+	// per-machine VM socket directory derives from (<SocketDir>/<machine>,
+	// one socket tree per VM).
 	Config config.Config
 
-	// VM drives the machine's cloud-hypervisor VM.
-	VM chclient.Client
+	// NewVMClient constructs the cloud-hypervisor client bound to one
+	// machine's own socket directory: socketDir is <SocketDir>/<machine>
+	// (holding that machine's api.sock) and binary is the cloud-hypervisor
+	// executable. Production wiring leaves it nil; the reconciler then
+	// constructs chclient.NewVMClient(socketDir, binary). The reconciler
+	// caches the built client per machine name for the provider process
+	// lifetime and calls the factory at most once per machine, so every
+	// reconcile reuses one Manager instance and Manager.Start's started-state
+	// check prevents respawning the VMM; reconcileDelete evicts the entry
+	// after Stop. Tests override it to capture construction and hand back
+	// fakes.
+	NewVMClient func(socketDir, binary string) chclient.Client
 
 	// K8Netd is the k8netd JSON-RPC client used to create ports and allocate
 	// IPs. It is injected from main.go via cfg.K8NetdSocket.
@@ -106,6 +120,14 @@ type HypervisorMachineReconciler struct {
 
 	// DeriveMAC derives the default machine MAC address.
 	DeriveMAC func(clusterName, machineName string) string
+
+	// vmClients caches one VM client per machine name for the provider
+	// process lifetime (map[string]chclient.Client). The cache is what makes
+	// VMM spawns idempotent across reconciles: a reused ch.Manager sees its
+	// own started state in Start and returns the existing socket instead of
+	// respawning the process. Keyed by machine name, matching the per-machine
+	// socket directory derivation <SocketDir>/<machine>.
+	vmClients sync.Map
 }
 
 // Reconcile moves the current state of the HypervisorMachine towards the
@@ -193,11 +215,42 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
+// vmClientFor returns the process-lifetime VM client for hm: the first call
+// for a machine name constructs it through the NewVMClient factory seam (or
+// the default chclient.NewVMClient) bound to <SocketDir>/<machine-name> and
+// caches it; every later call returns that same instance. One socket tree per
+// VM keeps concurrent machines off each other's api.sock, and because
+// reconciles reuse one Manager instance, Manager.Start's started-state check
+// prevents respawning the cloud-hypervisor process on every reconcile.
+func (r *HypervisorMachineReconciler) vmClientFor(
+	hm *infrastructurev1alpha1.HypervisorMachine,
+) chclient.Client {
+	if cached, ok := r.vmClients.Load(hm.Name); ok {
+		return cached.(chclient.Client)
+	}
+	socketDir := filepath.Join(r.Config.SocketDir, hm.Name)
+	var vm chclient.Client
+	if r.NewVMClient != nil {
+		vm = r.NewVMClient(socketDir, r.Config.CHBinary)
+	} else {
+		vm = chclient.NewVMClient(socketDir, r.Config.CHBinary)
+	}
+	// LoadOrStore closes the concurrent-workers race: when two workers build
+	// a client for the same machine at once, the loser's instance is
+	// discarded and both callers share the winner's.
+	actual, _ := r.vmClients.LoadOrStore(hm.Name, vm)
+	return actual.(chclient.Client)
+}
+
 // reconcileDelete tears the machine's host-side stack down and drops its
 // finalizers so the object is reclaimed. The VM is shut down gracefully
-// through the client and the cloud-hypervisor process is stopped, in that
-// order; a VM that is already absent (the client reports ErrNotFound from
-// Shutdown or Stop) is tolerated. After the VM stops, the k8netd port is
+// through the machine's own (cached) client and the cloud-hypervisor process
+// is stopped, in that order; a VM that is already absent (the client reports
+// ErrNotFound from Shutdown or Stop) is tolerated. Once Stop succeeds, the
+// cached client entry is removed so a later re-create of a machine with the
+// same name starts from a fresh manager instead of one whose Start refuses to
+// run after Stop; a failed Stop keeps the entry so the retry reuses the same
+// manager. After the VM stops, the k8netd port is
 // detached and deleted in order (both idempotent via NotFound). The root disk
 // and the confext data disk artifacts are removed from the VM disk directory
 // unless spec.retainDiskOnDelete keeps them in place. Every step is idempotent,
@@ -206,14 +259,19 @@ func (r *HypervisorMachineReconciler) reconcileDelete(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
 ) (ctrl.Result, error) {
-	if err := r.VM.Shutdown(ctx); err != nil && !errors.Is(err, chclient.ErrNotFound) {
+	vm := r.vmClientFor(hm)
+	if err := vm.Shutdown(ctx); err != nil && !errors.Is(err, chclient.ErrNotFound) {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to shut down VM for %q: %v", hm.Name, err)
 		return ctrl.Result{}, fmt.Errorf("shut down VM for %q: %w", hm.Name, err)
 	}
-	if err := r.VM.Stop(ctx); err != nil && !errors.Is(err, chclient.ErrNotFound) {
+	if err := vm.Stop(ctx); err != nil && !errors.Is(err, chclient.ErrNotFound) {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to stop VM for %q: %v", hm.Name, err)
 		return ctrl.Result{}, fmt.Errorf("stop VM for %q: %w", hm.Name, err)
 	}
+
+	// Teardown succeeded: drop the cached client so a later re-create of a
+	// machine with this name builds a fresh manager.
+	r.vmClients.Delete(hm.Name)
 
 	// After VM stop, detach and delete the k8netd port in order. Both are
 	// idempotent: NotFound is treated as success.
@@ -325,15 +383,11 @@ func linkedHypervisorCluster(
 	cluster *clusterv1.Cluster,
 ) (*infrastructurev1alpha1.HypervisorCluster, error) {
 	ref := cluster.Spec.InfrastructureRef
-	if ref == nil || ref.Kind != "HypervisorCluster" || ref.Name == "" {
+	if !ref.IsDefined() || ref.Kind != "HypervisorCluster" || ref.Name == "" {
 		return nil, nil
 	}
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = cluster.Namespace
-	}
 	hc := &infrastructurev1alpha1.HypervisorCluster{}
-	key := client.ObjectKey{Namespace: namespace, Name: ref.Name}
+	key := client.ObjectKey{Namespace: cluster.Namespace, Name: ref.Name}
 	if err := c.Get(ctx, key, hc); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
@@ -389,7 +443,7 @@ func (r *HypervisorMachineReconciler) reconcileIdentity(
 		}
 	}
 
-	if err := r.K8Netd.AttachPort(ctx, port, network); err != nil {
+	if err := r.K8Netd.AttachPort(ctx, port, network, mac); err != nil {
 		if errors.Is(err, k8netd.ErrAlreadyExists) {
 			// Idempotent: already attached.
 		} else {
@@ -643,27 +697,57 @@ func decodeConfextTree(secret *corev1.Secret) (map[string][]byte, error) {
 	return tree, nil
 }
 
+// resolveSSHPublicKey resolves the SSH public key for one machine's CIDATA
+// render: the bootstrap config's spec.sshPublicKey first, then — when that is
+// empty and HYPERVISOR_SSH_PUBLIC_KEY_FILE is set — the trimmed content of the
+// file the variable names. The file content must be non-empty after trimming;
+// a missing or empty file, and an empty spec key with the variable unset, are
+// errors naming HYPERVISOR_SSH_PUBLIC_KEY_FILE so misconfiguration is
+// actionable.
+func (r *HypervisorMachineReconciler) resolveSSHPublicKey(
+	config *bootstrapv1alpha1.HypervisorConfig,
+) (string, error) {
+	if config.Spec.SSHPublicKey != "" {
+		return config.Spec.SSHPublicKey, nil
+	}
+
+	path := r.Config.SSHPublicKeyFile
+	if path == "" {
+		return "", fmt.Errorf(
+			"ssh public key: bootstrap config %q spec.sshPublicKey is empty and HYPERVISOR_SSH_PUBLIC_KEY_FILE is unset",
+			config.Name,
+		)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read ssh public key file %q (HYPERVISOR_SSH_PUBLIC_KEY_FILE): %w", path, err)
+	}
+	key := strings.TrimSpace(string(content))
+	if key == "" {
+		return "", fmt.Errorf("ssh public key file %q (HYPERVISOR_SSH_PUBLIC_KEY_FILE) is empty", path)
+	}
+
+	return key, nil
+}
+
 // reconcileCIDATA renders the three cloud-init parts for the machine through
-// the injected renderer with the machine hostname and the SSH public key of the
-// linked bootstrap config. Network configuration is DHCP (no static IP). A
-// machine with no linked bootstrap config has no key to inject and skips
-// rendering without error.
+// the injected renderer with the machine hostname and the SSH public key
+// resolved from the linked bootstrap config (spec.sshPublicKey, falling back
+// to the HYPERVISOR_SSH_PUBLIC_KEY_FILE file). Network configuration is DHCP
+// (no static IP). A machine with no linked bootstrap config has no key to
+// inject and skips rendering without error.
 func (r *HypervisorMachineReconciler) reconcileCIDATA(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
 	machine *clusterv1.Machine,
 ) error {
 	ref := machine.Spec.Bootstrap.ConfigRef
-	if ref == nil || ref.Kind != "HypervisorConfig" || ref.Name == "" {
+	if !ref.IsDefined() || ref.Kind != "HypervisorConfig" || ref.Name == "" {
 		return nil
 	}
 
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = machine.Namespace
-	}
 	config := &bootstrapv1alpha1.HypervisorConfig{}
-	key := client.ObjectKey{Namespace: namespace, Name: ref.Name}
+	key := client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}
 	if err := r.Get(ctx, key, config); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
@@ -674,10 +758,15 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 	// The render itself is the identity contract pinned here: it validates
 	// that the three CIDATA parts render for this machine. The rendered parts
 	// feed the CIDATA disk of the VM boot step in a later phase.
+	sshPublicKey, err := r.resolveSSHPublicKey(config)
+	if err != nil {
+		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render cloud-init data: %v", err)
+		return fmt.Errorf("render cloud-init data for %q: %w", machine.Name, err)
+	}
 	if _, err := r.RenderCloudInit(cloudinit.Data{
 		InstanceID:   machine.Name,
 		Hostname:     machine.Name,
-		SSHPublicKey: config.Spec.SSHPublicKey,
+		SSHPublicKey: sshPublicKey,
 	}); err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render cloud-init data: %v", err)
 		return fmt.Errorf("render cloud-init data for %q: %w", machine.Name, err)
@@ -686,16 +775,19 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 	return nil
 }
 
-// reconcileVMLifecycle drives the machine's VM. Before the first boot it
-// hands the k8netd vhost-user net device string — the port socket path of the
-// machine and its MAC, single queue pair (REQ-005) — to the VM client, then
-// boots the VM through the injected client and records the provider ID; on
-// every reconcile it asks the client for the VM state and reports the
-// VMProvisioned condition and readiness once the VM reports running. A VM
-// that is not running yet, or whose state query fails, is left not ready
-// without error. The k8netd port/IP is already ensured by reconcileIdentity
-// before this stage, so the port socket exists by the time the VM process
-// starts.
+// reconcileVMLifecycle drives the machine's VM through the machine's own
+// client (vmClientFor). Before the first boot it hands the VM client the
+// boot configuration: the k8netd vhost-user net
+// device string — the port socket path of the machine and its MAC, single
+// queue pair (REQ-005) —, the firmware image from the provider config, and
+// the disk images (the root qcow2 plus any packaged confext raws). The VM
+// client pushes that configuration over the cloud-hypervisor API before it
+// boots, then the controller records the provider ID; on every reconcile it
+// asks the client for the VM state and reports the VMProvisioned condition
+// and readiness once the VM reports running. A VM that is not running yet,
+// or whose state query fails, is left not ready without error. The k8netd
+// port/IP is already ensured by reconcileIdentity before this stage, so the
+// port socket exists by the time the VM process starts.
 func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
@@ -707,10 +799,22 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render vhost-user net config for %q: %v", hm.Name, err)
 		return fmt.Errorf("render vhost-user net config for %q: %w", hm.Name, err)
 	}
-	r.VM.SetNetConfig(netConfig)
+	vm := r.vmClientFor(hm)
+	vm.SetNetConfig(netConfig)
+
+	diskPaths := []string{filepath.Join(r.Config.VMDiskDir, hm.Name+"-root.qcow2")}
+	confextRaws, err := confextRawPaths(r.Config.VMDiskDir, hm.Name)
+	if err != nil {
+		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to list confext raws for %q: %v", hm.Name, err)
+		return fmt.Errorf("list confext raws for %q: %w", hm.Name, err)
+	}
+	diskPaths = append(diskPaths, confextRaws...)
+
+	vm.SetFirmware(r.Config.Firmware)
+	vm.SetDiskPaths(diskPaths)
 
 	if hm.Status.ProviderID == nil {
-		if err := r.VM.EnsureRunning(ctx); err != nil {
+		if err := vm.EnsureRunning(ctx); err != nil {
 			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to boot VM for %q: %v", machine.Name, err)
 			return fmt.Errorf("boot VM for %q: %w", machine.Name, err)
 		}
@@ -719,7 +823,7 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 		hm.Status.ProviderID = &providerID
 	}
 
-	state, err := r.VM.Info(ctx)
+	state, err := vm.Info(ctx)
 	if err == nil && state == ch.VMState("Running") {
 		markVMProvisioned(hm)
 		hm.Status.Ready = true
@@ -732,25 +836,37 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 	return nil
 }
 
+// confextRawPaths lists the packaged confext squashfs images (<name>.raw
+// files) in the machine's confext output directory under vmDisksDir, sorted
+// by file name. A directory that does not exist means the machine has no
+// bootstrap data (reconcileConfextDataDisk skipped packaging) and yields no
+// paths; any other read error surfaces.
+func confextRawPaths(vmDisksDir, name string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(vmDisksDir, name+"-data"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read confext data dir for %q: %w", name, err)
+	}
+
+	var paths []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".raw") {
+			continue
+		}
+		paths = append(paths, filepath.Join(vmDisksDir, name+"-data", entry.Name()))
+	}
+	return paths, nil
+}
+
 // markVMProvisioned upserts the VMProvisioned condition as true on the
 // machine status, preserving any other conditions.
 func markVMProvisioned(hm *infrastructurev1alpha1.HypervisorMachine) {
-	for i := range hm.Status.Conditions {
-		if hm.Status.Conditions[i].Type != vmProvisionedCondition {
-			continue
-		}
-		if hm.Status.Conditions[i].Status == corev1.ConditionTrue {
-			return
-		}
-		hm.Status.Conditions[i].Status = corev1.ConditionTrue
-		hm.Status.Conditions[i].LastTransitionTime = metav1.Now()
-		return
-	}
-
-	hm.Status.Conditions = append(hm.Status.Conditions, clusterv1.Condition{
-		Type:               vmProvisionedCondition,
-		Status:             corev1.ConditionTrue,
-		LastTransitionTime: metav1.Now(),
+	meta.SetStatusCondition(&hm.Status.Conditions, metav1.Condition{
+		Type:   vmProvisionedCondition,
+		Status: metav1.ConditionTrue,
+		Reason: "VMProvisioned",
 	})
 }
 
@@ -763,16 +879,12 @@ func (r *HypervisorMachineReconciler) bootstrapDataSecretName(
 	machine *clusterv1.Machine,
 ) (string, error) {
 	ref := machine.Spec.Bootstrap.ConfigRef
-	if ref == nil || ref.Kind != "HypervisorConfig" || ref.Name == "" {
+	if !ref.IsDefined() || ref.Kind != "HypervisorConfig" || ref.Name == "" {
 		return "", nil
 	}
 
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = machine.Namespace
-	}
 	config := &bootstrapv1alpha1.HypervisorConfig{}
-	key := client.ObjectKey{Namespace: namespace, Name: ref.Name}
+	key := client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}
 	if err := r.Get(ctx, key, config); err != nil {
 		if apierrors.IsNotFound(err) {
 			return "", nil

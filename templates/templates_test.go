@@ -24,16 +24,18 @@ limitations under the License.
 // The pinned shapes follow the committed API groups:
 //
 //   - infrastructure.cluster.x-k8s.io/v1alpha1: HypervisorCluster,
-//     HypervisorMachine, HypervisorMachineTemplate
-//   - bootstrap.cluster.x-k8s.io/v1alpha1: HypervisorConfig
-//   - controlplane.cluster.x-k8s.io/v1alpha1: HypervisorControlPlane
-//   - cluster.x-k8s.io/v1beta1: ClusterClass, Cluster
+//     HypervisorMachine, HypervisorMachineTemplate, plus the
+//     ClusterClass-compatible HypervisorClusterTemplate
+//   - bootstrap.cluster.x-k8s.io/v1alpha1: HypervisorConfig plus the
+//     ClusterClass-compatible HypervisorConfigTemplate
+//   - controlplane.cluster.x-k8s.io/v1alpha1: HypervisorControlPlane plus the
+//     ClusterClass-compatible HypervisorControlPlaneTemplate
+//   - cluster.x-k8s.io/v1beta2: ClusterClass, Cluster
 //
-// The ClusterClass field names are pinned against the v1beta1 API as shipped
-// by the Cluster API module in the go.mod: spec.infrastructure.ref,
-// spec.controlPlane.ref, spec.controlPlane.machineInfrastructure.ref, and
-// spec.workers.machineDeployments[].template.{bootstrap,infrastructure}.ref.
-// The v1beta1 ControlPlaneClass has no bootstrap template field: the
+// CAPI core requires every ClusterClass template ref kind to end in
+// "Template", so the class references the three *Template kinds; the concrete
+// kinds are only ever produced by cloning spec.template of those templates.
+// The ControlPlaneClass carries no bootstrap template field: the
 // HypervisorConfig for control-plane Machines is generated at runtime by the
 // HypervisorControlPlane controller, so the manifest must not invent a
 // machineBootstrap key under spec.controlPlane.
@@ -50,9 +52,8 @@ import (
 	"testing"
 
 	yamlv3 "gopkg.in/yaml.v3"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/yaml"
 
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
@@ -65,27 +66,27 @@ const (
 	exampleClusterFile = "cluster-example.yaml"
 )
 
-// committedKinds maps every committed API Kind to the group/version that the
-// templates are allowed to reference. A reference to any other kind or to the
-// wrong group/version is a dangling reference.
+// committedKinds maps every committed API Kind that a ClusterClass template
+// ref may target to the group/version the templates are allowed to reference.
+// Every kind ends in "Template" per the CAPI ClusterClass contract; a
+// reference to any other kind or to the wrong group/version is dangling.
 var committedKinds = map[string]schema.GroupVersion{
-	"HypervisorCluster":         infrav1alpha1.GroupVersion,
-	"HypervisorMachine":         infrav1alpha1.GroupVersion,
-	"HypervisorMachineTemplate": infrav1alpha1.GroupVersion,
-	"HypervisorConfig":          bootstrapv1alpha1.GroupVersion,
-	"HypervisorControlPlane":    controlplanev1alpha1.GroupVersion,
+	"HypervisorClusterTemplate":      infrav1alpha1.GroupVersion,
+	"HypervisorMachineTemplate":      infrav1alpha1.GroupVersion,
+	"HypervisorControlPlaneTemplate": controlplanev1alpha1.GroupVersion,
+	"HypervisorConfigTemplate":       bootstrapv1alpha1.GroupVersion,
 }
 
 func TestClusterClassExistsAndParses(t *testing.T) {
 	var cc clusterv1.ClusterClass
-	if err := yaml.Unmarshal(readTemplate(t, clusterClassFile), &cc); err != nil {
-		t.Fatalf("%s must parse as a ClusterClass: %v", clusterClassFile, err)
-	}
-	if cc.Kind != "ClusterClass" {
-		t.Fatalf("kind must be ClusterClass, got %q", cc.Kind)
-	}
-	if cc.APIVersion != clusterv1.GroupVersion.String() {
-		t.Fatalf("apiVersion must be %s, got %q", clusterv1.GroupVersion.String(), cc.APIVersion)
+	// The file is a multi-document stream: the ClusterClass plus the three
+	// template objects its refs point at.
+	if !findDocument(t, clusterClassFile, "ClusterClass", clusterv1.GroupVersion.String(), &cc) {
+		t.Fatalf(
+			"%s must contain a ClusterClass document with apiVersion %s",
+			clusterClassFile,
+			clusterv1.GroupVersion.String(),
+		)
 	}
 	if cc.Name == "" {
 		t.Fatal("metadata.name must be set: the example Cluster references the class by this name")
@@ -95,32 +96,31 @@ func TestClusterClassExistsAndParses(t *testing.T) {
 func TestClusterClassInfrastructureRef(t *testing.T) {
 	cc := parseClusterClass(t)
 
-	ref := requireRef(t, cc.Spec.Infrastructure.Ref, "spec.infrastructure.ref")
-	assertRefTarget(t, ref, "HypervisorCluster", infrav1alpha1.GroupVersion)
+	ref := requireTemplateRef(t, cc.Spec.Infrastructure.TemplateRef, "spec.infrastructure.templateRef")
+	assertTemplateRefTarget(t, ref, "HypervisorClusterTemplate", infrav1alpha1.GroupVersion)
 }
 
 func TestClusterClassControlPlaneClass(t *testing.T) {
 	cc := parseClusterClass(t)
 
-	ref := requireRef(t, cc.Spec.ControlPlane.Ref, "spec.controlPlane.ref")
-	assertRefTarget(t, ref, "HypervisorControlPlane", controlplanev1alpha1.GroupVersion)
+	ref := requireTemplateRef(t, cc.Spec.ControlPlane.TemplateRef, "spec.controlPlane.templateRef")
+	assertTemplateRefTarget(t, ref, "HypervisorControlPlaneTemplate", controlplanev1alpha1.GroupVersion)
 
-	mi := cc.Spec.ControlPlane.MachineInfrastructure
-	if mi == nil {
-		t.Fatal(
-			"spec.controlPlane.machineInfrastructure must reference the HypervisorMachineTemplate used for control-plane Machines",
-		)
-	}
-	miRef := requireRef(t, mi.Ref, "spec.controlPlane.machineInfrastructure.ref")
-	assertRefTarget(t, miRef, "HypervisorMachineTemplate", infrav1alpha1.GroupVersion)
+	miRef := requireTemplateRef(
+		t,
+		cc.Spec.ControlPlane.MachineInfrastructure.TemplateRef,
+		"spec.controlPlane.machineInfrastructure.templateRef",
+	)
+	assertTemplateRefTarget(t, miRef, "HypervisorMachineTemplate", infrav1alpha1.GroupVersion)
 
-	// The v1beta1 ControlPlaneClass carries only machineInfrastructure; there
-	// is no bootstrap template field. A machineBootstrap key would be dropped
-	// by the API server, so the manifest must not use it.
+	// The ControlPlaneClass carries no bootstrap template field: the
+	// HypervisorConfig for control-plane Machines is generated at runtime by
+	// the HypervisorControlPlane controller, so the manifest must not invent
+	// a machineBootstrap key under spec.controlPlane.
 	cpRaw := nestedMap(t, rawClusterClass(t), "spec", "controlPlane")
 	if _, ok := cpRaw["machineBootstrap"]; ok {
 		t.Error(
-			"spec.controlPlane.machineBootstrap is not part of the ClusterClass v1beta1 API: control-plane bootstrap is generated by the HypervisorControlPlane controller",
+			"spec.controlPlane.machineBootstrap is not part of the ClusterClass API: control-plane bootstrap is generated by the HypervisorControlPlane controller",
 		)
 	}
 }
@@ -137,10 +137,10 @@ func TestClusterClassWorkerClass(t *testing.T) {
 		if classes[i].Class == "" {
 			t.Errorf("%s: class name must be set", path)
 		}
-		boot := requireRef(t, classes[i].Template.Bootstrap.Ref, path+".template.bootstrap.ref")
-		assertRefTarget(t, boot, "HypervisorConfig", bootstrapv1alpha1.GroupVersion)
-		infra := requireRef(t, classes[i].Template.Infrastructure.Ref, path+".template.infrastructure.ref")
-		assertRefTarget(t, infra, "HypervisorMachineTemplate", infrav1alpha1.GroupVersion)
+		boot := requireTemplateRef(t, classes[i].Bootstrap.TemplateRef, path+".template.bootstrap.templateRef")
+		assertTemplateRefTarget(t, boot, "HypervisorConfigTemplate", bootstrapv1alpha1.GroupVersion)
+		infra := requireTemplateRef(t, classes[i].Infrastructure.TemplateRef, path+".template.infrastructure.templateRef")
+		assertTemplateRefTarget(t, infra, "HypervisorMachineTemplate", infrav1alpha1.GroupVersion)
 	}
 }
 
@@ -148,11 +148,10 @@ func TestExampleClusterTopology(t *testing.T) {
 	cluster := parseExampleCluster(t)
 
 	topo := cluster.Spec.Topology
-	if topo == nil {
-		t.Fatal("spec.topology must be set: the example Cluster is topology-based")
-	}
-	if topo.Class == "" {
-		t.Fatal("spec.topology.class must name the ClusterClass")
+	// Topology is a value type in v1beta2: an absent spec.topology decodes to
+	// the zero Topology, whose empty classRef.name the next check rejects.
+	if topo.ClassRef.Name == "" {
+		t.Fatal("spec.topology.classRef.name must name the ClusterClass")
 	}
 	if topo.Version == "" {
 		t.Fatal("spec.topology.version must be set")
@@ -166,7 +165,7 @@ func TestExampleClusterTopology(t *testing.T) {
 			*topo.ControlPlane.Replicas,
 		)
 	}
-	if topo.Workers == nil || len(topo.Workers.MachineDeployments) == 0 {
+	if len(topo.Workers.MachineDeployments) == 0 {
 		t.Fatal("spec.topology.workers.machineDeployments must list at least one worker MachineDeployment")
 	}
 	for i, md := range topo.Workers.MachineDeployments {
@@ -185,8 +184,8 @@ func TestExampleClusterTopology(t *testing.T) {
 	// Cross-file resolution: the topology class and every worker class must
 	// exist in the ClusterClass.
 	cc := parseClusterClass(t)
-	if topo.Class != cc.Name {
-		t.Errorf("spec.topology.class %q does not match the ClusterClass name %q", topo.Class, cc.Name)
+	if topo.ClassRef.Name != cc.Name {
+		t.Errorf("spec.topology.classRef.name %q does not match the ClusterClass name %q", topo.ClassRef.Name, cc.Name)
 	}
 	workerClasses := make(map[string]bool, len(cc.Spec.Workers.MachineDeployments))
 	for _, class := range cc.Spec.Workers.MachineDeployments {
@@ -204,23 +203,21 @@ func TestTemplateRefsResolveToCommittedKinds(t *testing.T) {
 
 	type namedRef struct {
 		path string
-		ref  corev1.ObjectReference
+		ref  clusterv1.ClusterClassTemplateReference
 	}
 	var refs []namedRef
-	add := func(path string, ref *corev1.ObjectReference) {
-		if ref != nil {
-			refs = append(refs, namedRef{path: path, ref: *ref})
+	add := func(path string, ref clusterv1.ClusterClassTemplateReference) {
+		if ref.IsDefined() {
+			refs = append(refs, namedRef{path: path, ref: ref})
 		}
 	}
-	add("spec.infrastructure.ref", cc.Spec.Infrastructure.Ref)
-	add("spec.controlPlane.ref", cc.Spec.ControlPlane.Ref)
-	if mi := cc.Spec.ControlPlane.MachineInfrastructure; mi != nil {
-		add("spec.controlPlane.machineInfrastructure.ref", mi.Ref)
-	}
+	add("spec.infrastructure.templateRef", cc.Spec.Infrastructure.TemplateRef)
+	add("spec.controlPlane.templateRef", cc.Spec.ControlPlane.TemplateRef)
+	add("spec.controlPlane.machineInfrastructure.templateRef", cc.Spec.ControlPlane.MachineInfrastructure.TemplateRef)
 	for i := range cc.Spec.Workers.MachineDeployments {
 		path := fmt.Sprintf("spec.workers.machineDeployments[%d]", i)
-		add(path+".template.bootstrap.ref", cc.Spec.Workers.MachineDeployments[i].Template.Bootstrap.Ref)
-		add(path+".template.infrastructure.ref", cc.Spec.Workers.MachineDeployments[i].Template.Infrastructure.Ref)
+		add(path+".template.bootstrap.templateRef", cc.Spec.Workers.MachineDeployments[i].Bootstrap.TemplateRef)
+		add(path+".template.infrastructure.templateRef", cc.Spec.Workers.MachineDeployments[i].Infrastructure.TemplateRef)
 	}
 
 	if len(refs) == 0 {
@@ -231,7 +228,7 @@ func TestTemplateRefsResolveToCommittedKinds(t *testing.T) {
 		gv, ok := committedKinds[nr.ref.Kind]
 		if !ok {
 			t.Errorf(
-				"%s: kind %q is not one of the committed kinds (HypervisorCluster, HypervisorMachine, HypervisorMachineTemplate, HypervisorConfig, HypervisorControlPlane)",
+				"%s: kind %q is not one of the committed kinds (HypervisorClusterTemplate, HypervisorMachineTemplate, HypervisorControlPlaneTemplate, HypervisorConfigTemplate)",
 				nr.path,
 				nr.ref.Kind,
 			)
@@ -264,8 +261,12 @@ func readTemplate(t *testing.T, path string) []byte {
 func parseClusterClass(t *testing.T) clusterv1.ClusterClass {
 	t.Helper()
 	var cc clusterv1.ClusterClass
-	if err := yaml.Unmarshal(readTemplate(t, clusterClassFile), &cc); err != nil {
-		t.Fatalf("%s must parse as a ClusterClass: %v", clusterClassFile, err)
+	if !findDocument(t, clusterClassFile, "ClusterClass", clusterv1.GroupVersion.String(), &cc) {
+		t.Fatalf(
+			"%s must contain a ClusterClass document with apiVersion %s",
+			clusterClassFile,
+			clusterv1.GroupVersion.String(),
+		)
 	}
 	return cc
 }
@@ -292,8 +293,12 @@ func parseExampleCluster(t *testing.T) clusterv1.Cluster {
 func rawClusterClass(t *testing.T) map[string]any {
 	t.Helper()
 	var m map[string]any
-	if err := yaml.Unmarshal(readTemplate(t, clusterClassFile), &m); err != nil {
-		t.Fatalf("%s must parse as YAML: %v", clusterClassFile, err)
+	if !findDocument(t, clusterClassFile, "ClusterClass", clusterv1.GroupVersion.String(), &m) {
+		t.Fatalf(
+			"%s must contain a ClusterClass document with apiVersion %s",
+			clusterClassFile,
+			clusterv1.GroupVersion.String(),
+		)
 	}
 	return m
 }
@@ -342,18 +347,18 @@ func splitYAMLDocuments(t *testing.T, path string) [][]byte {
 	}
 }
 
-func requireRef(t *testing.T, ref *corev1.ObjectReference, path string) corev1.ObjectReference {
+func requireTemplateRef(t *testing.T, ref clusterv1.ClusterClassTemplateReference, path string) clusterv1.ClusterClassTemplateReference {
 	t.Helper()
-	if ref == nil {
+	if !ref.IsDefined() {
 		t.Fatalf("%s must be set", path)
 	}
 	if ref.Name == "" {
 		t.Fatalf("%s must name a template object", path)
 	}
-	return *ref
+	return ref
 }
 
-func assertRefTarget(t *testing.T, ref corev1.ObjectReference, kind string, gv schema.GroupVersion) {
+func assertTemplateRefTarget(t *testing.T, ref clusterv1.ClusterClassTemplateReference, kind string, gv schema.GroupVersion) {
 	t.Helper()
 	if ref.Kind != kind {
 		t.Errorf("ref %s must have kind %s, got %q", ref.Name, kind, ref.Kind)
@@ -369,13 +374,26 @@ func assertRefTarget(t *testing.T, ref corev1.ObjectReference, kind string, gv s
 // parameterized with clusterctl-style ${VARIABLE} markers.
 const clusterTemplateFile = "cluster-template.yaml"
 
-func TestClusterTemplateParsesAsTwoDocuments(t *testing.T) {
+func TestClusterTemplateDocumentOrder(t *testing.T) {
 	docs := splitYAMLDocuments(t, clusterTemplateFile)
 
-	if len(docs) != 2 {
+	// The stream is order-pinned: the ClusterClass first, then the three
+	// template objects its refs point at, then the topology Cluster. Every
+	// kind must end in "Template" per the CAPI ClusterClass contract except
+	// the ClusterClass and Cluster documents themselves.
+	want := []struct{ apiVersion, kind string }{
+		{clusterv1.GroupVersion.String(), "ClusterClass"},
+		{infrav1alpha1.GroupVersion.String(), "HypervisorClusterTemplate"},
+		{controlplanev1alpha1.GroupVersion.String(), "HypervisorControlPlaneTemplate"},
+		{bootstrapv1alpha1.GroupVersion.String(), "HypervisorConfigTemplate"},
+		{clusterv1.GroupVersion.String(), "Cluster"},
+	}
+	if len(docs) != len(want) {
 		t.Fatalf(
-			"%s must contain exactly two YAML documents (one ClusterClass and one Cluster), got %d",
+			"%s must contain exactly %d YAML documents (%s), got %d",
 			clusterTemplateFile,
+			len(want),
+			"one ClusterClass, the three referenced templates, one Cluster",
 			len(docs),
 		)
 	}
@@ -384,65 +402,51 @@ func TestClusterTemplateParsesAsTwoDocuments(t *testing.T) {
 		APIVersion string `json:"apiVersion"`
 		Kind       string `json:"kind"`
 	}
-	kinds := make([]string, 0, len(docs))
 	for i, doc := range docs {
 		var meta docMeta
 		if err := yaml.Unmarshal(doc, &meta); err != nil {
 			t.Fatalf("document %d of %s must parse: %v", i, clusterTemplateFile, err)
 		}
-		if meta.APIVersion != clusterv1.GroupVersion.String() {
+		if meta.APIVersion != want[i].apiVersion || meta.Kind != want[i].kind {
 			t.Errorf(
-				"document %d of %s must have apiVersion %s, got %q",
+				"document %d of %s must be %s %s, got %s %s",
 				i,
 				clusterTemplateFile,
-				clusterv1.GroupVersion.String(),
+				want[i].apiVersion,
+				want[i].kind,
 				meta.APIVersion,
+				meta.Kind,
 			)
 		}
-		kinds = append(kinds, meta.Kind)
-	}
-
-	// The ClusterClass must be its own document, not merged with the Cluster:
-	// a merged document would carry a single kind and fail these assertions.
-	if kinds[0] != "ClusterClass" {
-		t.Errorf("document 1 of %s must be the ClusterClass, got %q", clusterTemplateFile, kinds[0])
-	}
-	if kinds[1] != "Cluster" {
-		t.Errorf("document 2 of %s must be the Cluster, got %q", clusterTemplateFile, kinds[1])
-	}
-	if kinds[0] == kinds[1] {
-		t.Errorf("the two documents of %s must be distinct kinds, got %v", clusterTemplateFile, kinds)
 	}
 }
 
 func TestClusterTemplateClusterClassInfrastructureRef(t *testing.T) {
 	cc := parseClusterTemplateClusterClass(t)
 
-	ref := requireRef(t, cc.Spec.Infrastructure.Ref, "spec.infrastructure.ref")
-	assertRefTarget(t, ref, "HypervisorCluster", infrav1alpha1.GroupVersion)
+	ref := requireTemplateRef(t, cc.Spec.Infrastructure.TemplateRef, "spec.infrastructure.templateRef")
+	assertTemplateRefTarget(t, ref, "HypervisorClusterTemplate", infrav1alpha1.GroupVersion)
 }
 
 func TestClusterTemplateClusterClassControlPlaneClass(t *testing.T) {
 	cc := parseClusterTemplateClusterClass(t)
 
-	ref := requireRef(t, cc.Spec.ControlPlane.Ref, "spec.controlPlane.ref")
-	assertRefTarget(t, ref, "HypervisorControlPlane", controlplanev1alpha1.GroupVersion)
+	ref := requireTemplateRef(t, cc.Spec.ControlPlane.TemplateRef, "spec.controlPlane.templateRef")
+	assertTemplateRefTarget(t, ref, "HypervisorControlPlaneTemplate", controlplanev1alpha1.GroupVersion)
 
-	mi := cc.Spec.ControlPlane.MachineInfrastructure
-	if mi == nil {
-		t.Fatal(
-			"spec.controlPlane.machineInfrastructure must reference the HypervisorMachineTemplate used for control-plane Machines",
-		)
-	}
-	miRef := requireRef(t, mi.Ref, "spec.controlPlane.machineInfrastructure.ref")
-	assertRefTarget(t, miRef, "HypervisorMachineTemplate", infrav1alpha1.GroupVersion)
+	miRef := requireTemplateRef(
+		t,
+		cc.Spec.ControlPlane.MachineInfrastructure.TemplateRef,
+		"spec.controlPlane.machineInfrastructure.templateRef",
+	)
+	assertTemplateRefTarget(t, miRef, "HypervisorMachineTemplate", infrav1alpha1.GroupVersion)
 
-	// The v1beta1 ControlPlaneClass carries only machineInfrastructure; a
+	// The ControlPlaneClass carries no bootstrap template field; a
 	// machineBootstrap key would be dropped by the API server.
 	cpRaw := nestedMap(t, rawClusterTemplateClusterClass(t), "spec", "controlPlane")
 	if _, ok := cpRaw["machineBootstrap"]; ok {
 		t.Error(
-			"spec.controlPlane.machineBootstrap is not part of the ClusterClass v1beta1 API: control-plane bootstrap is generated by the HypervisorControlPlane controller",
+			"spec.controlPlane.machineBootstrap is not part of the ClusterClass API: control-plane bootstrap is generated by the HypervisorControlPlane controller",
 		)
 	}
 }
@@ -459,10 +463,10 @@ func TestClusterTemplateClusterClassWorkerClass(t *testing.T) {
 		if classes[i].Class == "" {
 			t.Errorf("%s: class name must be set", path)
 		}
-		boot := requireRef(t, classes[i].Template.Bootstrap.Ref, path+".template.bootstrap.ref")
-		assertRefTarget(t, boot, "HypervisorConfig", bootstrapv1alpha1.GroupVersion)
-		infra := requireRef(t, classes[i].Template.Infrastructure.Ref, path+".template.infrastructure.ref")
-		assertRefTarget(t, infra, "HypervisorMachineTemplate", infrav1alpha1.GroupVersion)
+		boot := requireTemplateRef(t, classes[i].Bootstrap.TemplateRef, path+".template.bootstrap.templateRef")
+		assertTemplateRefTarget(t, boot, "HypervisorConfigTemplate", bootstrapv1alpha1.GroupVersion)
+		infra := requireTemplateRef(t, classes[i].Infrastructure.TemplateRef, path+".template.infrastructure.templateRef")
+		assertTemplateRefTarget(t, infra, "HypervisorMachineTemplate", infrav1alpha1.GroupVersion)
 	}
 }
 
@@ -471,23 +475,21 @@ func TestClusterTemplateRefsResolveToCommittedKinds(t *testing.T) {
 
 	type namedRef struct {
 		path string
-		ref  corev1.ObjectReference
+		ref  clusterv1.ClusterClassTemplateReference
 	}
 	var refs []namedRef
-	add := func(path string, ref *corev1.ObjectReference) {
-		if ref != nil {
-			refs = append(refs, namedRef{path: path, ref: *ref})
+	add := func(path string, ref clusterv1.ClusterClassTemplateReference) {
+		if ref.IsDefined() {
+			refs = append(refs, namedRef{path: path, ref: ref})
 		}
 	}
-	add("spec.infrastructure.ref", cc.Spec.Infrastructure.Ref)
-	add("spec.controlPlane.ref", cc.Spec.ControlPlane.Ref)
-	if mi := cc.Spec.ControlPlane.MachineInfrastructure; mi != nil {
-		add("spec.controlPlane.machineInfrastructure.ref", mi.Ref)
-	}
+	add("spec.infrastructure.templateRef", cc.Spec.Infrastructure.TemplateRef)
+	add("spec.controlPlane.templateRef", cc.Spec.ControlPlane.TemplateRef)
+	add("spec.controlPlane.machineInfrastructure.templateRef", cc.Spec.ControlPlane.MachineInfrastructure.TemplateRef)
 	for i := range cc.Spec.Workers.MachineDeployments {
 		path := fmt.Sprintf("spec.workers.machineDeployments[%d]", i)
-		add(path+".template.bootstrap.ref", cc.Spec.Workers.MachineDeployments[i].Template.Bootstrap.Ref)
-		add(path+".template.infrastructure.ref", cc.Spec.Workers.MachineDeployments[i].Template.Infrastructure.Ref)
+		add(path+".template.bootstrap.templateRef", cc.Spec.Workers.MachineDeployments[i].Bootstrap.TemplateRef)
+		add(path+".template.infrastructure.templateRef", cc.Spec.Workers.MachineDeployments[i].Infrastructure.TemplateRef)
 	}
 
 	if len(refs) == 0 {
@@ -498,7 +500,7 @@ func TestClusterTemplateRefsResolveToCommittedKinds(t *testing.T) {
 		gv, ok := committedKinds[nr.ref.Kind]
 		if !ok {
 			t.Errorf(
-				"%s: kind %q is not one of the committed kinds (HypervisorCluster, HypervisorMachine, HypervisorMachineTemplate, HypervisorConfig, HypervisorControlPlane)",
+				"%s: kind %q is not one of the committed kinds (HypervisorClusterTemplate, HypervisorMachineTemplate, HypervisorControlPlaneTemplate, HypervisorConfigTemplate)",
 				nr.path,
 				nr.ref.Kind,
 			)
@@ -519,16 +521,138 @@ func TestClusterTemplateRefsResolveToCommittedKinds(t *testing.T) {
 	}
 }
 
+// namedTemplateRef pairs a ClusterClass template reference with the path it
+// lives at, so resolution assertions can report precise locations.
+type namedTemplateRef struct {
+	path string
+	ref  clusterv1.ClusterClassTemplateReference
+}
+
+// classRefs collects every template reference of a ClusterClass with the
+// path it lives at, so resolution assertions can report precise locations.
+func classRefs(cc clusterv1.ClusterClass) []namedTemplateRef {
+	refs := []namedTemplateRef{
+		{path: "spec.infrastructure.templateRef", ref: cc.Spec.Infrastructure.TemplateRef},
+		{path: "spec.controlPlane.templateRef", ref: cc.Spec.ControlPlane.TemplateRef},
+		{path: "spec.controlPlane.machineInfrastructure.templateRef", ref: cc.Spec.ControlPlane.MachineInfrastructure.TemplateRef},
+	}
+	for i := range cc.Spec.Workers.MachineDeployments {
+		path := fmt.Sprintf("spec.workers.machineDeployments[%d]", i)
+		refs = append(
+			refs,
+			namedTemplateRef{
+				path: path + ".template.bootstrap.templateRef",
+				ref:  cc.Spec.Workers.MachineDeployments[i].Bootstrap.TemplateRef,
+			},
+			namedTemplateRef{
+				path: path + ".template.infrastructure.templateRef",
+				ref:  cc.Spec.Workers.MachineDeployments[i].Infrastructure.TemplateRef,
+			},
+		)
+	}
+	return refs
+}
+
+// TestClusterClassRefsResolveToCommittedObjects verifies that every template
+// reference of clusterclass.yaml names a template object committed in the same
+// file, so applying the file leaves no dangling reference for CAPI to trip
+// over at reconcile time.
+func TestClusterClassRefsResolveToCommittedObjects(t *testing.T) {
+	assertRefsResolveToObjects(t, clusterClassFile, parseClusterClass(t))
+}
+
+// TestClusterTemplateRefsResolveToCommittedObjects is the cluster-template.yaml
+// twin of TestClusterClassRefsResolveToCommittedObjects.
+func TestClusterTemplateRefsResolveToCommittedObjects(t *testing.T) {
+	assertRefsResolveToObjects(t, clusterTemplateFile, parseClusterTemplateClusterClass(t))
+}
+
+// assertRefsResolveToObjects indexes every document of path by kind/name and
+// fails for any ClusterClass template ref whose target object is missing from
+// the same stream. HypervisorMachineTemplate refs are exempt: the
+// machine-shape templates carry lab-specific cpu/ram/disk sizing, so they are
+// intentionally supplied by the consuming repository rather than shipped here.
+func assertRefsResolveToObjects(t *testing.T, path string, cc clusterv1.ClusterClass) {
+	t.Helper()
+	objects := make(map[string]bool)
+	for _, doc := range splitYAMLDocuments(t, path) {
+		var meta struct {
+			Kind     string `json:"kind"`
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		}
+		if err := yaml.Unmarshal(doc, &meta); err != nil {
+			t.Fatalf("%s contains an invalid YAML document: %v", path, err)
+		}
+		if meta.Kind == "" {
+			continue
+		}
+		objects[meta.Kind+"/"+meta.Metadata.Name] = true
+	}
+
+	for _, nr := range classRefs(cc) {
+		if !nr.ref.IsDefined() {
+			t.Errorf("%s: %s must be set", path, nr.path)
+			continue
+		}
+		if nr.ref.Kind == "HypervisorMachineTemplate" {
+			continue
+		}
+		if !objects[nr.ref.Kind+"/"+nr.ref.Name] {
+			t.Errorf(
+				"%s: %s points at %s/%q which is not committed in this file",
+				path,
+				nr.path,
+				nr.ref.Kind,
+				nr.ref.Name,
+			)
+		}
+	}
+}
+
+// TestControlPlaneTemplatesLeaveScalingToTopology pins the topology-cloning
+// contract on both files: the HypervisorControlPlaneTemplate resource must not
+// carry replicas or version, because CAPI copies spec.template.spec verbatim
+// into the instantiated HypervisorControlPlane and both fields are owned by
+// the Cluster topology.
+func TestControlPlaneTemplatesLeaveScalingToTopology(t *testing.T) {
+	for _, path := range []string{clusterClassFile, clusterTemplateFile} {
+		var raw map[string]any
+		if !findDocument(t, path, "HypervisorControlPlaneTemplate", "", &raw) {
+			t.Fatalf("%s must contain a HypervisorControlPlaneTemplate document", path)
+		}
+		template := nestedMap(t, raw, "spec", "template")
+		spec, ok := template["spec"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: spec.template.spec of the HypervisorControlPlaneTemplate must be a mapping", path)
+		}
+		for _, key := range []string{"replicas", "version"} {
+			if _, ok := spec[key]; ok {
+				t.Errorf(
+					"%s: spec.template.spec.%s must stay unset on the HypervisorControlPlaneTemplate: the Cluster topology controls it",
+					path,
+					key,
+				)
+			}
+		}
+	}
+}
+
 func TestClusterTemplateClusterTopology(t *testing.T) {
 	cluster := parseClusterTemplateCluster(t)
 
 	topo := nestedMap(t, cluster, "spec", "topology")
-	class, ok := topo["class"].(string)
+	classRef, ok := topo["classRef"].(map[string]any)
 	if !ok {
-		t.Fatalf("spec.topology.class must be a string, got %T", topo["class"])
+		t.Fatalf("spec.topology.classRef must be a mapping, got %T", topo["classRef"])
+	}
+	class, ok := classRef["name"].(string)
+	if !ok {
+		t.Fatalf("spec.topology.classRef.name must be a string, got %T", classRef["name"])
 	}
 	if class != "hypervisor-cluster-template" {
-		t.Errorf("spec.topology.class must be %q, got %q", "hypervisor-cluster-template", class)
+		t.Errorf("spec.topology.classRef.name must be %q, got %q", "hypervisor-cluster-template", class)
 	}
 
 	// Cross-file resolution: the template Cluster, the example Cluster, and
@@ -536,14 +660,13 @@ func TestClusterTemplateClusterTopology(t *testing.T) {
 	// default-flavor template and the example stay twins.
 	cc := parseClusterTemplateClusterClass(t)
 	if class != cc.Name {
-		t.Errorf("spec.topology.class %q does not match the ClusterClass name %q", class, cc.Name)
+		t.Errorf("spec.topology.classRef.name %q does not match the ClusterClass name %q", class, cc.Name)
 	}
 	example := parseExampleCluster(t)
-	if example.Spec.Topology == nil {
-		t.Fatal("the example Cluster must carry spec.topology to be a twin of the template")
-	}
-	if class != example.Spec.Topology.Class {
-		t.Errorf("spec.topology.class %q does not match the example Cluster class %q", class, example.Spec.Topology.Class)
+	// Topology is a value type in v1beta2; an absent spec.topology yields an
+	// empty classRef.name, which the comparison below rejects.
+	if class != example.Spec.Topology.ClassRef.Name {
+		t.Errorf("spec.topology.classRef.name %q does not match the example Cluster class %q", class, example.Spec.Topology.ClassRef.Name)
 	}
 
 	nestedMap(t, topo, "controlPlane")
@@ -601,7 +724,7 @@ func TestClusterTemplateDefaultsDocumentedByExample(t *testing.T) {
 	if example.Namespace != "default" {
 		t.Errorf("example metadata.namespace must document the default %q, got %q", "default", example.Namespace)
 	}
-	if example.Spec.Topology == nil {
+	if example.Spec.Topology.ClassRef.Name == "" {
 		t.Fatal("the example Cluster must carry spec.topology to document the template defaults")
 	}
 	topo := example.Spec.Topology
@@ -611,7 +734,7 @@ func TestClusterTemplateDefaultsDocumentedByExample(t *testing.T) {
 	if topo.ControlPlane.Replicas == nil || *topo.ControlPlane.Replicas != 1 {
 		t.Errorf("example spec.topology.controlPlane.replicas must document the default 1")
 	}
-	if topo.Workers == nil || len(topo.Workers.MachineDeployments) == 0 {
+	if len(topo.Workers.MachineDeployments) == 0 {
 		t.Fatal("the example Cluster must list a worker MachineDeployment to document the worker default")
 	}
 	md := topo.Workers.MachineDeployments[0]
@@ -620,24 +743,24 @@ func TestClusterTemplateDefaultsDocumentedByExample(t *testing.T) {
 	}
 }
 
-// parseTemplateDocument finds the single document of cluster-template.yaml
-// with the given kind and the clusterv1 apiVersion, unmarshalling it into out.
-// It reports false when no such document exists.
-func parseTemplateDocument(t *testing.T, kind string, out any) bool {
+// findDocument finds the first document of path with the given kind,
+// unmarshalling it into out. When apiVersion is non-empty the document must
+// also carry it. It reports false when no such document exists.
+func findDocument(t *testing.T, path, kind, apiVersion string, out any) bool {
 	t.Helper()
-	for _, doc := range splitYAMLDocuments(t, clusterTemplateFile) {
+	for _, doc := range splitYAMLDocuments(t, path) {
 		var meta struct {
 			APIVersion string `json:"apiVersion"`
 			Kind       string `json:"kind"`
 		}
 		if err := yaml.Unmarshal(doc, &meta); err != nil {
-			t.Fatalf("%s contains an invalid YAML document: %v", clusterTemplateFile, err)
+			t.Fatalf("%s contains an invalid YAML document: %v", path, err)
 		}
-		if meta.Kind != kind || meta.APIVersion != clusterv1.GroupVersion.String() {
+		if meta.Kind != kind || (apiVersion != "" && meta.APIVersion != apiVersion) {
 			continue
 		}
 		if err := yaml.Unmarshal(doc, out); err != nil {
-			t.Fatalf("%s document %s must parse: %v", clusterTemplateFile, kind, err)
+			t.Fatalf("%s document %s must parse: %v", path, kind, err)
 		}
 		return true
 	}
@@ -647,7 +770,7 @@ func parseTemplateDocument(t *testing.T, kind string, out any) bool {
 func parseClusterTemplateClusterClass(t *testing.T) clusterv1.ClusterClass {
 	t.Helper()
 	var cc clusterv1.ClusterClass
-	if !parseTemplateDocument(t, "ClusterClass", &cc) {
+	if !findDocument(t, clusterTemplateFile, "ClusterClass", clusterv1.GroupVersion.String(), &cc) {
 		t.Fatalf(
 			"%s must contain a ClusterClass document with apiVersion %s",
 			clusterTemplateFile,
@@ -663,7 +786,7 @@ func parseClusterTemplateClusterClass(t *testing.T) clusterv1.ClusterClass {
 func parseClusterTemplateCluster(t *testing.T) map[string]any {
 	t.Helper()
 	var m map[string]any
-	if !parseTemplateDocument(t, "Cluster", &m) {
+	if !findDocument(t, clusterTemplateFile, "Cluster", clusterv1.GroupVersion.String(), &m) {
 		t.Fatalf(
 			"%s must contain a Cluster document with apiVersion %s",
 			clusterTemplateFile,
@@ -676,7 +799,7 @@ func parseClusterTemplateCluster(t *testing.T) map[string]any {
 func rawClusterTemplateClusterClass(t *testing.T) map[string]any {
 	t.Helper()
 	var m map[string]any
-	if !parseTemplateDocument(t, "ClusterClass", &m) {
+	if !findDocument(t, clusterTemplateFile, "ClusterClass", clusterv1.GroupVersion.String(), &m) {
 		t.Fatalf(
 			"%s must contain a ClusterClass document with apiVersion %s",
 			clusterTemplateFile,

@@ -16,7 +16,7 @@ the source of truth listed in the table — keep them in sync when bumping.
 | kustomize (sigs.k8s.io/kustomize/kustomize/v5) | v5.8.1 | `tools/go.mod:302` (tool directive at `tools/go.mod:14`) |
 | envtest k8s binaries | 1.35.0 | `Makefile:11` (`ENVTEST_K8S_VERSION`) |
 | cloud-hypervisor | 48.0-r0 | `Containerfile:40` (`CLOUD_HYPERVISOR_VERSION`) |
-| qemu-img | 11.0.3-r1 | `Containerfile:41` (`QEMU_IMG_VERSION`) |
+| qemu-img | 11.1.0-r0 | `Containerfile:41` (`QEMU_IMG_VERSION`) |
 | squashfs-tools | 4.7.5-r0 | `Containerfile:42` (`SQUASHFS_TOOLS_VERSION`) |
 
 Source files:

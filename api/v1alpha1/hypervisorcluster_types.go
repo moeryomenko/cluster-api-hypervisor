@@ -18,7 +18,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
 // HypervisorClusterSpec defines the desired state of HypervisorCluster.
@@ -57,7 +57,7 @@ type HypervisorClusterStatus struct {
 	Ready bool `json:"ready"`
 
 	// ControlPlaneEndpoint is the workload cluster's API server endpoint.
-	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty,omitzero"`
 
 	// FailureReason is a machine-readable reason for the last failure.
 	FailureReason string `json:"failureReason,omitempty"`
@@ -66,7 +66,7 @@ type HypervisorClusterStatus struct {
 	FailureMessage string `json:"failureMessage,omitempty"`
 
 	// Conditions defines current service state of the HypervisorCluster.
-	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -82,12 +82,12 @@ type HypervisorCluster struct {
 }
 
 // GetConditions returns the status conditions of the cluster.
-func (c *HypervisorCluster) GetConditions() clusterv1.Conditions {
+func (c *HypervisorCluster) GetConditions() []metav1.Condition {
 	return c.Status.Conditions
 }
 
 // SetConditions sets the status conditions of the cluster.
-func (c *HypervisorCluster) SetConditions(conditions clusterv1.Conditions) {
+func (c *HypervisorCluster) SetConditions(conditions []metav1.Condition) {
 	c.Status.Conditions = conditions
 }
 

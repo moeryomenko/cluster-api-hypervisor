@@ -21,7 +21,10 @@
 #   3. With no knobs, binds a real listening unix socket at <sock> (via a tiny
 #      embedded python3 server — the only tool reliably available here that
 #      can expose a unix listener from a shell script) and serves it until
-#      terminated. On SIGTERM it records the signal and exits 0.
+#      terminated. On SIGTERM it records the signal and exits 0. Like the
+#      real cloud-hypervisor, the bind fails when the socket pathname already
+#      exists (AddrInUse); stale-socket tolerance is the Manager's job, not
+#      the child's.
 #
 # The script is the exact process the manager spawns: the bash layer only
 # records arguments and performs startup delays/exits, then execs the python
@@ -93,10 +96,6 @@ if sock_path is None:
     sys.stderr.write("fake-cloud-hypervisor: no --api-socket path given\n")
     sys.exit(1)
 
-try:
-    os.unlink(sock_path)
-except FileNotFoundError:
-    pass
 os.makedirs(os.path.dirname(sock_path), exist_ok=True)
 
 server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

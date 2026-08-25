@@ -25,11 +25,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/predicates"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -50,7 +51,7 @@ const (
 
 	// dataSecretAvailableCondition is the condition type reported once the
 	// bootstrap data Secret exists.
-	dataSecretAvailableCondition = clusterv1.ConditionType("DataSecretAvailable")
+	dataSecretAvailableCondition = "DataSecretAvailable"
 
 	// configTreeBlobKey is the data key of the rendered tree in the bootstrap
 	// data Secret: a JSON object mapping every tree path to its base64-encoded
@@ -221,7 +222,7 @@ func (r *HypervisorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	cfg.Status.FailureReason = ""
 	cfg.Status.FailureMessage = ""
 	cfg.Status.DataSecretName = &dataSecretName
-	markDataSecretAvailable(cfg, corev1.ConditionTrue, "BootstrapDataRendered", "bootstrap data Secret rendered")
+	markDataSecretAvailable(cfg, metav1.ConditionTrue, "BootstrapDataRendered", "bootstrap data Secret rendered")
 	if err := r.Status().Update(ctx, cfg); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update HypervisorConfig status: %w", err)
 	}
@@ -241,7 +242,7 @@ func (r *HypervisorConfigReconciler) recordFailure(
 	cfg.Status.Ready = false
 	cfg.Status.FailureReason = reason
 	cfg.Status.FailureMessage = message
-	markDataSecretAvailable(cfg, corev1.ConditionFalse, reason, message)
+	markDataSecretAvailable(cfg, metav1.ConditionFalse, reason, message)
 	if err := r.Status().Update(ctx, cfg); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update HypervisorConfig failure status: %w", err)
 	}
@@ -358,15 +359,10 @@ func (r *HypervisorConfigReconciler) machineInternalIP(
 	}
 
 	// Infrastructure references are namespaced to the machine by CAPI
-	// convention; the reference's namespace may be dropped by the API
-	// round-trip, so fall back to the machine's own namespace.
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = machine.Namespace
-	}
-
+	// convention; the contract-versioned reference carries no namespace, so
+	// the machine's own namespace names the infrastructure object.
 	hm := &infrastructurev1alpha1.HypervisorMachine{}
-	key := client.ObjectKey{Namespace: namespace, Name: ref.Name}
+	key := client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}
 	if err := r.Get(ctx, key, hm); err != nil {
 		if apierrors.IsNotFound(err) {
 			return "", false, nil
@@ -390,15 +386,11 @@ func (r *HypervisorConfigReconciler) linkedHypervisorCluster(
 	cluster *clusterv1.Cluster,
 ) (*infrastructurev1alpha1.HypervisorCluster, error) {
 	ref := cluster.Spec.InfrastructureRef
-	if ref == nil || ref.Kind != "HypervisorCluster" || ref.Name == "" {
+	if !ref.IsDefined() || ref.Kind != "HypervisorCluster" || ref.Name == "" {
 		return nil, nil
 	}
-	namespace := ref.Namespace
-	if namespace == "" {
-		namespace = cluster.Namespace
-	}
 	hc := &infrastructurev1alpha1.HypervisorCluster{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, hc); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: ref.Name}, hc); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -604,29 +596,14 @@ func decodeClusterPKI(data map[string][]byte) (pki.ClusterPKI, error) {
 // config status with the given status, reason, and message.
 func markDataSecretAvailable(
 	cfg *bootstrapv1alpha1.HypervisorConfig,
-	status corev1.ConditionStatus,
+	status metav1.ConditionStatus,
 	reason, message string,
 ) {
-	for i := range cfg.Status.Conditions {
-		if cfg.Status.Conditions[i].Type != dataSecretAvailableCondition {
-			continue
-		}
-		if cfg.Status.Conditions[i].Status == status && cfg.Status.Conditions[i].Reason == reason {
-			cfg.Status.Conditions[i].Message = message
-			return
-		}
-		cfg.Status.Conditions[i].Status = status
-		cfg.Status.Conditions[i].Reason = reason
-		cfg.Status.Conditions[i].Message = message
-		cfg.Status.Conditions[i].LastTransitionTime = metav1.Now()
-		return
-	}
-	cfg.Status.Conditions = append(cfg.Status.Conditions, clusterv1.Condition{
-		Type:               dataSecretAvailableCondition,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
+	meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
+		Type:    dataSecretAvailableCondition,
+		Status:  status,
+		Reason:  reason,
+		Message: message,
 	})
 }
 
@@ -665,12 +642,8 @@ func (r *HypervisorConfigReconciler) machineToHypervisorConfig(
 		return nil
 	}
 
-	if ref := machine.Spec.Bootstrap.ConfigRef; ref != nil && ref.Kind == "HypervisorConfig" && ref.Name != "" {
-		namespace := ref.Namespace
-		if namespace == "" {
-			namespace = machine.Namespace
-		}
-		return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: namespace, Name: ref.Name}}}
+	if ref := machine.Spec.Bootstrap.ConfigRef; ref.IsDefined() && ref.Kind == "HypervisorConfig" && ref.Name != "" {
+		return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}}}
 	}
 
 	configs := &bootstrapv1alpha1.HypervisorConfigList{}

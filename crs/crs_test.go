@@ -21,10 +21,10 @@ limitations under the License.
 // manifests, the ordering note, and crs/populate.sh. Until they exist every
 // test fails at the file read, which is the intended red phase.
 //
-// The pinned shapes follow the Cluster API v1beta1 API as shipped by the
+// The pinned shapes follow the Cluster API v1beta2 API as shipped by the
 // Cluster API module in the go.mod (sigs.k8s.io/cluster-api v1.13.x):
 //
-//   - group addons.cluster.x-k8s.io, version v1beta1, kind ClusterResourceSet
+//   - group addons.cluster.x-k8s.io, version v1beta2, kind ClusterResourceSet
 //   - spec.clusterSelector is a label selector over Clusters in the same
 //     namespace. The controller treats an empty selector as matching nothing,
 //     so the manifest must pin the workload cluster through the
@@ -60,7 +60,7 @@ import (
 	"testing"
 
 	yamlv3 "gopkg.in/yaml.v3"
-	addonsv1 "sigs.k8s.io/cluster-api/api/addons/v1beta1"
+	addonsv1 "sigs.k8s.io/cluster-api/api/addons/v1beta2"
 	sigsyaml "sigs.k8s.io/yaml"
 )
 
@@ -270,7 +270,7 @@ func clusterResourceSets(t *testing.T) []parsedCRS {
 	}
 	if len(found) == 0 {
 		t.Fatal(
-			"crs/ must ship at least one ClusterResourceSet manifest (kind ClusterResourceSet, group addons.cluster.x-k8s.io, version v1beta1)",
+			"crs/ must ship at least one ClusterResourceSet manifest (kind ClusterResourceSet, group addons.cluster.x-k8s.io, version v1beta2)",
 		)
 	}
 	return found

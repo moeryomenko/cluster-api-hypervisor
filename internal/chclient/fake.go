@@ -29,8 +29,10 @@ import (
 // error each operation returns when set, and the operation succeeds when the
 // field is nil. Calls records each invoked operation by name in call order:
 // "EnsureRunning", "Shutdown", "Stop", "Info". NetConfigs records every net
-// device string supplied through SetNetConfig, in call order. The zero value
-// is usable: every operation succeeds and no state is reported.
+// device string supplied through SetNetConfig, Firmwares every firmware path
+// supplied through SetFirmware, and DiskPathSets every disk path list
+// supplied through SetDiskPaths, in call order. The zero value is usable:
+// every operation succeeds and no state is reported.
 type FakeClient struct {
 	State            ch.VMState
 	EnsureRunningErr error
@@ -39,11 +41,23 @@ type FakeClient struct {
 	InfoErr          error
 	Calls            []string
 	NetConfigs       []string
+	Firmwares        []string
+	DiskPathSets     [][]string
 }
 
 // SetNetConfig records the net device string for assertions.
 func (f *FakeClient) SetNetConfig(netConfig string) {
 	f.NetConfigs = append(f.NetConfigs, netConfig)
+}
+
+// SetFirmware records the firmware path for assertions.
+func (f *FakeClient) SetFirmware(firmware string) {
+	f.Firmwares = append(f.Firmwares, firmware)
+}
+
+// SetDiskPaths records the disk path list for assertions.
+func (f *FakeClient) SetDiskPaths(paths []string) {
+	f.DiskPathSets = append(f.DiskPathSets, paths)
 }
 
 // EnsureRunning records the call and returns the configured error, if any.

@@ -55,7 +55,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -122,20 +122,10 @@ func mustReconcileClient(t *testing.T) client.Client {
 // installCAPICoreCRDs installs the cluster-api core CRDs the endpoint
 // contract reads (Cluster and Machine). The provider CRDs are already
 // installed by the harness; the cluster-api CRDs ship in the module cache of
-// the pinned cluster-api version, resolved through `go list -m`.
-//
-// The Machine CRD is installed with only its v1beta1 version served and
-// stored. The cluster-api v1.13.x Machine CRD serves v1beta1 and v1beta2 with
-// v1beta2 as the storage version and no conversion webhook; the built-in
-// field-name conversion between the two drops apiVersion and namespace from
-// the corev1.ObjectReference fields (spec.infrastructureRef and
-// spec.bootstrap.configRef) on read-back, so the control-plane machine
-// assertions on those fields could never pass. The v1beta1-only CRD
-// round-trips those fields losslessly through the provider's clusterv1
-// (v1beta1) scheme. The Cluster CRD is installed as shipped: its v1beta2
-// storage version prunes the same fields, but the reconcilers treat empty
-// ref namespaces as "same namespace as the object", so the contract is
-// unaffected.
+// the pinned cluster-api version, resolved through `go list -m`. Both CRDs
+// are installed as shipped: v1beta2 is the storage version and the version
+// the provider's clusterv1 scheme speaks since the v1beta2 contract
+// migration, so no conversion round-trip is involved.
 func installCAPICoreCRDs(t *testing.T, cfg *rest.Config) {
 	t.Helper()
 
@@ -144,7 +134,7 @@ func installCAPICoreCRDs(t *testing.T, cfg *rest.Config) {
 		t.Fatalf("resolve cluster-api module directory: %v", err)
 	}
 	clusterCRD := loadCRD(t, filepath.Join(dir, "cluster.x-k8s.io_clusters.yaml"))
-	machineCRD := v1beta1OnlyCRD(t, loadCRD(t, filepath.Join(dir, "cluster.x-k8s.io_machines.yaml")))
+	machineCRD := loadCRD(t, filepath.Join(dir, "cluster.x-k8s.io_machines.yaml"))
 
 	if _, err := envtest.InstallCRDs(cfg, envtest.CRDInstallOptions{
 		CRDs: []*apiextensionsv1.CustomResourceDefinition{clusterCRD, machineCRD},
@@ -166,33 +156,6 @@ func loadCRD(t *testing.T, path string) *apiextensionsv1.CustomResourceDefinitio
 	if err := yaml.Unmarshal(data, crd); err != nil {
 		t.Fatalf("decode CRD manifest %q: %v", path, err)
 	}
-
-	return crd
-}
-
-// v1beta1OnlyCRD returns the CRD with every version but v1beta1 removed and
-// v1beta1 marked served and stored. See installCAPICoreCRDs for why the
-// cluster-api Machine CRD is installed this way.
-func v1beta1OnlyCRD(
-	t *testing.T,
-	crd *apiextensionsv1.CustomResourceDefinition,
-) *apiextensionsv1.CustomResourceDefinition {
-	t.Helper()
-
-	versions := make([]apiextensionsv1.CustomResourceDefinitionVersion, 0, 1)
-	for i := range crd.Spec.Versions {
-		if crd.Spec.Versions[i].Name != "v1beta1" {
-			continue
-		}
-		v := crd.Spec.Versions[i]
-		v.Served = true
-		v.Storage = true
-		versions = append(versions, v)
-	}
-	if len(versions) != 1 {
-		t.Fatalf("CRD %s has %d v1beta1 versions, want 1", crd.Name, len(versions))
-	}
-	crd.Spec.Versions = versions
 
 	return crd
 }
@@ -244,11 +207,10 @@ func newLinkedCluster(t *testing.T, c client.Client, namespace, name string) *li
 	cluster := &clusterv1.Cluster{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: clusterv1.ClusterSpec{
-			InfrastructureRef: &corev1.ObjectReference{
-				APIVersion: infrastructurev1alpha1.GroupVersion.String(),
-				Kind:       "HypervisorCluster",
-				Name:       name,
-				Namespace:  namespace,
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+				APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+				Kind:     "HypervisorCluster",
+				Name:     name,
 			},
 		},
 	}
@@ -317,11 +279,10 @@ func newControlPlane(t *testing.T, c client.Client, lc *linkedCluster, initializ
 		t.Fatalf("set HypervisorControlPlane initialized status: %v", err)
 	}
 
-	lc.cluster.Spec.ControlPlaneRef = &corev1.ObjectReference{
-		APIVersion: controlplanev1alpha1.GroupVersion.String(),
-		Kind:       "HypervisorControlPlane",
-		Name:       cp.Name,
-		Namespace:  lc.namespace,
+	lc.cluster.Spec.ControlPlaneRef = clusterv1.ContractVersionedObjectReference{
+		APIGroup: controlplanev1alpha1.GroupVersion.Group,
+		Kind:     "HypervisorControlPlane",
+		Name:     cp.Name,
 	}
 	if err := c.Update(ctx, lc.cluster); err != nil {
 		t.Fatalf("link control plane ref on Cluster: %v", err)
@@ -362,12 +323,20 @@ func newControlPlaneMachine(t *testing.T, c client.Client, lc *linkedCluster, ip
 		},
 		Spec: clusterv1.MachineSpec{
 			ClusterName: lc.name,
-			Bootstrap:   clusterv1.Bootstrap{},
-			InfrastructureRef: corev1.ObjectReference{
-				APIVersion: infrastructurev1alpha1.GroupVersion.String(),
-				Kind:       "HypervisorMachine",
-				Name:       hm.Name,
-				Namespace:  lc.namespace,
+			// spec.bootstrap is required by the v1beta2 Machine API; the
+			// dangling reference stands in for "no bootstrap data", which the
+			// endpoint contract does not read.
+			Bootstrap: clusterv1.Bootstrap{
+				ConfigRef: clusterv1.ContractVersionedObjectReference{
+					APIGroup: bootstrapv1alpha1.GroupVersion.Group,
+					Kind:     "HypervisorConfig",
+					Name:     hm.Name + "-config",
+				},
+			},
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+				APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+				Kind:     "HypervisorMachine",
+				Name:     hm.Name,
 			},
 		},
 	}
@@ -399,7 +368,7 @@ func newTestReconciler(t *testing.T, c client.Client) *HypervisorClusterReconcil
 }
 
 // findCondition returns the condition with the given type, or nil.
-func findCondition(hc *infrastructurev1alpha1.HypervisorCluster, t clusterv1.ConditionType) *clusterv1.Condition {
+func findCondition(hc *infrastructurev1alpha1.HypervisorCluster, t string) *metav1.Condition {
 	for i := range hc.Status.Conditions {
 		if hc.Status.Conditions[i].Type == t {
 			return &hc.Status.Conditions[i]

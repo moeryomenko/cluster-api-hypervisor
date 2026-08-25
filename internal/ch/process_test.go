@@ -31,9 +31,15 @@ limitations under the License.
 //     functional options WithBinaryPath and WithSocketDir set the
 //     cloud-hypervisor binary path and the socket directory respectively.
 //   - Start(ctx) (socketPath string, err error) spawns the binary with the
-//     two argv entries "--api-socket" and "path=<sock>", where <sock> is
-//     <socketDir>/api.sock, and returns that socket path. The socket
-//     directory is created if it does not exist. If the binary exits within
+//     argv entries "--api-socket" and "path=<sock>", where <sock> is
+//     <socketDir>/api.sock, followed by "--seccomp false" (v48's filter kills
+//     its own API thread with SIGSYS under container profiles), and returns
+//     that socket path. The socket
+//     directory is created if it does not exist, and an existing file at the
+//     socket path — left behind by a previous unclean kill; a bind mount
+//     persists it across provider restarts — is removed before the spawn,
+//     since unix bind(2) on an existing path fails with AddrInUse even with
+//     no listener. If the binary exits within
 //     roughly half a second of spawning, Start returns an error that includes
 //     the captured stderr and an empty socket path. Start is idempotent: a
 //     second call returns the existing socket path without spawning again.
@@ -113,7 +119,7 @@ func TestManagerStartSpawnsWithAPISocketArg(t *testing.T) {
 	if len(invocations) != 1 {
 		t.Fatalf("fake binary spawned %d times, want 1", len(invocations))
 	}
-	wantArgs := []string{"--api-socket", "path=" + wantSocket}
+	wantArgs := []string{"--api-socket", "path=" + wantSocket, "--seccomp", "false"}
 	if got := invocations[0].args; !slices.Equal(got, wantArgs) {
 		t.Errorf("fake binary argv = %v, want %v", got, wantArgs)
 	}
@@ -176,6 +182,46 @@ func TestManagerStartIsIdempotent(t *testing.T) {
 	}
 	if got := len(readRecord(t, record)); got != 1 {
 		t.Errorf("fake binary spawned %d times after two Starts, want 1", got)
+	}
+}
+
+// TestManagerStartUnlinksStaleSocketFile pins the stale-socket tolerance
+// contract: a previous unclean kill can leave the socket pathname behind (a
+// bind mount persists it across provider restarts), and the child's bind(2)
+// on the existing path fails with AddrInUse. Start must remove the stale file
+// before spawning, so a Start over a directory holding a dummy api.sock
+// succeeds and ends with a live socket at that path.
+func TestManagerStartUnlinksStaleSocketFile(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "args.log")
+	t.Setenv("FAKE_CH_RECORD", record)
+
+	socketDir := filepath.Join(t.TempDir(), "sockets")
+	if err := os.MkdirAll(socketDir, 0o755); err != nil {
+		t.Fatalf("create socket dir: %v", err)
+	}
+	stale := filepath.Join(socketDir, "api.sock")
+	if err := os.WriteFile(stale, []byte("stale socket left by an unclean kill"), 0o644); err != nil {
+		t.Fatalf("write stale socket file: %v", err)
+	}
+
+	mgr := ch.NewManager(ch.WithBinaryPath(fakePath(t)), ch.WithSocketDir(socketDir))
+	defer stopQuiet(t, mgr)
+
+	socketPath, err := mgr.Start(t.Context())
+	if err != nil {
+		t.Fatalf("Start with a stale socket file present: %v", err)
+	}
+	if socketPath != stale {
+		t.Errorf("Start socket path = %q, want %q", socketPath, stale)
+	}
+
+	waitForFile(t, stale, 2*time.Second)
+	fi, err := os.Stat(stale)
+	if err != nil {
+		t.Fatalf("socket %q not created: %v", stale, err)
+	}
+	if fi.Mode()&os.ModeSocket == 0 {
+		t.Errorf("path %q is not a unix socket after Start (mode %v): the stale file was not replaced", stale, fi.Mode())
 	}
 }
 

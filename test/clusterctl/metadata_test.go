@@ -30,7 +30,10 @@ limitations under the License.
 //   - metadata.yaml is a provider repository metadata document with
 //     apiVersion clusterctl.cluster.x-k8s.io/v1alpha3, kind Metadata, and a
 //     releaseSeries list with exactly one entry {major: 0, minor: 1,
-//     contract: v1beta1}.
+//     contract: v1beta2}. The single entry replaces the former v1beta1
+//     declaration for the same 0.1 series: clusterctl resolves a provider
+//     version's contract by matching major/minor, so one series carries
+//     exactly one contract.
 //   - clusterctl.yaml lists exactly three providers named hypervisor (one
 //     InfrastructureProvider, one BootstrapProvider, one
 //     ControlPlaneProvider) whose file:// URLs follow the local repository
@@ -68,7 +71,7 @@ const (
 	metadataKind       = "Metadata"
 	metadataMajor      = 0
 	metadataMinor      = 1
-	metadataContract   = "v1beta1"
+	metadataContract   = "v1beta2"
 )
 
 // readRepoFile reads a committed file from the repository root. The go test

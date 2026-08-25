@@ -45,7 +45,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -316,6 +316,14 @@ func (v *opLoggingVM) SetNetConfig(netConfig string) {
 	v.inner.SetNetConfig(netConfig)
 }
 
+func (v *opLoggingVM) SetFirmware(firmware string) {
+	v.inner.SetFirmware(firmware)
+}
+
+func (v *opLoggingVM) SetDiskPaths(paths []string) {
+	v.inner.SetDiskPaths(paths)
+}
+
 func (v *opLoggingVM) EnsureRunning(ctx context.Context) error {
 	v.log.add("VM.EnsureRunning")
 	return v.inner.EnsureRunning(ctx)
@@ -409,7 +417,7 @@ func startEnvtestK8netdSuite(t *testing.T) *envtestK8netdSuite {
 			VMDiskDir: t.TempDir(),
 			SocketDir: t.TempDir(),
 		},
-		VM:              recVM,
+		NewVMClient:     func(string, string) chclient.Client { return recVM },
 		K8Netd:          k8netd.NewClient(srv.SocketPath()),
 		QemuImg:         qemu.Run,
 		Confext:         confext.NewPackager(confext.WithRunner(pack)),
@@ -536,7 +544,7 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 				return false
 			}
 			cond := findCondition(hc, clusterv1.InfrastructureReadyCondition)
-			return hc.Status.Ready && cond != nil && cond.Status == corev1.ConditionTrue
+			return hc.Status.Ready && cond != nil && cond.Status == metav1.ConditionTrue
 		})
 
 		reqs := s.k8netdSrv.Requests()
@@ -618,7 +626,7 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 			}
 			cond := findMachineCondition(hm, vmProvisionedCondition)
 			return ip == testPoolStart && hm.Status.ProviderID != nil &&
-				hm.Status.Ready && cond != nil && cond.Status == corev1.ConditionTrue
+				hm.Status.Ready && cond != nil && cond.Status == metav1.ConditionTrue
 		})
 
 		// Cross-seam order: CreatePort -> AttachPort -> AllocateIP -> VM start.
@@ -640,18 +648,21 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 				cp, ap, ai, vr)
 		}
 
-		// AttachPort params: port == machine name, network == cluster name.
+		// AttachPort params: port == machine name, network == cluster name,
+		// mac == derived MAC.
 		type attachParams struct {
 			Port    string `json:"port"`
 			Network string `json:"network"`
+			MAC     string `json:"mac"`
 		}
 		var attach attachParams
 		attachReq := firstRequestOf(t, s.k8netdSrv, "AttachPort")
 		if err := json.Unmarshal(attachReq.Params, &attach); err != nil {
 			t.Fatalf("unmarshal AttachPort params: %v", err)
 		}
-		if attach.Port != lm.name || attach.Network != lc.name {
-			t.Errorf("AttachPort = (%q, %q), want (%q, %q)", attach.Port, attach.Network, lm.name, lc.name)
+		wantAttachMAC := mac.Derive(lc.name, lm.name)
+		if attach.Port != lm.name || attach.Network != lc.name || attach.MAC != wantAttachMAC {
+			t.Errorf("AttachPort = (%q, %q, %q), want (%q, %q, %q)", attach.Port, attach.Network, attach.MAC, lm.name, lc.name, wantAttachMAC)
 		}
 
 		// AllocateIP params: network == cluster name, mac == derived MAC.
@@ -731,7 +742,7 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 
 // findMachineCondition returns the condition of the given type on the
 // machine status, or nil when absent.
-func findMachineCondition(hm *infrastructurev1alpha1.HypervisorMachine, t clusterv1.ConditionType) *clusterv1.Condition {
+func findMachineCondition(hm *infrastructurev1alpha1.HypervisorMachine, t string) *metav1.Condition {
 	for i := range hm.Status.Conditions {
 		if hm.Status.Conditions[i].Type == t {
 			return &hm.Status.Conditions[i]

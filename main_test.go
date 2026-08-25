@@ -61,7 +61,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -590,11 +590,10 @@ func newCAPIInfrastructureCluster(t *testing.T, c client.Client, namespace, name
 	cluster := &clusterv1.Cluster{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: clusterv1.ClusterSpec{
-			InfrastructureRef: &corev1.ObjectReference{
-				APIVersion: infrastructurev1alpha1.GroupVersion.String(),
-				Kind:       "HypervisorCluster",
-				Name:       name,
-				Namespace:  namespace,
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+				APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+				Kind:     "HypervisorCluster",
+				Name:     name,
 			},
 		},
 	}

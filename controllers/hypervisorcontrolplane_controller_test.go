@@ -52,17 +52,19 @@ limitations under the License.
 //     Cluster's name) and the control-plane role label with its conventional
 //     empty value, plus every label from spec.machineTemplate.metadata; its
 //     spec.clusterName is the linked Cluster's name; its
-//     spec.infrastructureRef is exactly the
-//     spec.machineTemplate.infrastructureRef from the control plane; and it
-//     carries a controller owner reference to the HypervisorControlPlane so
-//     the control plane owns its Machines.
+//     spec.infrastructureRef names the concrete HypervisorMachine the
+//     controller instantiates from the spec.machineTemplate.infrastructureRef
+//     template (get-or-create named after the Machine, template
+//     spec.template.spec copied, cluster-name label set, controller owner
+//     reference to the Machine); and it carries a controller owner reference
+//     to the HypervisorControlPlane so the control plane owns its Machines.
 //   - Bootstrap wiring: for every Machine the controller invokes NewConfig
 //     with the control plane and the Machine name, fills the returned
-//     HypervisorConfig's spec.clusterName from the linked Cluster, persists
-//     the config in the control plane's namespace under the conventional name
-//     <machine-name>-config, and points the Machine's
-//     spec.bootstrap.configRef at it (bootstrap group, Kind
-//     HypervisorConfig, same name and namespace).
+//     HypervisorConfig's spec.clusterName from the linked Cluster and its
+//     spec.nodeName with the Machine name, persists the config in the control
+//     plane's namespace under the conventional name <machine-name>-config,
+//     and points the Machine's spec.bootstrap.configRef at it (bootstrap
+//     group, Kind HypervisorConfig, same name and namespace).
 //   - Cluster PKI: the controller invokes GeneratePKI once on the first
 //     replica and stores the material in the conventional <cluster>-pki
 //     Secret in the control plane's namespace, whose data keys are exactly
@@ -93,7 +95,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -123,7 +125,8 @@ type newConfigCall struct {
 // recordingNewConfig records every invocation and returns a config named
 // <machine-name>-config in the control plane's namespace with the
 // control-plane role pinned. The controller is responsible for filling the
-// spec.clusterName from the linked Cluster before persisting.
+// spec.clusterName from the linked Cluster and the spec.nodeName with the
+// Machine name before persisting.
 type recordingNewConfig struct {
 	calls []newConfigCall
 }
@@ -311,11 +314,10 @@ func newLinkedControlPlane(
 		t.Fatalf("create HypervisorControlPlane: %v", err)
 	}
 
-	lc.cluster.Spec.ControlPlaneRef = &corev1.ObjectReference{
-		APIVersion: controlplanev1alpha1.GroupVersion.String(),
-		Kind:       "HypervisorControlPlane",
-		Name:       cp.Name,
-		Namespace:  lc.namespace,
+	lc.cluster.Spec.ControlPlaneRef = clusterv1.ContractVersionedObjectReference{
+		APIGroup: controlplanev1alpha1.GroupVersion.Group,
+		Kind:     "HypervisorControlPlane",
+		Name:     cp.Name,
 	}
 	if err := c.Update(ctx, lc.cluster); err != nil {
 		t.Fatalf("link control plane ref on Cluster: %v", err)
@@ -415,6 +417,19 @@ func wantControlPlaneOwner(t *testing.T, machine *clusterv1.Machine, cp *control
 		machine.Name, cp.Name, machine.OwnerReferences)
 }
 
+// wantMachineOwner fails the test unless the object carries a controller
+// owner reference to the given Machine.
+func wantMachineOwner(t *testing.T, obj client.Object, machine *clusterv1.Machine) {
+	t.Helper()
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.Kind == "Machine" && ref.Name == machine.Name && ref.Controller != nil && *ref.Controller {
+			return
+		}
+	}
+	t.Errorf("%s %s has no controller owner reference to Machine %s (owner references %+v)",
+		obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName(), machine.Name, obj.GetOwnerReferences())
+}
+
 // TestControlPlaneMachineCreatedPerReplica pins the replica contract: one
 // Machine is created per replica, each carrying the control-plane role label
 // and the cluster linkage, and an unset replicas field behaves as one. A
@@ -442,13 +457,30 @@ func TestControlPlaneMachineCreatedPerReplica(t *testing.T) {
 		if m.Spec.ClusterName != lc.name {
 			t.Errorf("spec.clusterName = %q, want %q", m.Spec.ClusterName, lc.name)
 		}
-		if !reflect.DeepEqual(m.Spec.InfrastructureRef, lcp.cp.Spec.MachineTemplate.InfrastructureRef) {
-			t.Errorf("spec.infrastructureRef = %+v, want the machineTemplate infrastructureRef %+v",
-				m.Spec.InfrastructureRef, lcp.cp.Spec.MachineTemplate.InfrastructureRef)
+		wantRef := clusterv1.ContractVersionedObjectReference{
+			APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+			Kind:     "HypervisorMachine",
+			Name:     m.Name,
 		}
+		if !reflect.DeepEqual(m.Spec.InfrastructureRef, wantRef) {
+			t.Errorf("spec.infrastructureRef = %+v, want the concrete HypervisorMachine reference %+v",
+				m.Spec.InfrastructureRef, wantRef)
+		}
+		hm := &infrastructurev1alpha1.HypervisorMachine{}
+		if err := c.Get(t.Context(), client.ObjectKey{Namespace: lc.namespace, Name: m.Name}, hm); err != nil {
+			t.Fatalf("Get HypervisorMachine %q: %v", m.Name, err)
+		}
+		wantSpec := lcp.template.Spec.Template.Spec
+		if hm.Spec != wantSpec {
+			t.Errorf("HypervisorMachine spec = %+v, want the template spec.template.spec %+v", hm.Spec, wantSpec)
+		}
+		if got := hm.Labels[clusterv1.ClusterNameLabel]; got != lc.name {
+			t.Errorf("HypervisorMachine %s cluster-name label = %q, want %q", hm.Name, got, lc.name)
+		}
+		wantMachineOwner(t, hm, &m)
 		wantControlPlaneOwner(t, &m, lcp.cp)
-		if m.Spec.Bootstrap.ConfigRef == nil {
-			t.Fatal("spec.bootstrap.configRef is nil after reconcile")
+		if !m.Spec.Bootstrap.ConfigRef.IsDefined() {
+			t.Fatal("spec.bootstrap.configRef is unset after reconcile")
 		}
 
 		if len(fx.createMachine.calls) != 1 {
@@ -502,8 +534,9 @@ func TestControlPlaneMachineCreatedPerReplica(t *testing.T) {
 // every Machine's spec.bootstrap.configRef names the generated
 // HypervisorConfig — bootstrap group, Kind HypervisorConfig, the conventional
 // <machine-name>-config name in the control plane's namespace — and the
-// referenced config exists in the API store, wired to the linked Cluster and
-// pinned to the control-plane role.
+// referenced config exists in the API store, wired to the linked Cluster,
+// pinned to the control-plane role, and carries spec.nodeName equal to the
+// Machine name.
 func TestControlPlaneMachineBootstrapRef(t *testing.T) {
 	c := mustReconcileClient(t)
 	fx := newControlPlaneFixture(t, c)
@@ -519,11 +552,11 @@ func TestControlPlaneMachineBootstrapRef(t *testing.T) {
 	m := machines[0]
 
 	ref := m.Spec.Bootstrap.ConfigRef
-	if ref == nil {
-		t.Fatal("spec.bootstrap.configRef is nil after reconcile")
+	if !ref.IsDefined() {
+		t.Fatal("spec.bootstrap.configRef is unset after reconcile")
 	}
-	if ref.APIVersion != bootstrapv1alpha1.GroupVersion.String() {
-		t.Errorf("configRef apiVersion = %q, want %q", ref.APIVersion, bootstrapv1alpha1.GroupVersion.String())
+	if ref.APIGroup != bootstrapv1alpha1.GroupVersion.Group {
+		t.Errorf("configRef apiGroup = %q, want %q", ref.APIGroup, bootstrapv1alpha1.GroupVersion.Group)
 	}
 	if ref.Kind != "HypervisorConfig" {
 		t.Errorf("configRef kind = %q, want HypervisorConfig", ref.Kind)
@@ -531,9 +564,6 @@ func TestControlPlaneMachineBootstrapRef(t *testing.T) {
 	wantConfigName := machineConfigName(m.Name)
 	if ref.Name != wantConfigName {
 		t.Errorf("configRef name = %q, want %q", ref.Name, wantConfigName)
-	}
-	if ref.Namespace != lc.namespace {
-		t.Errorf("configRef namespace = %q, want %q", ref.Namespace, lc.namespace)
 	}
 
 	cfg := &bootstrapv1alpha1.HypervisorConfig{}
@@ -545,6 +575,9 @@ func TestControlPlaneMachineBootstrapRef(t *testing.T) {
 	}
 	if cfg.Spec.Role != testConfigRoleControlPlane {
 		t.Errorf("generated config spec.role = %q, want %q", cfg.Spec.Role, testConfigRoleControlPlane)
+	}
+	if cfg.Spec.NodeName != m.Name {
+		t.Errorf("generated config spec.nodeName = %q, want %q", cfg.Spec.NodeName, m.Name)
 	}
 
 	if len(fx.newConfig.calls) != 1 {
@@ -869,15 +902,18 @@ func TestControlPlaneMachineCreationFailure(t *testing.T) {
 //
 //   - HypervisorControlPlaneReconciler gains one readiness seam,
 //     CheckAPIServerHealth, called as
-//     CheckAPIServerHealth(ctx, cpIP, clientCert, clientKey, caCert) and
+//     CheckAPIServerHealth(ctx, host, port, clientCert, clientKey, caCert) and
 //     returning nil exactly when the workload apiserver is healthy. The tests
 //     inject a recording fake whose result (healthy, not ready, failing) is
 //     chosen per test.
 //   - The reconciler resolves the first control-plane Machine (the one with
 //     the control-plane role label) and its linked HypervisorMachine (the
 //     conventional same-name infrastructure object), reads the InternalIP
-//     address, and polls the apiserver at https://<ip>:6443 through the seam
-//     with the cluster PKI material as the client certificate and CA.
+//     address and the recorded 6443 allocation from status.publishedPorts,
+//     and polls the apiserver at https://127.0.0.1:<hostPort> through the
+//     seam with the cluster PKI material as the client certificate and CA.
+//     A machine without a recorded allocation requeues without polling —
+//     there is no fallback to the VM IP, which has no host route.
 //   - Before the VM reports an address the reconciler must not poll, must not
 //     write anything, and must requeue: nothing in the committed watch set
 //     (control plane, Machines, Clusters) fires on a HypervisorMachine status
@@ -899,7 +935,7 @@ func TestControlPlaneMachineCreationFailure(t *testing.T) {
 const (
 	// controlPlaneReadyCondition is the condition type the readiness contract
 	// requires once the workload apiserver is healthy.
-	controlPlaneReadyCondition = clusterv1.ConditionType("ControlPlaneReady")
+	controlPlaneReadyCondition = "ControlPlaneReady"
 
 	// kubeconfigSecretDataKey is the data key the conventional
 	// <cluster>-kubeconfig Secret carries the rendered document under.
@@ -912,10 +948,11 @@ const (
 var errAPIServerNotReady = errors.New("apiserver not ready yet")
 
 // healthCheckCall captures one invocation of the apiserver healthz seam: the
-// poll target IP and the cluster PKI material passed as client credentials
-// and CA.
+// poll target endpoint and the cluster PKI material passed as client
+// credentials and CA.
 type healthCheckCall struct {
-	cpIP       string
+	host       string
+	port       int32
 	clientCert []byte
 	clientKey  []byte
 	caCert     []byte
@@ -930,8 +967,8 @@ type recordingHealthCheck struct {
 }
 
 // check implements the CheckAPIServerHealth seam.
-func (s *recordingHealthCheck) check(_ context.Context, cpIP string, clientCert, clientKey, caCert []byte) error {
-	s.calls = append(s.calls, healthCheckCall{cpIP: cpIP, clientCert: clientCert, clientKey: clientKey, caCert: caCert})
+func (s *recordingHealthCheck) check(_ context.Context, host string, port int32, clientCert, clientKey, caCert []byte) error {
+	s.calls = append(s.calls, healthCheckCall{host: host, port: port, clientCert: clientCert, clientKey: clientKey, caCert: caCert})
 	return s.result
 }
 
@@ -980,7 +1017,7 @@ func wantCPStatus(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane,
 func wantControlPlaneReadyCondition(
 	t *testing.T,
 	cp *controlplanev1alpha1.HypervisorControlPlane,
-	status corev1.ConditionStatus,
+	status metav1.ConditionStatus,
 ) {
 	t.Helper()
 	for _, cond := range cp.Status.Conditions {
@@ -1000,7 +1037,7 @@ func wantControlPlaneReadyCondition(
 func wantControlPlaneReadyNotTrue(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane) {
 	t.Helper()
 	for _, cond := range cp.Status.Conditions {
-		if cond.Type == controlPlaneReadyCondition && cond.Status == corev1.ConditionTrue {
+		if cond.Type == controlPlaneReadyCondition && cond.Status == metav1.ConditionTrue {
 			t.Errorf(
 				"control plane reports %s=True (conditions %+v), want no ready condition",
 				controlPlaneReadyCondition,
@@ -1063,11 +1100,13 @@ func parseKubeconfig(t *testing.T, data []byte) kubeconfigYAML {
 	return doc
 }
 
-// newControlPlaneInfraMachine creates the linked HypervisorMachine for one
+// newControlPlaneInfraMachine returns the linked HypervisorMachine for one
 // control-plane Machine, the way the infra controller would after the VM
 // boots: the conventional same-name infrastructure object owned by the CAPI
 // Machine, reporting ip as its InternalIP when ip is non-empty (an empty ip
-// leaves the VM not yet up).
+// leaves the VM not yet up). The control-plane reconciler instantiates the
+// object itself since the template-cloning fix, so the helper adopts the
+// existing object when present instead of creating a duplicate.
 func newControlPlaneInfraMachine(
 	t *testing.T,
 	c client.Client,
@@ -1082,23 +1121,30 @@ func newControlPlaneInfraMachine(
 		t.Fatalf("Get Machine %q: %v", machineName, err)
 	}
 
-	hm := &infrastructurev1alpha1.HypervisorMachine{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      machineName,
-			Namespace: lcp.namespace,
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion: clusterv1.GroupVersion.String(),
-					Kind:       "Machine",
-					Name:       machine.Name,
-					UID:        machine.UID,
+	hm := &infrastructurev1alpha1.HypervisorMachine{}
+	err := c.Get(ctx, client.ObjectKey{Namespace: lcp.namespace, Name: machineName}, hm)
+	switch {
+	case apierrors.IsNotFound(err):
+		hm = &infrastructurev1alpha1.HypervisorMachine{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      machineName,
+				Namespace: lcp.namespace,
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: clusterv1.GroupVersion.String(),
+						Kind:       "Machine",
+						Name:       machine.Name,
+						UID:        machine.UID,
+					},
 				},
 			},
-		},
-		Spec: infrastructurev1alpha1.HypervisorMachineSpec{ClusterName: machine.Spec.ClusterName},
-	}
-	if err := c.Create(ctx, hm); err != nil {
-		t.Fatalf("create HypervisorMachine: %v", err)
+			Spec: infrastructurev1alpha1.HypervisorMachineSpec{ClusterName: machine.Spec.ClusterName},
+		}
+		if err := c.Create(ctx, hm); err != nil {
+			t.Fatalf("create HypervisorMachine: %v", err)
+		}
+	case err != nil:
+		t.Fatalf("get HypervisorMachine %q: %v", machineName, err)
 	}
 	if ip == "" {
 		return hm
@@ -1163,8 +1209,8 @@ func TestControlPlaneReadinessWritesKubeconfig(t *testing.T) {
 		t.Fatal("apiserver healthz seam never called")
 	}
 	call := fx.health.calls[0]
-	if call.cpIP != testCPIP {
-		t.Errorf("healthz polled IP %q, want %q", call.cpIP, testCPIP)
+	if call.host != "127.0.0.1" || call.port != 26443 {
+		t.Errorf("healthz polled endpoint %s:%d, want 127.0.0.1:26443 (the recorded allocation)", call.host, call.port)
 	}
 	if !bytes.Equal(call.caCert, pk.CA) {
 		t.Errorf("healthz CA does not match the cluster PKI CA")
@@ -1186,7 +1232,7 @@ func TestControlPlaneReadinessWritesKubeconfig(t *testing.T) {
 
 	got := getControlPlane(t, c, lcp.cp)
 	wantCPStatus(t, got, true, true)
-	wantControlPlaneReadyCondition(t, got, corev1.ConditionTrue)
+	wantControlPlaneReadyCondition(t, got, metav1.ConditionTrue)
 
 	// A second reconcile converges: the Secret is not duplicated and the
 	// status stays ready.
@@ -1206,7 +1252,10 @@ func TestControlPlaneReadinessRespectsTimeout(t *testing.T) {
 	c := mustReconcileClient(t)
 	fx, lc, lcp, _ := newReadinessControlPlane(t, c, "cp-readiness-timeout", errAPIServerNotReady)
 
-	newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+	hm := newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+	// The probe targets the recorded published endpoint, so the fixture
+	// records the 6443 allocation.
+	setHMPublishedPorts(t, c, hm, infrastructurev1alpha1.MachinePublishedPort{VMPort: 6443, HostPort: 26443})
 
 	res, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lcp.cp)})
 	if err != nil {
@@ -1216,8 +1265,8 @@ func TestControlPlaneReadinessRespectsTimeout(t *testing.T) {
 
 	if len(fx.health.calls) == 0 {
 		t.Error("apiserver healthz seam never called")
-	} else if call := fx.health.calls[0]; call.cpIP != testCPIP {
-		t.Errorf("healthz polled IP %q, want %q", call.cpIP, testCPIP)
+	} else if call := fx.health.calls[0]; call.host != "127.0.0.1" || call.port != 26443 {
+		t.Errorf("healthz polled endpoint %s:%d, want 127.0.0.1:26443 (the recorded allocation)", call.host, call.port)
 	}
 
 	wantNoKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
@@ -1235,7 +1284,10 @@ func TestControlPlaneReadinessFailureLeavesKubeconfigAbsent(t *testing.T) {
 	healthErr := errors.New("fake: apiserver healthz check failed")
 	fx, lc, lcp, _ := newReadinessControlPlane(t, c, "cp-readiness-failure", healthErr)
 
-	newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+	hm := newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
+	// The probe targets the recorded published endpoint, so the fixture
+	// records the 6443 allocation.
+	setHMPublishedPorts(t, c, hm, infrastructurev1alpha1.MachinePublishedPort{VMPort: 6443, HostPort: 26443})
 
 	res, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lcp.cp)})
 	if err != nil {
@@ -1464,13 +1516,13 @@ func TestControlPlaneScaleUp(t *testing.T) {
 	if second == nil {
 		t.Fatal("scale-up did not create Machine " + lcp.name + "-1")
 	}
-	if second.Spec.Bootstrap.ConfigRef == nil {
-		t.Fatal("scale-up Machine spec.bootstrap.configRef is nil")
+	if second.Spec.Bootstrap.ConfigRef == (clusterv1.ContractVersionedObjectReference{}) {
+		t.Fatal("scale-up Machine spec.bootstrap.configRef is unset")
 	}
 	ref := second.Spec.Bootstrap.ConfigRef
 	wantConfigName := machineConfigName(second.Name)
-	if ref.Name != wantConfigName || ref.Kind != "HypervisorConfig" || ref.Namespace != lc.namespace {
-		t.Errorf("scale-up Machine configRef = %+v, want HypervisorConfig %q in %q", ref, wantConfigName, lc.namespace)
+	if ref.Name != wantConfigName || ref.Kind != "HypervisorConfig" {
+		t.Errorf("scale-up Machine configRef = %+v, want HypervisorConfig %q", ref, wantConfigName)
 	}
 	wantBootstrapConfigExists(t, c, lc.namespace, wantConfigName)
 
@@ -1520,16 +1572,15 @@ func TestControlPlaneScaleDown(t *testing.T) {
 	if retained.Name != lcp.name+"-0" {
 		t.Errorf("retained Machine = %q, want %q", retained.Name, lcp.name+"-0")
 	}
-	if retained.Spec.Bootstrap.ConfigRef == nil {
-		t.Fatal("retained Machine spec.bootstrap.configRef is nil after scale-down")
+	if retained.Spec.Bootstrap.ConfigRef == (clusterv1.ContractVersionedObjectReference{}) {
+		t.Fatal("retained Machine spec.bootstrap.configRef is unset after scale-down")
 	}
 	ref := retained.Spec.Bootstrap.ConfigRef
-	if ref.Name != machineConfigName(retained.Name) || ref.Kind != "HypervisorConfig" || ref.Namespace != lc.namespace {
+	if ref.Name != machineConfigName(retained.Name) || ref.Kind != "HypervisorConfig" {
 		t.Errorf(
-			"retained Machine configRef = %+v, want HypervisorConfig %q in %q",
+			"retained Machine configRef = %+v, want HypervisorConfig %q",
 			ref,
 			machineConfigName(retained.Name),
-			lc.namespace,
 		)
 	}
 	wantBootstrapConfigExists(t, c, lc.namespace, machineConfigName(retained.Name))
@@ -1605,9 +1656,9 @@ func TestControlPlaneScaleVersion(t *testing.T) {
 //
 // Grill-me: reserved IP is dynamic (not hardcoded .20); rendered kubeconfig must
 // be loopback at the recorded 6443 allocation (REQ-009) even when the VM's
-// InternalIP differs; healthz seam still polls the internal IP while the
-// kubeconfig uses loopback; second reconcile converges without duplicating the
-// Secret.
+// InternalIP differs; the healthz seam polls the same published loopback
+// endpoint (TASK-021 P3: the VM IP has no host route); second reconcile
+// converges without duplicating the Secret.
 // RED: current impl renders https://<internal-IP>:6443, so the server assertion fails.
 func TestControlPlaneKubeconfigServerIsLoopback(t *testing.T) {
 	c := mustReconcileClient(t)
@@ -1630,9 +1681,10 @@ func TestControlPlaneKubeconfigServerIsLoopback(t *testing.T) {
 	if len(fx.health.calls) == 0 {
 		t.Fatal("healthz seam never called")
 	}
-	// Health check must still be polled at the internal IP (VM address), not loopback.
-	if call := fx.health.calls[0]; call.cpIP != reservedIP {
-		t.Errorf("healthz polled IP %q, want reserved internal IP %q (must not be loopback)", call.cpIP, reservedIP)
+	// Health check must be polled through the published loopback endpoint,
+	// never the VM internal IP (no host route into the k8netd L2 segment).
+	if call := fx.health.calls[0]; call.host != "127.0.0.1" || call.port != 26443 {
+		t.Errorf("healthz polled endpoint %s:%d, want 127.0.0.1:26443 (published allocation, not the VM IP)", call.host, call.port)
 	}
 
 	secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))

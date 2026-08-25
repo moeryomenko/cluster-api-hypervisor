@@ -32,7 +32,7 @@ limitations under the License.
 //	func (c *Client) CreatePort(ctx context.Context, name string) error
 //	func (c *Client) DeletePort(ctx context.Context, name string) error
 //	func (c *Client) GetPort(ctx context.Context, name string) (*Port, error)
-//	func (c *Client) AttachPort(ctx context.Context, port, network string) error
+//	func (c *Client) AttachPort(ctx context.Context, port, network, mac string) error
 //	func (c *Client) DetachPort(ctx context.Context, port string) error
 //	func (c *Client) AllocateIP(ctx context.Context, network, mac string) (string, error)
 //	func (c *Client) ReleaseIP(ctx context.Context, network, mac string) error
@@ -370,13 +370,14 @@ func TestAllTenMethods_ProvesMethodNameAndDecode(t *testing.T) {
 			name:   "AttachPort",
 			method: "AttachPort",
 			call: func(ctx context.Context, c *Client) error {
-				return c.AttachPort(ctx, "machine-0", "test-net")
+				return c.AttachPort(ctx, "machine-0", "test-net", "c6:e5:50:1c:ec:01")
 			},
 			captureOK: func(t *testing.T, req fake.CapturedRequest) {
 				var p map[string]string
 				_ = json.Unmarshal(req.Params, &p)
-				// Single canonical key per contract: "port" carries the port
-				// identity; the "name" alias must not reappear.
+				// The daemon's handler reads exactly these keys: "port"
+				// carries the port identity, "network" the L2 segment, and
+				// "mac" the address the IPAM reservation binds to.
 				if p["port"] != "machine-0" {
 					t.Errorf("AttachPort param port = %v, want canonical port=machine-0", p)
 				}
@@ -386,6 +387,9 @@ func TestAllTenMethods_ProvesMethodNameAndDecode(t *testing.T) {
 				hasNet := p["network"] != "" || p["Network"] != "" || p["networkName"] != ""
 				if !hasNet {
 					t.Errorf("AttachPort params missing network field in %s", string(req.Params))
+				}
+				if p["mac"] == "" {
+					t.Errorf("AttachPort params missing mac field in %s", string(req.Params))
 				}
 			},
 			stubResult: nil,
@@ -399,11 +403,9 @@ func TestAllTenMethods_ProvesMethodNameAndDecode(t *testing.T) {
 			captureOK: func(t *testing.T, req fake.CapturedRequest) {
 				var p map[string]string
 				_ = json.Unmarshal(req.Params, &p)
-				if p["port"] != "machine-0" {
-					t.Errorf("DetachPort param port = %v, want canonical port=machine-0", p)
-				}
-				if _, alias := p["name"]; alias {
-					t.Errorf("DetachPort params carry the non-canonical %q alias: %s", "name", string(req.Params))
+				// The daemon's DetachPort handler reads the "name" key.
+				if p["name"] != "machine-0" {
+					t.Errorf("DetachPort param name = %v, want canonical name=machine-0", p)
 				}
 			},
 			stubResult: nil,

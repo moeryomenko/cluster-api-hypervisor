@@ -13,12 +13,11 @@ import (
 	"testing"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
 	"github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
 )
@@ -29,21 +28,19 @@ import (
 var fixedTransitionTime = time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
 
 // contractConditions returns the conditions carried by the populated fixture:
-// the standard InfrastructureReady condition plus a failing condition that
-// exercises the Severity field.
-func contractConditions() clusterv1.Conditions {
-	return clusterv1.Conditions{
+// the standard InfrastructureReady condition plus a failing condition.
+func contractConditions() []metav1.Condition {
+	return []metav1.Condition{
 		{
 			Type:               clusterv1.InfrastructureReadyCondition,
-			Status:             corev1.ConditionTrue,
+			Status:             metav1.ConditionTrue,
 			LastTransitionTime: metav1.Time{Time: fixedTransitionTime},
 			Reason:             "BridgeAndNATReady",
 			Message:            "bridge k8sbr0 and NAT table k8slab are ready",
 		},
 		{
-			Type:               clusterv1.ConditionType("DNSForwarderReady"),
-			Status:             corev1.ConditionFalse,
-			Severity:           clusterv1.ConditionSeverityWarning,
+			Type:               "DNSForwarderReady",
+			Status:             metav1.ConditionFalse,
 			LastTransitionTime: metav1.Time{Time: fixedTransitionTime},
 			Reason:             "DnsmasqNotRunning",
 			Message:            "dnsmasq failed to start",
@@ -178,9 +175,9 @@ func TestHypervisorClusterDeepCopyNonAliasing(t *testing.T) {
 		{
 			name: "status.conditions append",
 			mutate: func(c *v1alpha1.HypervisorCluster) {
-				c.Status.Conditions = append(c.Status.Conditions, clusterv1.Condition{
-					Type:               clusterv1.ConditionType("MachinePoolReady"),
-					Status:             corev1.ConditionUnknown,
+				c.Status.Conditions = append(c.Status.Conditions, metav1.Condition{
+					Type:               "MachinePoolReady",
+					Status:             metav1.ConditionUnknown,
 					LastTransitionTime: metav1.Time{Time: fixedTransitionTime},
 					Reason:             "Unknown",
 					Message:            "appended condition",
@@ -230,7 +227,7 @@ func TestHypervisorClusterDeepCopyNonAliasing(t *testing.T) {
 }
 
 // TestHypervisorClusterConditionsContract verifies the GetConditions and
-// SetConditions methods round-trip a clusterv1.Conditions list, satisfying
+// SetConditions methods round-trip a []metav1.Condition list, satisfying
 // the conditions accessor contract used by the CAPI conditions package.
 func TestHypervisorClusterConditionsContract(t *testing.T) {
 	t.Run("unset conditions return nil", func(t *testing.T) {
@@ -243,9 +240,9 @@ func TestHypervisorClusterConditionsContract(t *testing.T) {
 	conditions := contractConditions()
 	tests := []struct {
 		name string
-		give clusterv1.Conditions
+		give []metav1.Condition
 	}{
-		{name: "single condition", give: clusterv1.Conditions{conditions[0]}},
+		{name: "single condition", give: conditions[:1]},
 		{name: "multiple conditions preserve order", give: conditions},
 		{name: "nil conditions", give: nil},
 	}

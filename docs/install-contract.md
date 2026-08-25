@@ -110,21 +110,24 @@ runbook).
 
 All host-specific paths and binaries are provider-level configuration passed
 as environment variables; there are no spec fields for them. Every variable is
-read in `Load` (`internal/config/config.go:98-120`); an unset or empty value
-falls back to the default (`internal/config/config.go:66-74`,
-`internal/config/config.go:81-89`).
+read in `Load` (`internal/config/config.go:108-131`); an unset or empty value
+falls back to the default (`internal/config/config.go:73-82`,
+`internal/config/config.go:84-97`). The single exception is
+`HYPERVISOR_SSH_PUBLIC_KEY_FILE`, which has no default and stays empty when
+unset.
 
 | Environment variable | Default | Source (default / read) |
 |---|---|---|
-| `HYPERVISOR_BASE_IMAGE` | `build/k8labs-base.qcow2` | `config.go:66` / `config.go:104` |
-| `HYPERVISOR_FIRMWARE` | `build/CLOUDHV.fd` | `config.go:67` / `config.go:105` |
-| `HYPERVISOR_VM_DISKS_DIR` | `build/vm-disks` | `config.go:68` / `config.go:106` |
-| `HYPERVISOR_SOCKET_DIR` | `/tmp/ch-capi` | `config.go:69` / `config.go:107` |
-| `HYPERVISOR_STATE_DIR` | `$HOME/.local/state/k8slab` | `config.go:81-89` / `config.go:108` |
-| `HYPERVISOR_CH_BINARY` | `cloud-hypervisor` | `config.go:70` / `config.go:109` |
-| `HYPERVISOR_QEMU_IMG` | `qemu-img` | `config.go:71` / `config.go:110` |
-| `HYPERVISOR_K8NETD_SOCKET` | `/run/user/1000/k8snet/control.sock` | `config.go:72` / `config.go:111` |
-| `HYPERVISOR_NETWORK_CIDR` | `192.168.124.0/24` | `config.go:73` / `config.go:112` |
+| `HYPERVISOR_BASE_IMAGE` | `build/k8labs-base.qcow2` | `config.go:74` / `config.go:114` |
+| `HYPERVISOR_FIRMWARE` | `build/CLOUDHV.fd` | `config.go:75` / `config.go:115` |
+| `HYPERVISOR_VM_DISKS_DIR` | `build/vm-disks` | `config.go:76` / `config.go:116` |
+| `HYPERVISOR_SOCKET_DIR` | `/tmp/ch-capi` | `config.go:77` / `config.go:117` |
+| `HYPERVISOR_STATE_DIR` | `$HOME/.local/state/k8slab` | `config.go:84-97` / `config.go:118` |
+| `HYPERVISOR_CH_BINARY` | `cloud-hypervisor` | `config.go:78` / `config.go:119` |
+| `HYPERVISOR_QEMU_IMG` | `qemu-img` | `config.go:79` / `config.go:120` |
+| `HYPERVISOR_K8NETD_SOCKET` | `/run/user/1000/k8snet/control.sock` | `config.go:80` / `config.go:121` |
+| `HYPERVISOR_NETWORK_CIDR` | `192.168.124.0/24` | `config.go:81` / `config.go:122` |
+| `HYPERVISOR_SSH_PUBLIC_KEY_FILE` | *(none — feature off when unset)* | `config.go:123` |
 
 Semantics:
 
@@ -137,7 +140,7 @@ Semantics:
 - `HYPERVISOR_STATE_DIR` resolves to a user-writable location by default:
   `$HOME/.local/state/k8slab` when `HOME` is set, `$XDG_STATE_HOME/k8slab`
   otherwise, falling back to `/tmp/k8slab-state` in minimal environments
-  (`config.go:81-89`). Every host path in this contract lives under the lab
+  (`config.go:84-97`). Every host path in this contract lives under the lab
   user's home or another user-writable location; nothing is written to
   system-owned directories.
 - `HYPERVISOR_CH_BINARY` and `HYPERVISOR_QEMU_IMG` are resolved through `PATH`
@@ -148,10 +151,17 @@ Semantics:
   the default assumes the lab user's uid is 1000 (adjust the path when it is
   not). The directory holding it is mounted into the container (section 5.1).
 - `HYPERVISOR_NETWORK_CIDR` is the only validated variable: it must parse as an
-  IPv4 network or startup fails (`config.go:115-117`).
+  IPv4 network or startup fails (`config.go:126-128`).
 - No other path is validated at startup: paths are resolved lazily by the
   controllers, so a misconfigured mount surfaces as a reconcile failure, not a
-  startup error (`config.go:96-97`).
+  startup error (`config.go:105-107`).
+- `HYPERVISOR_SSH_PUBLIC_KEY_FILE` is optional and has no default: when set it
+  names a file inside the provider container (e.g. `/build/ssh-lab.pub` on the
+  mounted build directory) whose trimmed content is the SSH public key
+  injected into machines whose HypervisorConfig leaves `spec.sshPublicKey`
+  empty. A non-empty spec key always wins. When the variable is unset, or the
+  named file is missing or empty, machine provisioning fails with an error
+  naming the variable.
 
 ---
 

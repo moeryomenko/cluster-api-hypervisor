@@ -34,11 +34,11 @@ limitations under the License.
 //
 //   - HypervisorMachineReconciler carries the controller-runtime wiring
 //     (embedded client.Client, Scheme, Recorder) plus the injectable
-//     dependencies: Config (the provider paths), VM (the cloud-hypervisor
-//     client), QemuImg (the qemu-img exec func), Confext (the confext
-//     packager), RenderCloudInit (the CIDATA renderer), K8Netd (the k8netd
-//     JSON-RPC client allocating the machine identity), and DeriveMAC (the
-//     MAC derivation func). The tests build every dependency over a
+//     dependencies: Config (the provider paths), NewVMClient (the per-machine
+//     VM client factory), QemuImg (the qemu-img exec func), Confext (the
+//     confext packager), RenderCloudInit (the CIDATA renderer), K8Netd (the
+//     k8netd JSON-RPC client allocating the machine identity), and DeriveMAC
+//     (the MAC derivation func). The tests build every dependency over a
 //     recording seam and hand the fully constructed reconciler to the
 //     controller.
 //   - Reconcile resolves the object, then the owning CAPI Machine (owner
@@ -88,7 +88,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -340,8 +340,11 @@ type linkedMachine struct {
 // (whose bootstrap config ref points at the bootstrap config and whose
 // infrastructure ref points at the HypervisorMachine), and the
 // HypervisorMachine carrying the owner reference to the Machine. When
-// withBootstrap is false the Machine is left without a bootstrap config ref,
-// so the controller's confext step has no Secret to read.
+// withBootstrap is false the Machine's bootstrap configRef names a
+// HypervisorConfig that is never created — spec.bootstrap is required by the
+// v1beta2 Machine API, so the dangling reference stands in for "no bootstrap
+// data": the controller resolves it to NotFound and skips every bootstrap
+// step.
 func newLinkedMachine(
 	t *testing.T,
 	c client.Client,
@@ -386,20 +389,27 @@ func newLinkedMachine(
 		Spec: clusterv1.MachineSpec{
 			ClusterName: lc.name,
 			Bootstrap:   clusterv1.Bootstrap{},
-			InfrastructureRef: corev1.ObjectReference{
-				APIVersion: infrastructurev1alpha1.GroupVersion.String(),
-				Kind:       "HypervisorMachine",
-				Name:       name,
-				Namespace:  lc.namespace,
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+				APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+				Kind:     "HypervisorMachine",
+				Name:     name,
 			},
 		},
 	}
 	if withBootstrap {
-		lm.machine.Spec.Bootstrap.ConfigRef = &corev1.ObjectReference{
-			APIVersion: bootstrapv1alpha1.GroupVersion.String(),
-			Kind:       "HypervisorConfig",
-			Name:       lm.config.Name,
-			Namespace:  lc.namespace,
+		lm.machine.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{
+			APIGroup: bootstrapv1alpha1.GroupVersion.Group,
+			Kind:     "HypervisorConfig",
+			Name:     lm.config.Name,
+		}
+	} else {
+		// spec.bootstrap is required by the v1beta2 Machine API; the dangling
+		// reference keeps the Machine valid while resolving to no bootstrap
+		// data.
+		lm.machine.Spec.Bootstrap.ConfigRef = clusterv1.ContractVersionedObjectReference{
+			APIGroup: bootstrapv1alpha1.GroupVersion.Group,
+			Kind:     "HypervisorConfig",
+			Name:     name + "-config",
 		}
 	}
 	if err := c.Create(ctx, lm.machine); err != nil {
@@ -447,9 +457,13 @@ type machineFixture struct {
 // newMachineFixture builds the reconciler under test over the recording
 // seams. The composite literal pins the exact reconciler shape the
 // implementation must expose: the controller-runtime wiring plus the
-// injectable Config, VM, K8Netd, QemuImg, Confext, RenderCloudInit, and
-// DeriveMAC dependencies. The k8netd dependency is wired to a fake server
-// so identity provisioning proceeds without a real daemon.
+// injectable Config, NewVMClient, K8Netd, QemuImg, Confext, RenderCloudInit,
+// and DeriveMAC dependencies. The NewVMClient factory routes every per-machine
+// construction to one shared fake, so the VM assertions below observe every
+// call regardless of which machine triggered it; the socket-tree tests in
+// hypervisormachine_socket_test.go pin the per-machine directories. The
+// k8netd dependency is wired to a fake server so identity provisioning
+// proceeds without a real daemon.
 func newMachineFixture(t *testing.T, c client.Client) *machineFixture {
 	t.Helper()
 
@@ -479,10 +493,11 @@ func newMachineFixture(t *testing.T, c client.Client) *machineFixture {
 		Recorder: record.NewFakeRecorder(16),
 		Config: config.Config{
 			BaseImage: testBaseImage,
+			Firmware:  testFirmware,
 			VMDiskDir: t.TempDir(),
 			SocketDir: testSocketDir,
 		},
-		VM:              vm,
+		NewVMClient:     func(string, string) chclient.Client { return vm },
 		K8Netd:          k8Client,
 		QemuImg:         qemu.Run,
 		Confext:         confext.NewPackager(confext.WithRunner(pack)),
@@ -588,11 +603,17 @@ func TestMachineIdentityOwnerResolution(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "clusterless", Namespace: lc.namespace},
 			Spec: clusterv1.MachineSpec{
 				ClusterName: "no-such-cluster",
-				InfrastructureRef: corev1.ObjectReference{
-					APIVersion: infrastructurev1alpha1.GroupVersion.String(),
-					Kind:       "HypervisorMachine",
-					Name:       "clusterless",
-					Namespace:  lc.namespace,
+				Bootstrap: clusterv1.Bootstrap{
+					ConfigRef: clusterv1.ContractVersionedObjectReference{
+						APIGroup: bootstrapv1alpha1.GroupVersion.Group,
+						Kind:     "HypervisorConfig",
+						Name:     "clusterless-config",
+					},
+				},
+				InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+					APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+					Kind:     "HypervisorMachine",
+					Name:     "clusterless",
 				},
 			},
 		}
@@ -943,16 +964,18 @@ func TestMachineCIDATARenderedWithAllocatedIP(t *testing.T) {
 // This section pins the contract the machine controller's lifecycle steps
 // implement over the same envtest harness and recording fakes:
 //
-//   - Step 6 boots the VM through the injected chclient.Client: the fake's
-//     call log records one EnsureRunning call followed by an Info state
-//     check. The per-machine socket directory derives from the config's
-//     socket root as <SocketDir>/<cluster>/<machine>; the fixture pins the
-//     documented default socket root /tmp/ch-capi. The socket path itself is
-//     not observable through the fake's call log because the client seam
-//     exposes no path, so this section pins the root the implementation
-//     derives the per-machine directory from. The client's EnsureRunning is
-//     idempotent by contract (a no-op when the VM is already running), so
-//     the controller has no reason to pre-check the state.
+//   - Step 6 boots the VM through the machine's own chclient.Client, built
+//     through the NewVMClient factory seam with the machine's socket
+//     directory <SocketDir>/<machine>; the fixture pins the documented
+//     default socket root /tmp/ch-capi. The fake's call log records one
+//     EnsureRunning call followed by an Info state check. The socket path
+//     itself is not observable through the fake's call log because the
+//     client seam exposes no path, so this section pins the root the
+//     implementation derives the per-machine directory from; the dedicated
+//     socket-tree tests capture the constructed directories. The client's
+//     EnsureRunning is idempotent by contract (a no-op when the VM is
+//     already running), so the controller has no reason to pre-check the
+//     state.
 //   - Step 7 reports readiness: status.ready is true exactly when Info
 //     reports the VM running, and stays false when the VM is in a
 //     non-running state or the state query fails; both leave the reconcile
@@ -963,12 +986,16 @@ func TestMachineCIDATARenderedWithAllocatedIP(t *testing.T) {
 const (
 	// testSocketDir is the provider's socket root the fixture config pins;
 	// the VM lifecycle step derives the per-machine socket directory
-	// <SocketDir>/<cluster>/<machine> from it.
+	// <SocketDir>/<machine> from it.
 	testSocketDir = "/tmp/ch-capi"
+
+	// testFirmware is the firmware image path the fixture config pins; the
+	// VM lifecycle step hands it to the VM client for the vm.create push.
+	testFirmware = "/build/CLOUDHV.fd"
 
 	// machineVMProvisionedCondition is the condition type the VM lifecycle
 	// step reports once the cloud-hypervisor VM is provisioned.
-	machineVMProvisionedCondition = clusterv1.ConditionType("VMProvisioned")
+	machineVMProvisionedCondition = "VMProvisioned"
 )
 
 // reconcileMachine runs one reconcile of the machine and fails the test on
@@ -996,7 +1023,7 @@ func getMachine(
 }
 
 // machineCondition returns the status condition with the given type, or nil.
-func machineCondition(hm *infrastructurev1alpha1.HypervisorMachine, t clusterv1.ConditionType) *clusterv1.Condition {
+func machineCondition(hm *infrastructurev1alpha1.HypervisorMachine, t string) *metav1.Condition {
 	for i := range hm.Status.Conditions {
 		if hm.Status.Conditions[i].Type == t {
 			return &hm.Status.Conditions[i]
@@ -1007,10 +1034,10 @@ func machineCondition(hm *infrastructurev1alpha1.HypervisorMachine, t clusterv1.
 }
 
 // TestMachineVMBootedViaClient pins the boot step contract: the controller
-// drives the injected chclient.Client with a single EnsureRunning call
-// followed by an Info state check, and the fixture config pins the socket
-// root the per-machine socket directory /tmp/ch-capi/<cluster>/<machine>
-// derives from.
+// drives the machine's own chclient.Client — built through the NewVMClient
+// factory seam — with a single EnsureRunning call followed by an Info state
+// check, and the fixture config pins the socket root the per-machine socket
+// directory /tmp/ch-capi/<machine> derives from.
 func TestMachineVMBootedViaClient(t *testing.T) {
 	c := mustReconcileClient(t)
 	fx := newMachineFixture(t, c)
@@ -1025,9 +1052,10 @@ func TestMachineVMBootedViaClient(t *testing.T) {
 		t.Errorf("VM client calls = %v, want %v", fx.vm.Calls, wantCalls)
 	}
 
-	// The per-machine socket directory is <SocketDir>/<cluster>/<machine>;
-	// the fake client seam exposes no path, so the fixture pins the socket
-	// root the implementation derives it from.
+	// The per-machine socket directory is <SocketDir>/<machine>; the fake
+	// client seam exposes no path, so the fixture pins the socket root the
+	// implementation derives it from. The dedicated socket-tree tests
+	// capture the constructed directories.
 	if got := fx.r.Config.SocketDir; got != testSocketDir {
 		t.Errorf("Config.SocketDir = %q, want %q", got, testSocketDir)
 	}
@@ -1061,6 +1089,53 @@ func TestMachineVMBootsWithVhostUserNetConfig(t *testing.T) {
 	// The config was set before the boot call.
 	if !reflect.DeepEqual(fx.vm.Calls, []string{"EnsureRunning", "Info"}) {
 		t.Errorf("VM client calls = %v, want [EnsureRunning Info] after SetNetConfig", fx.vm.Calls)
+	}
+}
+
+// TestMachineVMHandsFirmwareAndDisksToClient pins the boot-medium wiring:
+// before the VM boots, the controller hands the VM client the firmware image
+// from the provider config and the machine's disk images — the root qcow2
+// first, then every packaged confext raw in the machine's data directory,
+// sorted by file name. A machine with no confext data directory carries the
+// root disk alone.
+func TestMachineVMHandsFirmwareAndDisksToClient(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	lc := newLinkedCluster(t, c, "machine-vm-bootcfg", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+	// A packaged confext output directory with two raws; ReadDir sorts by
+	// file name, so the expected attachment order is a.raw then b.raw.
+	dataDir := filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("create confext data dir: %v", err)
+	}
+	for _, name := range []string{"b.raw", "a.raw", "ignored.txt"} {
+		if err := os.WriteFile(filepath.Join(dataDir, name), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write confext artifact %s: %v", name, err)
+		}
+	}
+
+	fx.vm.State = ch.VMState("Running")
+	fx.reconcileMachine(t, lm.hm)
+
+	if got := len(fx.vm.Firmwares); got != 1 {
+		t.Fatalf("SetFirmware called %d times, want 1 (recorded %v)", got, fx.vm.Firmwares)
+	}
+	if fx.vm.Firmwares[0] != testFirmware {
+		t.Errorf("firmware = %q, want %q", fx.vm.Firmwares[0], testFirmware)
+	}
+
+	if got := len(fx.vm.DiskPathSets); got != 1 {
+		t.Fatalf("SetDiskPaths called %d times, want 1 (recorded %v)", got, fx.vm.DiskPathSets)
+	}
+	wantDisks := []string{
+		filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-root.qcow2"),
+		filepath.Join(dataDir, "a.raw"),
+		filepath.Join(dataDir, "b.raw"),
+	}
+	if !reflect.DeepEqual(fx.vm.DiskPathSets[0], wantDisks) {
+		t.Errorf("disk paths = %v, want %v", fx.vm.DiskPathSets[0], wantDisks)
 	}
 }
 
@@ -1109,8 +1184,8 @@ func TestMachineVMProvisionedCondition(t *testing.T) {
 	if cond == nil {
 		t.Fatalf("condition %q missing from status.conditions: %v", machineVMProvisionedCondition, hm.Status.Conditions)
 	}
-	if cond.Status != corev1.ConditionTrue {
-		t.Errorf("condition %q status = %q, want %q", machineVMProvisionedCondition, cond.Status, corev1.ConditionTrue)
+	if cond.Status != metav1.ConditionTrue {
+		t.Errorf("condition %q status = %q, want %q", machineVMProvisionedCondition, cond.Status, metav1.ConditionTrue)
 	}
 }
 

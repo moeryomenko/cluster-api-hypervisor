@@ -49,11 +49,10 @@ import (
 	"strings"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -234,7 +233,7 @@ func TestHypervisorClusterK8netd_ReconcileNormal_CreatesNetworkBeforeReady(t *te
 		t.Error("status.ready = false after successful CreateNetwork, want true")
 	}
 	cond := findCondition(hc, clusterv1.InfrastructureReadyCondition)
-	if cond == nil || cond.Status != corev1.ConditionTrue {
+	if cond == nil || cond.Status != metav1.ConditionTrue {
 		t.Errorf("InfrastructureReady condition = %v, want True after CreateNetwork", cond)
 	}
 	// Ensure no legacy host-stack was used via old fields — the fake k8netd is
@@ -531,7 +530,7 @@ func TestHypervisorClusterK8netd_ReconcileNormal_ErrorLeavesNotReady(t *testing.
 		t.Error("status.ready = true after CreateNetwork error, want false")
 	}
 	if cond := findCondition(hc, clusterv1.InfrastructureReadyCondition); cond != nil &&
-		cond.Status == corev1.ConditionTrue {
+		cond.Status == metav1.ConditionTrue {
 		t.Errorf("InfrastructureReady condition = True after CreateNetwork error, want not True")
 	}
 	// Finalizer should still be present? The provision reconcile adds finalizer

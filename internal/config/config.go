@@ -18,7 +18,9 @@ limitations under the License.
 // variables. The quadlet unit that launches the provider passes host-specific
 // paths and network settings as environment variables; this package turns
 // that environment into a single Config value, applying an exact default for
-// every variable that is unset or empty.
+// every variable that is unset or empty — except
+// HYPERVISOR_SSH_PUBLIC_KEY_FILE, which has no default and stays empty when
+// unset.
 package config
 
 import (
@@ -58,6 +60,12 @@ type Config struct {
 
 	// NetworkCIDR is the IPv4 network served on the lab bridge.
 	NetworkCIDR string
+
+	// SSHPublicKeyFile is the path inside the provider container holding the
+	// SSH public key for machines whose HypervisorConfig leaves
+	// spec.sshPublicKey empty. Unlike every other variable it has no default:
+	// unset means the file fallback is off.
+	SSHPublicKeyFile string
 }
 
 // Default values used when the corresponding HYPERVISOR_* environment
@@ -92,24 +100,27 @@ func defaultStateDir() string {
 // lookup. A nil env function behaves as if every variable were unset. The
 // lookup is called only with the exact HYPERVISOR_* variable names; an empty
 // result is treated the same as an unset variable and falls back to the
-// default. Load returns a non-nil error when HYPERVISOR_NETWORK_CIDR does not
-// parse as an IPv4 network. No other validation is performed: paths are not
-// required to exist and binaries are not required to be on the host PATH.
+// default. The single exception is HYPERVISOR_SSH_PUBLIC_KEY_FILE, which has
+// no default and stays empty when unset. Load returns a non-nil error when
+// HYPERVISOR_NETWORK_CIDR does not parse as an IPv4 network. No other
+// validation is performed: paths are not required to exist and binaries are
+// not required to be on the host PATH.
 func Load(env func(string) string) (Config, error) {
 	if env == nil {
 		env = func(string) string { return "" }
 	}
 
 	cfg := Config{
-		BaseImage:    valueOrDefault(env("HYPERVISOR_BASE_IMAGE"), defaultBaseImage),
-		Firmware:     valueOrDefault(env("HYPERVISOR_FIRMWARE"), defaultFirmware),
-		VMDiskDir:    valueOrDefault(env("HYPERVISOR_VM_DISKS_DIR"), defaultVMDiskDir),
-		SocketDir:    valueOrDefault(env("HYPERVISOR_SOCKET_DIR"), defaultSocketDir),
-		StateDir:     valueOrDefault(env("HYPERVISOR_STATE_DIR"), defaultStateDir()),
-		CHBinary:     valueOrDefault(env("HYPERVISOR_CH_BINARY"), defaultCHBinary),
-		QemuImg:      valueOrDefault(env("HYPERVISOR_QEMU_IMG"), defaultQemuImg),
-		K8NetdSocket: valueOrDefault(env("HYPERVISOR_K8NETD_SOCKET"), defaultK8NetdSocket),
-		NetworkCIDR:  valueOrDefault(env("HYPERVISOR_NETWORK_CIDR"), defaultNetworkCIDR),
+		BaseImage:        valueOrDefault(env("HYPERVISOR_BASE_IMAGE"), defaultBaseImage),
+		Firmware:         valueOrDefault(env("HYPERVISOR_FIRMWARE"), defaultFirmware),
+		VMDiskDir:        valueOrDefault(env("HYPERVISOR_VM_DISKS_DIR"), defaultVMDiskDir),
+		SocketDir:        valueOrDefault(env("HYPERVISOR_SOCKET_DIR"), defaultSocketDir),
+		StateDir:         valueOrDefault(env("HYPERVISOR_STATE_DIR"), defaultStateDir()),
+		CHBinary:         valueOrDefault(env("HYPERVISOR_CH_BINARY"), defaultCHBinary),
+		QemuImg:          valueOrDefault(env("HYPERVISOR_QEMU_IMG"), defaultQemuImg),
+		K8NetdSocket:     valueOrDefault(env("HYPERVISOR_K8NETD_SOCKET"), defaultK8NetdSocket),
+		NetworkCIDR:      valueOrDefault(env("HYPERVISOR_NETWORK_CIDR"), defaultNetworkCIDR),
+		SSHPublicKeyFile: env("HYPERVISOR_SSH_PUBLIC_KEY_FILE"),
 	}
 
 	if err := validateNetworkCIDR(cfg.NetworkCIDR); err != nil {

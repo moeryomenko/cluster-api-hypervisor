@@ -255,3 +255,35 @@ func TestLoadMixedDefaultsAndOverrides(t *testing.T) {
 		t.Errorf("config.Load() mismatch:\n got: %#v\nwant: %#v", got, want)
 	}
 }
+
+func TestLoadSSHPublicKeyFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unset stays empty (feature off)", func(t *testing.T) {
+		t.Parallel()
+
+		got := loadConfig(t, nil)
+		if got.SSHPublicKeyFile != "" {
+			t.Errorf("SSHPublicKeyFile = %q, want empty (no default by contract)", got.SSHPublicKeyFile)
+		}
+	})
+
+	t.Run("empty string is treated as unset", func(t *testing.T) {
+		t.Parallel()
+
+		got := loadConfig(t, map[string]string{"HYPERVISOR_SSH_PUBLIC_KEY_FILE": ""})
+		if got.SSHPublicKeyFile != "" {
+			t.Errorf("SSHPublicKeyFile = %q, want empty", got.SSHPublicKeyFile)
+		}
+	})
+
+	t.Run("set value flows through verbatim", func(t *testing.T) {
+		t.Parallel()
+
+		const path = "/build/ssh-lab.pub"
+		got := loadConfig(t, map[string]string{"HYPERVISOR_SSH_PUBLIC_KEY_FILE": path})
+		if got.SSHPublicKeyFile != path {
+			t.Errorf("SSHPublicKeyFile = %q, want %q", got.SSHPublicKeyFile, path)
+		}
+	})
+}
