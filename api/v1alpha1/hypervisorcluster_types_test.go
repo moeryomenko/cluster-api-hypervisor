@@ -258,3 +258,76 @@ func TestHypervisorClusterConditionsContract(t *testing.T) {
 		})
 	}
 }
+
+// TestHypervisorClusterStatusInitializationContract pins the CAPI v1beta2
+// InfrastructureCluster contract field: HypervisorClusterStatus exposes
+// Initialization *InitializationStatus with a Provisioned bool, serialized
+// under status.initialization.provisioned. The cluster-api v1beta2 cluster
+// controller gates the Cluster's InfrastructureReady on exactly that path
+// (contract.InfrastructureCluster().Provisioned reads
+// status.initialization.provisioned), so a provisioned network that only
+// reports status.ready=true leaves the CAPI Cluster waiting forever on
+// "status.initialization.provisioned is false".
+//
+// Red phase: this test fails to compile until api/v1alpha1 provides
+// InitializationStatus and wires it into HypervisorClusterStatus.
+func TestHypervisorClusterStatusInitializationContract(t *testing.T) {
+	t.Run("provisioned serializes under status.initialization.provisioned", func(t *testing.T) {
+		status := v1alpha1.HypervisorClusterStatus{
+			Ready:          true,
+			Initialization: &v1alpha1.InitializationStatus{Provisioned: true},
+		}
+		raw, err := json.Marshal(status)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+
+		var doc map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("Unmarshal into document map: %v", err)
+		}
+		var init map[string]json.RawMessage
+		if err := json.Unmarshal(doc["initialization"], &init); err != nil {
+			t.Fatalf("Unmarshal initialization: %v", err)
+		}
+		var provisioned bool
+		if err := json.Unmarshal(init["provisioned"], &provisioned); err != nil {
+			t.Fatalf("Unmarshal provisioned: %v", err)
+		}
+		if !provisioned {
+			t.Errorf("status.initialization.provisioned = %t, want true (json: %s)", provisioned, raw)
+		}
+	})
+
+	t.Run("unset initialization is omitted", func(t *testing.T) {
+		raw, err := json.Marshal(v1alpha1.HypervisorClusterStatus{})
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+
+		var doc map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("Unmarshal into document map: %v", err)
+		}
+		if _, ok := doc["initialization"]; ok {
+			t.Errorf("zero value serialized initialization: %s", raw)
+		}
+	})
+
+	t.Run("round trip preserves provisioned", func(t *testing.T) {
+		c := newFullyPopulatedCluster()
+		c.Status.Initialization = &v1alpha1.InitializationStatus{Provisioned: true}
+
+		raw, err := json.Marshal(c)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		var got v1alpha1.HypervisorCluster
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", raw, err)
+		}
+		if got.Status.Initialization == nil || !got.Status.Initialization.Provisioned {
+			t.Errorf("round trip lost status.initialization.provisioned (json: %s)", raw)
+		}
+	})
+}

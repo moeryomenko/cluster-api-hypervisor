@@ -56,6 +56,13 @@ type HypervisorClusterStatus struct {
 	// plane endpoint is reachable.
 	Ready bool `json:"ready"`
 
+	// Initialization provides observations of the HypervisorCluster
+	// initialization process.
+	// NOTE: this field is part of the Cluster API contract and it is used to
+	// orchestrate initial provisioning.
+	// +optional
+	Initialization *InitializationStatus `json:"initialization,omitempty,omitzero"`
+
 	// ControlPlaneEndpoint is the workload cluster's API server endpoint.
 	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty,omitzero"`
 

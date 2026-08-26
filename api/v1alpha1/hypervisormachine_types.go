@@ -56,10 +56,35 @@ type MachinePublishedPort struct {
 	HostPort int32 `json:"hostPort"`
 }
 
+// InitializationStatus provides observations of the provider object
+// initialization process. It is the shared shape the cluster-api v1beta2
+// contract readers address under status.initialization.*:
+// contract.InfrastructureMachine().Provisioned and
+// contract.InfrastructureCluster().Provisioned both read
+// status.initialization.provisioned.
+// NOTE: fields in this struct are part of the Cluster API contract and are
+// used to orchestrate initial provisioning.
+type InitializationStatus struct {
+	// Provisioned is true when the infrastructure provider reports the object
+	// fully provisioned. The value is never updated after provisioning is
+	// completed.
+	// NOTE: this field is part of the Cluster API contract and it is used to
+	// orchestrate provisioning.
+	// +optional
+	Provisioned bool `json:"provisioned,omitempty"`
+}
+
 // HypervisorMachineStatus defines the observed state of HypervisorMachine.
 type HypervisorMachineStatus struct {
 	// Ready indicates the VM process is running.
 	Ready bool `json:"ready"`
+
+	// Initialization provides observations of the HypervisorMachine
+	// initialization process.
+	// NOTE: this field is part of the Cluster API contract and it is used to
+	// orchestrate initial provisioning.
+	// +optional
+	Initialization *InitializationStatus `json:"initialization,omitempty,omitzero"`
 
 	// Addresses is the list of addresses for the VM: the allocated static IP
 	// and the machine hostname.
