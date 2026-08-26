@@ -1430,3 +1430,95 @@ func TestMachineDeleteRemovesConfextDisk(t *testing.T) {
 	assertPathRemoved(t, filepath.Dir(confextDisk))
 	assertMachineReclaimed(t, c, lm.hm)
 }
+
+// statusInitializationProvisioned reads status.initialization.provisioned
+// from the serialized form of a provider status struct. The read goes through
+// JSON so the assertion pins the wire field the cluster-api v1beta2 contract
+// readers consume (contract paths address status.initialization.provisioned
+// on the unstructured object) without coupling this suite's compilation to
+// the api type shape pinned by the api/v1alpha1 contract tests. present is
+// false when the field is absent.
+func statusInitializationProvisioned(status any) (provisioned, present bool) {
+	raw, err := json.Marshal(status)
+	if err != nil {
+		return false, false
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return false, false
+	}
+	init, ok := doc["initialization"].(map[string]any)
+	if !ok {
+		return false, false
+	}
+	p, ok := init["provisioned"].(bool)
+
+	return p, ok
+}
+
+// TestMachineVMInitializationProvisionedWhenRunning pins the CAPI v1beta2
+// InfrastructureMachine contract on the reconciler: once a reconcile of a
+// running VM succeeds — the same conditions under which status.ready flips
+// true and the VMProvisioned condition is set — status.initialization.
+// provisioned must be true. The cluster-api v1beta2 machine controller gates
+// InfrastructureReady on that field alone; without it a running VM leaves the
+// CAPI Machine NotReady with "status.initialization.provisioned is false".
+//
+// Red phase: the reconciler never writes the field today, so the happy path
+// fails while status.ready already reports true.
+func TestMachineVMInitializationProvisionedWhenRunning(t *testing.T) {
+	c := mustReconcileClient(t)
+
+	t.Run("running VM marks initialization.provisioned", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		lc := newLinkedCluster(t, c, "machine-vm-init-prov", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+		fx.vm.State = ch.VMState("Running")
+		fx.reconcileMachine(t, lm.hm)
+
+		hm := getMachine(t, c, lm.hm)
+		if !hm.Status.Ready {
+			t.Fatalf("precondition failed: status.ready = false after a successful reconcile of a running VM")
+		}
+		provisioned, present := statusInitializationProvisioned(hm.Status)
+		if !present {
+			t.Fatal("status.initialization.provisioned missing with the VM running: the CAPI v1beta2 machine controller waits on this field (InfrastructureReady stays False)")
+		}
+		if !provisioned {
+			t.Error("status.initialization.provisioned = false with the VM running, want true")
+		}
+	})
+
+	t.Run("not-running VM leaves initialization.provisioned unset", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		lc := newLinkedCluster(t, c, "machine-vm-init-notprov", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+		fx.vm.State = ch.VMState("Created")
+		fx.reconcileMachine(t, lm.hm)
+
+		hm := getMachine(t, c, lm.hm)
+		if hm.Status.Ready {
+			t.Fatalf("precondition failed: status.ready = true with the VM not running")
+		}
+		if provisioned, present := statusInitializationProvisioned(hm.Status); present && provisioned {
+			t.Error("status.initialization.provisioned = true with the VM not running, want unset or false")
+		}
+	})
+
+	t.Run("initialization.provisioned is stable across reconciles", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		lc := newLinkedCluster(t, c, "machine-vm-init-stable", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+		fx.vm.State = ch.VMState("Running")
+		fx.reconcileMachine(t, lm.hm)
+		fx.reconcileMachine(t, lm.hm)
+
+		hm := getMachine(t, c, lm.hm)
+		if provisioned, present := statusInitializationProvisioned(hm.Status); !present || !provisioned {
+			t.Errorf("status.initialization.provisioned = (%t, present=%t) after two reconciles, want true", provisioned, present)
+		}
+	})
+}

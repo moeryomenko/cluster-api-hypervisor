@@ -30,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/predicates"
@@ -393,7 +392,7 @@ func (r *HypervisorControlPlaneReconciler) machineFor(
 // ensureHypervisorMachine instantiates the concrete HypervisorMachine for one
 // control-plane Machine: get-or-create named after the Machine, with the spec
 // copied from the HypervisorMachineTemplate the control plane's
-// machineTemplate.infrastructureRef references — the same template-cloning
+// machineTemplate.spec.infrastructureRef references — the same template-cloning
 // contract core CAPI applies to worker Machines — plus the cluster-name label
 // and a controller owner reference to the Machine so the machine controller
 // reconciles it. The Machine's infrastructureRef points at this concrete
@@ -413,14 +412,10 @@ func (r *HypervisorControlPlaneReconciler) ensureHypervisorMachine(
 		return fmt.Errorf("get HypervisorMachine %q: %w", machine.Name, err)
 	}
 
-	ref := cp.Spec.MachineTemplate.InfrastructureRef
-	templateNamespace := ref.Namespace
-	if templateNamespace == "" {
-		templateNamespace = cp.Namespace
-	}
+	ref := cp.Spec.MachineTemplate.Spec.InfrastructureRef
 	tmpl := &infrastructurev1alpha1.HypervisorMachineTemplate{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: templateNamespace, Name: ref.Name}, tmpl); err != nil {
-		return fmt.Errorf("get HypervisorMachineTemplate %q: %w", client.ObjectKey{Namespace: templateNamespace, Name: ref.Name}, err)
+	if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: ref.Name}, tmpl); err != nil {
+		return fmt.Errorf("get HypervisorMachineTemplate %q: %w", client.ObjectKey{Namespace: cp.Namespace, Name: ref.Name}, err)
 	}
 
 	labels := map[string]string{}
@@ -433,8 +428,8 @@ func (r *HypervisorControlPlaneReconciler) ensureHypervisorMachine(
 	labels[clusterv1.ClusterNameLabel] = cluster.Name
 
 	groupKind := ref.Kind
-	if gv, err := schema.ParseGroupVersion(ref.APIVersion); err == nil && gv.Group != "" {
-		groupKind = groupKind + "." + gv.Group
+	if ref.APIGroup != "" {
+		groupKind = groupKind + "." + ref.APIGroup
 	}
 
 	hm := &infrastructurev1alpha1.HypervisorMachine{
@@ -713,6 +708,11 @@ func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 
 	if !cp.Status.Ready {
 		cp.Status.Initialized = true
+		// v1beta2 contract path, written in tandem with the deprecated flat
+		// status.initialized field: the cluster controller reads
+		// status.initialization.controlPlaneInitialized.
+		controlPlaneInitialized := true
+		cp.Status.Initialization.ControlPlaneInitialized = &controlPlaneInitialized
 		cp.Status.Ready = true
 		markControlPlaneReady(cp, metav1.ConditionTrue, "ControlPlaneReady", "control plane apiserver is healthy")
 		if err := r.Status().Update(ctx, cp); err != nil {

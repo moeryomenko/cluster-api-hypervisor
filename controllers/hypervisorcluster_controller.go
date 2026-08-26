@@ -155,10 +155,12 @@ func (r *HypervisorClusterReconciler) reconcileNormal(
 			}
 		}
 		hc.Status.Ready = true
+		hc.Status.Initialization = &infrastructurev1alpha1.InitializationStatus{Provisioned: true}
 		markInfrastructureReady(hc)
 	} else {
 		// Already provisioned: ensure Ready remains true.
 		hc.Status.Ready = true
+		hc.Status.Initialization = &infrastructurev1alpha1.InitializationStatus{Provisioned: true}
 		markInfrastructureReady(hc)
 	}
 
@@ -233,7 +235,14 @@ func (r *HypervisorClusterReconciler) reconcileControlPlaneEndpoint(
 		}
 		return fmt.Errorf("get control plane %q: %w", key, err)
 	}
-	if !cp.Status.Initialized {
+	// The v1beta2 contract path is authoritative when set; the deprecated
+	// flat status.initialized field keeps objects written before it existed
+	// working.
+	initialized := cp.Status.Initialized
+	if set := cp.Status.Initialization.ControlPlaneInitialized; set != nil {
+		initialized = *set
+	}
+	if !initialized {
 		return nil
 	}
 
@@ -294,9 +303,12 @@ func (r *HypervisorClusterReconciler) machineInternalIP(
 }
 
 // getLinkedCluster resolves the CAPI Cluster this object belongs to, through
-// the owner reference first and the spec.clusterName link as a fallback. A
-// missing Cluster is reported as (nil, nil): the controller waits for the
-// link instead of erroring.
+// the owner reference first, the spec.clusterName link second, and the
+// Cluster.spec.infrastructureRef back-reference last: a topology-controller
+// shaped HypervisorCluster carries neither an owner reference nor
+// spec.clusterName, so the Cluster whose infrastructureRef names this object
+// is the only remaining link. A missing Cluster is reported as (nil, nil):
+// the controller waits for the link instead of erroring.
 func (r *HypervisorClusterReconciler) getLinkedCluster(
 	ctx context.Context,
 	hc *infrastructurev1alpha1.HypervisorCluster,
@@ -319,17 +331,33 @@ func (r *HypervisorClusterReconciler) getLinkedCluster(
 		return cluster, nil
 	}
 
-	if hc.Spec.ClusterName == "" {
-		return nil, nil
-	}
-	cluster := &clusterv1.Cluster{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: hc.Namespace, Name: hc.Spec.ClusterName}, cluster); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
+	if hc.Spec.ClusterName != "" {
+		cluster := &clusterv1.Cluster{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: hc.Namespace, Name: hc.Spec.ClusterName}, cluster); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("get linked Cluster %q: %w", hc.Spec.ClusterName, err)
 		}
-		return nil, fmt.Errorf("get linked Cluster %q: %w", hc.Spec.ClusterName, err)
+		return cluster, nil
 	}
-	return cluster, nil
+
+	// Reverse lookup: list the Clusters of the namespace and return the one
+	// whose infrastructureRef names this HypervisorCluster. No match means no
+	// link yet.
+	clusters := &clusterv1.ClusterList{}
+	if err := r.List(ctx, clusters, client.InNamespace(hc.Namespace)); err != nil {
+		return nil, fmt.Errorf("list Clusters in %q: %w", hc.Namespace, err)
+	}
+	for i := range clusters.Items {
+		ref := clusters.Items[i].Spec.InfrastructureRef
+		if !ref.IsDefined() || ref.Kind != "HypervisorCluster" || ref.Name != hc.Name {
+			continue
+		}
+		return &clusters.Items[i], nil
+	}
+
+	return nil, nil
 }
 
 // SetupWithManager sets up the controller with the Manager, watching the

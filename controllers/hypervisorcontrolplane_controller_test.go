@@ -53,11 +53,12 @@ limitations under the License.
 //     empty value, plus every label from spec.machineTemplate.metadata; its
 //     spec.clusterName is the linked Cluster's name; its
 //     spec.infrastructureRef names the concrete HypervisorMachine the
-//     controller instantiates from the spec.machineTemplate.infrastructureRef
-//     template (get-or-create named after the Machine, template
-//     spec.template.spec copied, cluster-name label set, controller owner
-//     reference to the Machine); and it carries a controller owner reference
-//     to the HypervisorControlPlane so the control plane owns its Machines.
+//     controller instantiates from the template named by
+//     spec.machineTemplate.spec.infrastructureRef (get-or-create named after
+//     the Machine, template spec.template.spec copied, cluster-name label
+//     set, controller owner reference to the Machine); and it carries a
+//     controller owner reference to the HypervisorControlPlane so the control
+//     plane owns its Machines.
 //   - Bootstrap wiring: for every Machine the controller invokes NewConfig
 //     with the control plane and the Machine name, fills the returned
 //     HypervisorConfig's spec.clusterName from the linked Cluster and its
@@ -253,8 +254,8 @@ func newControlPlaneFixtureWithPKI(t *testing.T, c client.Client, pk pki.Cluster
 
 // linkedControlPlane is the CAPI linkage the machine-creation contract reads:
 // the HypervisorControlPlane, the HypervisorMachineTemplate its
-// spec.machineTemplate.infrastructureRef names, and the linked CAPI Cluster
-// whose controlPlaneRef points back at the control plane.
+// spec.machineTemplate.spec.infrastructureRef names, and the linked CAPI
+// Cluster whose controlPlaneRef points back at the control plane.
 type linkedControlPlane struct {
 	namespace string
 	name      string
@@ -264,8 +265,12 @@ type linkedControlPlane struct {
 
 // newLinkedControlPlane creates the full CAPI linkage for the control-plane
 // controller: the HypervisorMachineTemplate, the HypervisorControlPlane whose
-// machineTemplate references it (with the given replicas and template
-// labels), and the Cluster controlPlaneRef link back to the control plane.
+// machineTemplate references it through the v1beta2 nested
+// machineTemplate.spec.infrastructureRef contract-versioned shape (with the
+// given replicas and template labels), and the Cluster controlPlaneRef link
+// back to the control plane. The reference carries no namespace: the
+// ContractVersionedObjectReference type has none, so the reconciler resolves
+// the template in the control plane's namespace.
 func newLinkedControlPlane(
 	t *testing.T,
 	c client.Client,
@@ -300,13 +305,14 @@ func newLinkedControlPlane(
 			Replicas: replicas,
 			Version:  "v1.35.4",
 			MachineTemplate: controlplanev1alpha1.HypervisorControlPlaneMachineTemplate{
-				InfrastructureRef: corev1.ObjectReference{
-					APIVersion: infrastructurev1alpha1.GroupVersion.String(),
-					Kind:       "HypervisorMachineTemplate",
-					Name:       tmpl.Name,
-					Namespace:  lc.namespace,
-				},
 				Metadata: clusterv1.ObjectMeta{Labels: templateLabels},
+				Spec: controlplanev1alpha1.HypervisorControlPlaneMachineTemplateSpec{
+					InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+						APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+						Kind:     "HypervisorMachineTemplate",
+						Name:     tmpl.Name,
+					},
+				},
 			},
 		},
 	}
@@ -528,6 +534,86 @@ func TestControlPlaneMachineCreatedPerReplica(t *testing.T) {
 			wantMachineLabels(t, &machines[i], lc.name, nil)
 		}
 	})
+}
+
+// TestControlPlaneMachineInfraResolvedThroughMachineTemplateSpec pins the
+// v1beta2 reference path: the reconciler resolves the infrastructure template
+// THROUGH spec.machineTemplate.spec.infrastructureRef, not through any other
+// template in the namespace. Two templates exist; the reference is repointed
+// at the second one before the first reconcile, and the created Machine must
+// reference a concrete HypervisorMachine cloned from exactly that template —
+// its spec matches the referenced template's spec.template.spec and the
+// cloned-from annotations record the resolved template. The
+// ContractVersionedObjectReference carries no namespace field, so resolution
+// in the control plane's namespace is compile-enforced and proven here by the
+// clone succeeding from that namespace alone.
+func TestControlPlaneMachineInfraResolvedThroughMachineTemplateSpec(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newControlPlaneFixture(t, c)
+	lc := newLinkedCluster(t, c, "cp-infra-ref-path", "capi-cluster")
+	lcp := newLinkedControlPlane(t, c, lc, lc.name+"-cp", 1, nil)
+
+	// The decoy template from newLinkedControlPlane carries CPU 2; the
+	// referenced one carries CPU 8, so matching specs prove which template
+	// the reconcile followed.
+	referenced := &infrastructurev1alpha1.HypervisorMachineTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: lcp.name + "-machine-template-referenced", Namespace: lc.namespace},
+		Spec: infrastructurev1alpha1.HypervisorMachineTemplateSpec{
+			Template: infrastructurev1alpha1.HypervisorMachineTemplateResource{
+				Spec: infrastructurev1alpha1.HypervisorMachineSpec{
+					ClusterName: lc.name,
+					CPU:         8,
+					RAM:         16384,
+					Disk:        40960,
+				},
+			},
+		},
+	}
+	if err := c.Create(t.Context(), referenced); err != nil {
+		t.Fatalf("create referenced HypervisorMachineTemplate: %v", err)
+	}
+
+	lcp.cp = updateControlPlaneSpec(t, c, lcp.cp, func(cp *controlplanev1alpha1.HypervisorControlPlane) {
+		cp.Spec.MachineTemplate.Spec.InfrastructureRef = clusterv1.ContractVersionedObjectReference{
+			APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+			Kind:     "HypervisorMachineTemplate",
+			Name:     referenced.Name,
+		}
+	})
+	fx.reconcileControlPlane(t, lcp.cp)
+
+	machines := listControlPlaneMachines(t, c, lc.namespace, lc.name)
+	if len(machines) != 1 {
+		t.Fatalf("created %d Machines, want 1 (names %v)", len(machines), machineNamesOf(machines))
+	}
+	m := machines[0]
+
+	wantRef := clusterv1.ContractVersionedObjectReference{
+		APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+		Kind:     "HypervisorMachine",
+		Name:     m.Name,
+	}
+	if !reflect.DeepEqual(m.Spec.InfrastructureRef, wantRef) {
+		t.Errorf("spec.infrastructureRef = %+v, want the concrete HypervisorMachine reference %+v resolved through machineTemplate.spec.infrastructureRef",
+			m.Spec.InfrastructureRef, wantRef)
+	}
+
+	hm := &infrastructurev1alpha1.HypervisorMachine{}
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: lc.namespace, Name: m.Name}, hm); err != nil {
+		t.Fatalf("Get HypervisorMachine %q: %v", m.Name, err)
+	}
+	wantSpec := referenced.Spec.Template.Spec
+	if hm.Spec != wantSpec {
+		t.Errorf("HypervisorMachine spec = %+v, want the REFERENCED template's spec.template.spec %+v (CPU 8), not another namespace template", hm.Spec, wantSpec)
+	}
+	if got := hm.Annotations[clusterv1.TemplateClonedFromNameAnnotation]; got != referenced.Name {
+		t.Errorf("HypervisorMachine %s cloned-from annotation = %q, want the referenced template %q", hm.Name, got, referenced.Name)
+	}
+	wantGroupKind := "HypervisorMachineTemplate." + infrastructurev1alpha1.GroupVersion.Group
+	if got := hm.Annotations[clusterv1.TemplateClonedFromGroupKindAnnotation]; got != wantGroupKind {
+		t.Errorf("HypervisorMachine %s cloned-from-groupkind annotation = %q, want %q", hm.Name, got, wantGroupKind)
+	}
+	wantMachineOwner(t, hm, &m)
 }
 
 // TestControlPlaneMachineBootstrapRef pins the bootstrap wiring contract:
@@ -800,11 +886,12 @@ func TestControlPlaneMachineMissingLinkedCluster(t *testing.T) {
 		Spec: controlplanev1alpha1.HypervisorControlPlaneSpec{
 			Replicas: 1,
 			MachineTemplate: controlplanev1alpha1.HypervisorControlPlaneMachineTemplate{
-				InfrastructureRef: corev1.ObjectReference{
-					APIVersion: infrastructurev1alpha1.GroupVersion.String(),
-					Kind:       "HypervisorMachineTemplate",
-					Name:       tmpl.Name,
-					Namespace:  namespace,
+				Spec: controlplanev1alpha1.HypervisorControlPlaneMachineTemplateSpec{
+					InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+						APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+						Kind:     "HypervisorMachineTemplate",
+						Name:     tmpl.Name,
+					},
 				},
 			},
 		},

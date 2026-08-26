@@ -324,8 +324,11 @@ func removeMachineDisks(vmDisksDir, name string) error {
 }
 
 // getOwnerMachine resolves the CAPI Machine that owns hm through the owner
-// references. A machine without an owning Machine is reported as (nil, false,
-// nil): the controller waits for the owner link instead of erroring.
+// references first, then through the Machine.spec.infrastructureRef
+// back-reference: an externally created HypervisorMachine may lack the owner
+// reference while the owning Machine still names it. A machine without an
+// owning Machine is reported as (nil, false, nil): the controller waits for
+// the owner link instead of erroring.
 func (r *HypervisorMachineReconciler) getOwnerMachine(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
@@ -347,6 +350,21 @@ func (r *HypervisorMachineReconciler) getOwnerMachine(
 			return nil, false, fmt.Errorf("get owner Machine %q: %w", key, err)
 		}
 		return machine, true, nil
+	}
+
+	// Reverse lookup: list the Machines of the namespace and return the one
+	// whose infrastructureRef names this HypervisorMachine. No match means no
+	// owner link yet.
+	machines := &clusterv1.MachineList{}
+	if err := r.List(ctx, machines, client.InNamespace(hm.Namespace)); err != nil {
+		return nil, false, fmt.Errorf("list Machines in %q: %w", hm.Namespace, err)
+	}
+	for i := range machines.Items {
+		ref := machines.Items[i].Spec.InfrastructureRef
+		if !ref.IsDefined() || ref.Kind != "HypervisorMachine" || ref.Name != hm.Name {
+			continue
+		}
+		return &machines.Items[i], true, nil
 	}
 
 	return nil, false, nil
@@ -827,6 +845,10 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 	if err == nil && state == ch.VMState("Running") {
 		markVMProvisioned(hm)
 		hm.Status.Ready = true
+		// The CAPI v1beta2 machine controller gates InfrastructureReady on
+		// status.initialization.provisioned alone; report it with the same
+		// conditions under which ready flips true.
+		hm.Status.Initialization = &infrastructurev1alpha1.InitializationStatus{Provisioned: true}
 	}
 
 	if err := r.Status().Update(ctx, hm); err != nil {

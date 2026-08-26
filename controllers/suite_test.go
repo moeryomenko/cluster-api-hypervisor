@@ -193,11 +193,12 @@ func TestEnvtestCRDsAndScheme(t *testing.T) {
 					Replicas: 1,
 					Version:  "v1.35.4",
 					MachineTemplate: controlplanev1alpha1.HypervisorControlPlaneMachineTemplate{
-						InfrastructureRef: corev1.ObjectReference{
-							APIVersion: "infrastructure.cluster.x-k8s.io/v1alpha1",
-							Kind:       "HypervisorMachineTemplate",
-							Name:       "sample-machinetemplate",
-							Namespace:  namespace,
+						Spec: controlplanev1alpha1.HypervisorControlPlaneMachineTemplateSpec{
+							InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+								APIGroup: "infrastructure.cluster.x-k8s.io",
+								Kind:     "HypervisorMachineTemplate",
+								Name:     "sample-machinetemplate",
+							},
 						},
 					},
 				},

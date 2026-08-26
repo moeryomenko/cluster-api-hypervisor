@@ -262,11 +262,12 @@ func newControlPlane(t *testing.T, c client.Client, lc *linkedCluster, initializ
 		Spec: controlplanev1alpha1.HypervisorControlPlaneSpec{
 			Replicas: 1,
 			MachineTemplate: controlplanev1alpha1.HypervisorControlPlaneMachineTemplate{
-				InfrastructureRef: corev1.ObjectReference{
-					APIVersion: infrastructurev1alpha1.GroupVersion.String(),
-					Kind:       "HypervisorMachineTemplate",
-					Name:       lc.name + "-machine-template",
-					Namespace:  lc.namespace,
+				Spec: controlplanev1alpha1.HypervisorControlPlaneMachineTemplateSpec{
+					InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+						APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+						Kind:     "HypervisorMachineTemplate",
+						Name:     lc.name + "-machine-template",
+					},
 				},
 			},
 		},
@@ -610,4 +611,100 @@ func TestReconcileControlPlaneEndpointLoopbackGate(t *testing.T) {
 			t.Errorf("no machine: endpoint host = %q, want empty", hc.Status.ControlPlaneEndpoint.Host)
 		}
 	})
+}
+
+// TestReconcileFindsClusterByInfrastructureRefWithoutOwnerRefOrClusterName
+// pins the reverse-lookup fallback of getLinkedCluster: a HypervisorCluster
+// created by the topology controller carries neither a Cluster owner
+// reference nor spec.clusterName (observed live on k8labs-vxtxl), yet a
+// Cluster exists in the same namespace whose spec.infrastructureRef names it.
+// Reconcile must resolve that Cluster through the back-reference and
+// provision: status.ready true, InfrastructureReady condition true, and —
+// per the CAPI v1beta2 InfrastructureCluster contract —
+// status.initialization.provisioned true. Today getLinkedCluster returns nil
+// for this shape, so reconcile no-ops forever with "linked Cluster not found"
+// and the network is never provisioned.
+//
+// Red phase: every provisioning assertion fails today because the linked
+// Cluster is not found.
+func TestReconcileFindsClusterByInfrastructureRefWithoutOwnerRefOrClusterName(t *testing.T) {
+	c := mustReconcileClient(t)
+	r := newTestReconciler(t, c)
+
+	const namespace = "hc-reverse-lookup"
+	const name = "k8labs-vxtxl"
+	ctx := t.Context()
+
+	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
+		t.Fatalf("create namespace %q: %v", namespace, err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = c.Delete(cleanupCtx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})
+	})
+
+	cluster := &clusterv1.Cluster{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: clusterv1.ClusterSpec{
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+				APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+				Kind:     "HypervisorCluster",
+				Name:     name,
+			},
+		},
+	}
+	if err := c.Create(ctx, cluster); err != nil {
+		t.Fatalf("create Cluster %q: %v", name, err)
+	}
+
+	// Topology-controller shape: no OwnerReferences and an empty
+	// spec.clusterName; only the Cluster's infrastructureRef links the two.
+	hc := &infrastructurev1alpha1.HypervisorCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: infrastructurev1alpha1.HypervisorClusterSpec{
+			Network: infrastructurev1alpha1.HypervisorClusterNetworkSpec{
+				CIDR:       testCIDR,
+				Gateway:    testGateway,
+				DNSIP:      testDNSIP,
+				BridgeName: testBridge,
+				NATTable:   testNATTable,
+			},
+		},
+	}
+	if err := c.Create(ctx, hc); err != nil {
+		t.Fatalf("create HypervisorCluster: %v", err)
+	}
+
+	key := client.ObjectKey{Namespace: namespace, Name: name}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+
+	got := &infrastructurev1alpha1.HypervisorCluster{}
+	if err := c.Get(ctx, key, got); err != nil {
+		t.Fatalf("Get HypervisorCluster: %v", err)
+	}
+	if !got.Status.Ready {
+		t.Error("status.ready = false: Reconcile did not find the linked Cluster through the infrastructureRef back-reference, want provisioned")
+	}
+	if cond := findCondition(got, clusterv1.InfrastructureReadyCondition); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("InfrastructureReady condition = %+v, want present and True", cond)
+	}
+	if provisioned, present := statusInitializationProvisioned(got.Status); !present || !provisioned {
+		t.Errorf("status.initialization.provisioned = (%t, present=%t), want true (CAPI v1beta2 cluster controller gate)", provisioned, present)
+	}
+
+	// Second reconcile converges: provisioning stays idempotent through the
+	// reverse lookup.
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatalf("second Reconcile error: %v", err)
+	}
+	got2 := &infrastructurev1alpha1.HypervisorCluster{}
+	if err := c.Get(ctx, key, got2); err != nil {
+		t.Fatalf("Get HypervisorCluster after second reconcile: %v", err)
+	}
+	if !got2.Status.Ready {
+		t.Error("status.ready flipped to false on the second reconcile")
+	}
 }
