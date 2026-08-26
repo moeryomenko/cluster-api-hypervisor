@@ -136,17 +136,17 @@ func validateHypervisorControlPlane(controlPlane *controlplanev1alpha1.Hyperviso
 			field.Invalid(fldPath.Child("replicas"), controlPlane.Spec.Replicas, "must be greater than or equal to 1"),
 		)
 	}
-	ref := controlPlane.Spec.MachineTemplate.InfrastructureRef
+	ref := controlPlane.Spec.MachineTemplate.Spec.InfrastructureRef
 	if ref.Kind == "" {
 		allErrs = append(
 			allErrs,
-			field.Required(fldPath.Child("machineTemplate", "infrastructureRef", "kind"), "must not be empty"),
+			field.Required(fldPath.Child("machineTemplate", "spec", "infrastructureRef", "kind"), "must not be empty"),
 		)
 	}
 	if ref.Name == "" {
 		allErrs = append(
 			allErrs,
-			field.Required(fldPath.Child("machineTemplate", "infrastructureRef", "name"), "must not be empty"),
+			field.Required(fldPath.Child("machineTemplate", "spec", "infrastructureRef", "name"), "must not be empty"),
 		)
 	}
 	if len(allErrs) == 0 {

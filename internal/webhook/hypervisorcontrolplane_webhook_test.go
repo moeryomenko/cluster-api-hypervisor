@@ -8,8 +8,8 @@
 // stay zero after Default. Validation requires at least one replica (zero or
 // negative replicas are rejected, because scaling this single-control-plane
 // generation to zero is destructive and unsupported) and a non-empty
-// machineTemplate.infrastructureRef; the version field is informational and
-// accepts any value, including empty. The same rules apply on create and
+// machineTemplate.spec.infrastructureRef; the version field is informational
+// and accepts any value, including empty. The same rules apply on create and
 // update, where the new object is validated, so scaling a live control plane
 // down to zero replicas is rejected too; deletion is always allowed. The
 // compile-time pins below force the webhook type to implement the
@@ -22,9 +22,9 @@ import (
 	"reflect"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
@@ -46,8 +46,8 @@ var (
 )
 
 // validControlPlane returns a HypervisorControlPlane that satisfies every
-// pinned validation rule: at least one replica, a set infrastructureRef, and
-// an informational version.
+// pinned validation rule: at least one replica, a set nested
+// machineTemplate.spec.infrastructureRef, and an informational version.
 func validControlPlane() *controlplanev1alpha1.HypervisorControlPlane {
 	return &controlplanev1alpha1.HypervisorControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "lab-cluster", Namespace: "lab"},
@@ -55,10 +55,12 @@ func validControlPlane() *controlplanev1alpha1.HypervisorControlPlane {
 			Replicas: 1,
 			Version:  "v1.36.0",
 			MachineTemplate: controlplanev1alpha1.HypervisorControlPlaneMachineTemplate{
-				InfrastructureRef: corev1.ObjectReference{
-					Kind:      "HypervisorMachineTemplate",
-					Namespace: "lab",
-					Name:      "lab-cluster-cp",
+				Spec: controlplanev1alpha1.HypervisorControlPlaneMachineTemplateSpec{
+					InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+						APIGroup: "infrastructure.cluster.x-k8s.io",
+						Kind:     "HypervisorMachineTemplate",
+						Name:     "lab-cluster-cp",
+					},
 				},
 			},
 		},
@@ -84,13 +86,13 @@ func withVersion(
 	return obj
 }
 
-// withInfrastructureRef returns obj with the machine template
+// withInfrastructureRef returns obj with the nested machine template
 // infrastructureRef replaced.
 func withInfrastructureRef(
 	obj *controlplanev1alpha1.HypervisorControlPlane,
-	ref corev1.ObjectReference,
+	ref clusterv1.ContractVersionedObjectReference,
 ) *controlplanev1alpha1.HypervisorControlPlane {
-	obj.Spec.MachineTemplate.InfrastructureRef = ref
+	obj.Spec.MachineTemplate.Spec.InfrastructureRef = ref
 	return obj
 }
 
@@ -164,7 +166,7 @@ func TestHypervisorControlPlaneValidateCreate(t *testing.T) {
 		{name: "negative replicas are rejected", give: withReplicas(validControlPlane(), -1), wantErr: true},
 		{
 			name:    "zero infrastructureRef is rejected",
-			give:    withInfrastructureRef(validControlPlane(), corev1.ObjectReference{}),
+			give:    withInfrastructureRef(validControlPlane(), clusterv1.ContractVersionedObjectReference{}),
 			wantErr: true,
 		},
 		{name: "wrong object type", give: &controlplanev1alpha1.HypervisorControlPlaneList{}, wantErr: true},
@@ -217,7 +219,7 @@ func TestHypervisorControlPlaneValidateUpdate(t *testing.T) {
 		{
 			name:    "valid to zero infrastructureRef is rejected",
 			oldObj:  validControlPlane(),
-			newObj:  withInfrastructureRef(validControlPlane(), corev1.ObjectReference{}),
+			newObj:  withInfrastructureRef(validControlPlane(), clusterv1.ContractVersionedObjectReference{}),
 			wantErr: true,
 		},
 		{
