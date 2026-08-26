@@ -147,25 +147,43 @@ type recordedExecCall struct {
 	args []string
 }
 
+// qemuFailure overrides one qemu-img subcommand's (output, error) pair. The
+// stderr bytes stand in for the CombinedOutput a real qemu-img failure
+// carries; an override with a nil error simulates a subcommand that succeeds
+// but returns unexpected output (the info parse-error path).
+type qemuFailure struct {
+	stderr []byte
+	err    error
+}
+
 // recordingExecRunner records every command invocation in call order and
 // simulates the side effects the machine controller's exec seams depend on.
 // It is used two ways: as the qemu-img exec func and as the command runner
 // of the confext packager. For qemu-img the runner simulates a small virtual
 // disk store: "convert" creates the destination disk, "resize" sets its
 // virtual size, and "info" reports the stored size as qemu-img JSON (or
-// fails when the disk is absent). For mksquashfs it records the call and
-// returns the canned output, so packaging proceeds without a real
-// squashfs-tools binary.
+// fails when the disk is absent). A disk marked locked is held by a running
+// VM: "info" without the -U force-share flag fails on it and "convert" fails
+// with the lock error on stderr, mirroring the qemu-img lock behavior the
+// root-disk fix addresses. For mksquashfs it records the call and returns
+// the canned output, so packaging proceeds without a real squashfs-tools
+// binary.
 type recordingExecRunner struct {
-	calls []recordedExecCall
-	out   []byte
-	err   error
-	disks map[string]int64 // disk path -> virtual size in bytes
+	calls  []recordedExecCall
+	out    []byte
+	err    error
+	disks  map[string]int64       // disk path -> virtual size in bytes
+	locked map[string]bool        // disk paths held by a running VM's qemu-img lock
+	fail   map[string]qemuFailure // per-subcommand (output, error) override
 }
 
 // newRecordingExecRunner builds an empty runner with a live disk store.
 func newRecordingExecRunner() *recordingExecRunner {
-	return &recordingExecRunner{disks: make(map[string]int64)}
+	return &recordingExecRunner{
+		disks:  make(map[string]int64),
+		locked: make(map[string]bool),
+		fail:   make(map[string]qemuFailure),
+	}
 }
 
 // Run implements the runner seam. The context is accepted and deliberately
@@ -194,9 +212,21 @@ func (f *recordingExecRunner) Run(_ context.Context, name string, args ...string
 func (f *recordingExecRunner) qemuImg(args []string) ([]byte, error) {
 	switch args[0] {
 	case "convert":
-		f.disks[args[len(args)-1]] = 0
+		disk := args[len(args)-1]
+		if f.locked[disk] {
+			// A running VM holds the disk lock; qemu-img convert fails with
+			// the lock error on stderr (CombinedOutput).
+			return []byte("qemu-img: " + disk + ": Failed to lock byte 201"), errors.New("exit status 1")
+		}
+		if fail, ok := f.fail["convert"]; ok {
+			return fail.stderr, fail.err
+		}
+		f.disks[disk] = 0
 		return f.out, nil
 	case "resize":
+		if fail, ok := f.fail["resize"]; ok {
+			return fail.stderr, fail.err
+		}
 		disk := args[len(args)-2]
 		sizeMiB, err := strconv.ParseInt(strings.TrimSuffix(args[len(args)-1], "M"), 10, 64)
 		if err != nil {
@@ -206,6 +236,14 @@ func (f *recordingExecRunner) qemuImg(args []string) ([]byte, error) {
 		return f.out, nil
 	case "info":
 		disk := args[len(args)-1]
+		if f.locked[disk] && !hasForceShare(args) {
+			// Without -U, qemu-img info cannot read a disk a running VM
+			// holds; with -U the size stays readable.
+			return nil, fmt.Errorf("qemu-img: %s: Failed to lock byte 201", disk)
+		}
+		if fail, ok := f.fail["info"]; ok {
+			return fail.stderr, fail.err
+		}
 		size, ok := f.disks[disk]
 		if !ok {
 			return nil, fmt.Errorf("qemu-img: %s: No such file or directory", disk)
@@ -214,6 +252,17 @@ func (f *recordingExecRunner) qemuImg(args []string) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("recordingExecRunner: unexpected qemu-img subcommand %q", args[0])
 	}
+}
+
+// hasForceShare reports whether the qemu-img invocation carries the -U
+// (force-share) flag, which lets a locked disk's metadata be read.
+func hasForceShare(args []string) bool {
+	for _, arg := range args {
+		if arg == "-U" {
+			return true
+		}
+	}
+	return false
 }
 
 // qemuCalls returns the recorded qemu-img invocations for the subcommand, in
@@ -744,6 +793,17 @@ func TestMachineDisksRootDiskQemuImgArgs(t *testing.T) {
 	if !reflect.DeepEqual(resizes[0].args, wantResize) {
 		t.Errorf("resize args = %v, want %v", resizes[0].args, wantResize)
 	}
+
+	// The size probe reads the disk with the -U force-share flag so a disk
+	// locked by a running VM still reports its size.
+	infos := fx.qemu.qemuCalls("info")
+	if got := len(infos); got != 1 {
+		t.Fatalf("qemu-img info called %d times, want 1", got)
+	}
+	wantInfo := []string{"info", "-U", diskPath}
+	if !reflect.DeepEqual(infos[0].args, wantInfo) {
+		t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
+	}
 }
 
 // TestMachineDisksRootDiskIdempotent pins the root disk idempotency
@@ -808,6 +868,142 @@ func TestMachineDisksRootDiskIdempotent(t *testing.T) {
 			t.Errorf("simulated disk size = %d bytes, want %d", got, testMachineDisk*1024*1024)
 		}
 	})
+
+	t.Run("locked disk at the right size is left alone", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		vmDisksDir := fx.r.Config.VMDiskDir
+		lc := newLinkedCluster(t, c, "machine-disk-locked-idem", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", true)
+		key := client.ObjectKeyFromObject(lm.hm)
+
+		// A running VM holds the disk lock; the disk is already at the
+		// requested size.
+		diskPath := filepath.Join(vmDisksDir, lm.name+"-root.qcow2")
+		fx.qemu.disks[diskPath] = testMachineDisk * 1024 * 1024
+		fx.qemu.locked[diskPath] = true
+
+		if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
+			t.Fatalf("Reconcile error: %v", err)
+		}
+
+		// The size was read through force-share and the correct-size disk was
+		// left alone: no convert, no resize.
+		if got := len(fx.qemu.qemuCalls("convert")); got != 0 {
+			t.Errorf("qemu-img convert called %d times for a locked correct-size disk, want 0", got)
+		}
+		if got := len(fx.qemu.qemuCalls("resize")); got != 0 {
+			t.Errorf("qemu-img resize called %d times for a locked correct-size disk, want 0", got)
+		}
+		infos := fx.qemu.qemuCalls("info")
+		if got := len(infos); got != 1 {
+			t.Fatalf("qemu-img info called %d times, want 1", got)
+		}
+		wantInfo := []string{"info", "-U", diskPath}
+		if !reflect.DeepEqual(infos[0].args, wantInfo) {
+			t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
+		}
+	})
+
+	t.Run("locked disk at the wrong size is converted and surfaces stderr", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		vmDisksDir := fx.r.Config.VMDiskDir
+		lc := newLinkedCluster(t, c, "machine-disk-locked-recreate", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", true)
+		key := client.ObjectKeyFromObject(lm.hm)
+
+		// A stale, locked disk at half the requested size.
+		diskPath := filepath.Join(vmDisksDir, lm.name+"-root.qcow2")
+		fx.qemu.disks[diskPath] = (testMachineDisk / 2) * 1024 * 1024
+		fx.qemu.locked[diskPath] = true
+
+		_, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
+		if err == nil {
+			t.Fatal("Reconcile succeeded with a locked wrong-size disk, want the convert error")
+		}
+		// The wrapped error carries the qemu-img stderr, not just "exit
+		// status 1".
+		if !strings.Contains(err.Error(), "Failed to lock byte 201") {
+			t.Errorf("convert error = %q, want it to include qemu-img stderr %q", err, "Failed to lock byte 201")
+		}
+		// The wrong size still forced a convert attempt.
+		if got := len(fx.qemu.qemuCalls("convert")); got != 1 {
+			t.Errorf("qemu-img convert called %d times, want 1", got)
+		}
+	})
+}
+
+// TestMachineDisksRootDiskErrorSurfacesStderr pins the error contract of the
+// root disk provisioning steps: a failed qemu-img convert or resize wraps the
+// stderr output (CombinedOutput), not just "exit status 1", so the operator
+// sees why the disk could not be provisioned.
+func TestMachineDisksRootDiskErrorSurfacesStderr(t *testing.T) {
+	c := mustReconcileClient(t)
+
+	t.Run("resize failure carries qemu-img stderr", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		vmDisksDir := fx.r.Config.VMDiskDir
+		lc := newLinkedCluster(t, c, "machine-disk-resize-err", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", true)
+		key := client.ObjectKeyFromObject(lm.hm)
+
+		// The disk is absent, so convert succeeds; resize then fails with
+		// stderr.
+		diskPath := filepath.Join(vmDisksDir, lm.name+"-root.qcow2")
+		fx.qemu.fail["resize"] = qemuFailure{
+			stderr: []byte("qemu-img: " + diskPath + ": No space left on device"),
+			err:    errors.New("exit status 1"),
+		}
+
+		_, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
+		if err == nil {
+			t.Fatal("Reconcile succeeded with a failing resize, want the resize error")
+		}
+		if !strings.Contains(err.Error(), "No space left on device") {
+			t.Errorf("resize error = %q, want it to include qemu-img stderr %q", err, "No space left on device")
+		}
+		// Convert completed before the resize failure.
+		if got := len(fx.qemu.qemuCalls("convert")); got != 1 {
+			t.Errorf("qemu-img convert called %d times, want 1", got)
+		}
+	})
+}
+
+// TestMachineDisksRootDiskInfoParseError pins the unreadable-info contract: a
+// qemu-img info probe that succeeds but returns non-JSON output cannot report
+// a size, so the disk is treated as needing recreation — convert and resize
+// still run — and the probe itself still uses the -U force-share flag.
+func TestMachineDisksRootDiskInfoParseError(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	vmDisksDir := fx.r.Config.VMDiskDir
+	lc := newLinkedCluster(t, c, "machine-disk-info-parse", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+	key := client.ObjectKeyFromObject(lm.hm)
+
+	// qemu-img info returns non-JSON output; the size cannot be read.
+	diskPath := filepath.Join(vmDisksDir, lm.name+"-root.qcow2")
+	fx.qemu.fail["info"] = qemuFailure{stderr: []byte("not json at all"), err: nil}
+
+	if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+
+	// The unreadable disk was converted and resized from the base image.
+	if got := len(fx.qemu.qemuCalls("convert")); got != 1 {
+		t.Errorf("qemu-img convert called %d times, want 1", got)
+	}
+	if got := len(fx.qemu.qemuCalls("resize")); got != 1 {
+		t.Errorf("qemu-img resize called %d times, want 1", got)
+	}
+	// The size probe still used force-share.
+	infos := fx.qemu.qemuCalls("info")
+	if got := len(infos); got != 1 {
+		t.Fatalf("qemu-img info called %d times, want 1", got)
+	}
+	wantInfo := []string{"info", "-U", diskPath}
+	if !reflect.DeepEqual(infos[0].args, wantInfo) {
+		t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
+	}
 }
 
 // TestMachineDisksConfextPackaging pins the confext data disk contract: the

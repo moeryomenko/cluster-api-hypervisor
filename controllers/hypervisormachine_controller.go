@@ -597,7 +597,11 @@ func machineInternalIPAddress(hm *infrastructurev1alpha1.HypervisorMachine) stri
 
 // reconcileRootDisk ensures <vm-disks>/<name>-root.qcow2 exists at the spec
 // size: qemu-img info checks the current disk, and a disk that is absent or
-// at the wrong size is converted from the base image and resized.
+// at the wrong size is converted from the base image and resized. The size
+// probe runs with -U (force-share) so a disk locked by a running VM still
+// reports its size, and a convert or resize failure wraps the qemu-img
+// stderr (CombinedOutput) so the operator sees why the disk could not be
+// provisioned.
 func (r *HypervisorMachineReconciler) reconcileRootDisk(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
@@ -610,11 +614,15 @@ func (r *HypervisorMachineReconciler) reconcileRootDisk(
 		return nil
 	}
 
-	if _, err := r.QemuImg(ctx, "qemu-img", "convert", "-O", "qcow2", r.Config.BaseImage, diskPath); err != nil {
+	out, err := r.QemuImg(ctx, "qemu-img", "convert", "-O", "qcow2", r.Config.BaseImage, diskPath)
+	if err != nil {
+		err = wrapQemuImgErr(err, out)
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to convert root disk %q: %v", diskPath, err)
 		return fmt.Errorf("convert root disk %q: %w", diskPath, err)
 	}
-	if _, err := r.QemuImg(ctx, "qemu-img", "resize", diskPath, fmt.Sprintf("%dM", hm.Spec.Disk)); err != nil {
+	out, err = r.QemuImg(ctx, "qemu-img", "resize", diskPath, fmt.Sprintf("%dM", hm.Spec.Disk))
+	if err != nil {
+		err = wrapQemuImgErr(err, out)
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to resize root disk %q: %v", diskPath, err)
 		return fmt.Errorf("resize root disk %q: %w", diskPath, err)
 	}
@@ -622,10 +630,22 @@ func (r *HypervisorMachineReconciler) reconcileRootDisk(
 	return nil
 }
 
+// wrapQemuImgErr appends the qemu-img CombinedOutput (which carries stderr)
+// to the exec error, so a failure like a locked disk or a full device names
+// the underlying cause instead of only "exit status 1".
+func wrapQemuImgErr(err error, out []byte) error {
+	if msg := strings.TrimSpace(string(out)); msg != "" {
+		return fmt.Errorf("%w: %s", err, msg)
+	}
+	return err
+}
+
 // rootDiskSize reports the virtual size in bytes of the disk at diskPath,
-// from qemu-img info. An absent or unreadable disk is reported as an error.
+// from qemu-img info. The probe runs with -U (force-share) so a disk locked
+// by a running VM still reports its size. An absent or unreadable disk is
+// reported as an error.
 func (r *HypervisorMachineReconciler) rootDiskSize(ctx context.Context, diskPath string) (int64, error) {
-	out, err := r.QemuImg(ctx, "qemu-img", "info", diskPath)
+	out, err := r.QemuImg(ctx, "qemu-img", "info", "-U", diskPath)
 	if err != nil {
 		return 0, err
 	}
