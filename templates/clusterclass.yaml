@@ -81,10 +81,11 @@ spec:
   template:
     spec:
       machineTemplate:
-        infrastructureRef:
-          apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
-          kind: HypervisorMachineTemplate
-          name: hypervisor-control-plane-machine-template
+        spec:
+          infrastructureRef:
+            apiGroup: infrastructure.cluster.x-k8s.io
+            kind: HypervisorMachineTemplate
+            name: hypervisor-control-plane-machine-template
 ---
 # HypervisorConfigTemplate referenced by the default-worker class bootstrap
 # ref. CAPI clones spec.template into a concrete HypervisorConfig per worker
