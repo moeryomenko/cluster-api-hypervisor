@@ -613,6 +613,9 @@ func (r *HypervisorMachineReconciler) reconcileRootDisk(
 	if err == nil && size == wantSize {
 		return nil
 	}
+	if errors.Is(err, errQemuImgInfoParse) {
+		return fmt.Errorf("root disk size probe for %q: %w", diskPath, err)
+	}
 
 	out, err := r.QemuImg(ctx, "qemu-img", "convert", "-O", "qcow2", r.Config.BaseImage, diskPath)
 	if err != nil {
@@ -640,12 +643,21 @@ func wrapQemuImgErr(err error, out []byte) error {
 	return err
 }
 
+// errQemuImgInfoParse marks a qemu-img info probe whose output could not be
+// parsed as JSON. Unlike an absent or unreadable disk — an exec error that
+// means the disk needs converting — malformed info output cannot report a
+// size, so the parse error surfaces instead of silently converting a possibly
+// correct disk.
+var errQemuImgInfoParse = errors.New("parse qemu-img info")
+
 // rootDiskSize reports the virtual size in bytes of the disk at diskPath,
 // from qemu-img info. The probe runs with -U (force-share) so a disk locked
-// by a running VM still reports its size. An absent or unreadable disk is
-// reported as an error.
+// by a running VM still reports its size, and --output=json so the size is
+// machine-readable. An absent or unreadable disk is reported as an error; a
+// probe that succeeds but returns output that is not valid JSON is reported
+// as a parse error (errQemuImgInfoParse).
 func (r *HypervisorMachineReconciler) rootDiskSize(ctx context.Context, diskPath string) (int64, error) {
-	out, err := r.QemuImg(ctx, "qemu-img", "info", "-U", diskPath)
+	out, err := r.QemuImg(ctx, "qemu-img", "info", "-U", "--output=json", diskPath)
 	if err != nil {
 		return 0, err
 	}
@@ -653,7 +665,7 @@ func (r *HypervisorMachineReconciler) rootDiskSize(ctx context.Context, diskPath
 		VirtualSize int64 `json:"virtual-size"`
 	}
 	if err := json.Unmarshal(out, &info); err != nil {
-		return 0, fmt.Errorf("parse qemu-img info for %q: %w", diskPath, err)
+		return 0, fmt.Errorf("%w for %q: %v", errQemuImgInfoParse, diskPath, err)
 	}
 	return info.VirtualSize, nil
 }

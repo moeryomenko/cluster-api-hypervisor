@@ -762,7 +762,9 @@ func TestMachineIdentityMAC(t *testing.T) {
 // TestMachineDisksRootDiskQemuImgArgs pins the root disk provisioning
 // contract: the first reconcile converts the configured base image into the
 // machine root disk and resizes it to the spec size, with the exact qemu-img
-// argument shapes.
+// argument shapes. The size probe must carry --output=json: without it real
+// qemu-img emits human-readable text that json.Unmarshal rejects, so the
+// controller would convert a correctly sized disk on every reconcile.
 func TestMachineDisksRootDiskQemuImgArgs(t *testing.T) {
 	c := mustReconcileClient(t)
 	fx := newMachineFixture(t, c)
@@ -795,12 +797,13 @@ func TestMachineDisksRootDiskQemuImgArgs(t *testing.T) {
 	}
 
 	// The size probe reads the disk with the -U force-share flag so a disk
-	// locked by a running VM still reports its size.
+	// locked by a running VM still reports its size, and --output=json so
+	// the virtual-size is machine-readable.
 	infos := fx.qemu.qemuCalls("info")
 	if got := len(infos); got != 1 {
 		t.Fatalf("qemu-img info called %d times, want 1", got)
 	}
-	wantInfo := []string{"info", "-U", diskPath}
+	wantInfo := []string{"info", "-U", "--output=json", diskPath}
 	if !reflect.DeepEqual(infos[0].args, wantInfo) {
 		t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
 	}
@@ -898,7 +901,7 @@ func TestMachineDisksRootDiskIdempotent(t *testing.T) {
 		if got := len(infos); got != 1 {
 			t.Fatalf("qemu-img info called %d times, want 1", got)
 		}
-		wantInfo := []string{"info", "-U", diskPath}
+		wantInfo := []string{"info", "-U", "--output=json", diskPath}
 		if !reflect.DeepEqual(infos[0].args, wantInfo) {
 			t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
 		}
@@ -966,43 +969,96 @@ func TestMachineDisksRootDiskErrorSurfacesStderr(t *testing.T) {
 			t.Errorf("qemu-img convert called %d times, want 1", got)
 		}
 	})
+
+	t.Run("convert failure carries qemu-img stderr", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		vmDisksDir := fx.r.Config.VMDiskDir
+		lc := newLinkedCluster(t, c, "machine-disk-convert-err", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", true)
+		key := client.ObjectKeyFromObject(lm.hm)
+
+		// The disk is absent, so the size probe fails and convert is
+		// attempted; convert then fails with stderr.
+		diskPath := filepath.Join(vmDisksDir, lm.name+"-root.qcow2")
+		fx.qemu.fail["convert"] = qemuFailure{
+			stderr: []byte("qemu-img: " + diskPath + ": Permission denied"),
+			err:    errors.New("exit status 1"),
+		}
+
+		_, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
+		if err == nil {
+			t.Fatal("Reconcile succeeded with a failing convert, want the convert error")
+		}
+		if !strings.Contains(err.Error(), "Permission denied") {
+			t.Errorf("convert error = %q, want it to include qemu-img stderr %q", err, "Permission denied")
+		}
+	})
 }
 
 // TestMachineDisksRootDiskInfoParseError pins the unreadable-info contract: a
-// qemu-img info probe that succeeds but returns non-JSON output cannot report
-// a size, so the disk is treated as needing recreation — convert and resize
-// still run — and the probe itself still uses the -U force-share flag.
+// qemu-img info probe that succeeds but returns output that is not valid JSON
+// — the human-readable text a qemu-img without --output=json emits, or
+// truncated JSON — cannot report a size, and the parse error surfaces from
+// the reconcile instead of silently converting a possibly correct disk. The
+// probe itself still uses the -U force-share flag and --output=json.
 func TestMachineDisksRootDiskInfoParseError(t *testing.T) {
 	c := mustReconcileClient(t)
-	fx := newMachineFixture(t, c)
-	vmDisksDir := fx.r.Config.VMDiskDir
-	lc := newLinkedCluster(t, c, "machine-disk-info-parse", "capi-cluster")
-	lm := newLinkedMachine(t, c, lc, "node-1", true)
-	key := client.ObjectKeyFromObject(lm.hm)
 
-	// qemu-img info returns non-JSON output; the size cannot be read.
-	diskPath := filepath.Join(vmDisksDir, lm.name+"-root.qcow2")
-	fx.qemu.fail["info"] = qemuFailure{stderr: []byte("not json at all"), err: nil}
+	// humanReadableInfo is the text qemu-img info emits without
+	// --output=json; the --output=json pin makes it impossible in
+	// production, but if it ever appears the parse error must surface.
+	humanReadableInfo := "image: /build/vm-disks/node-1-root.qcow2\n" +
+		"file format: qcow2\n" +
+		"virtual size: 2 GiB (2147483648 bytes)\n" +
+		"disk size: 1.2 GiB\n" +
+		"cluster_size: 65536\n"
 
-	if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
-		t.Fatalf("Reconcile error: %v", err)
+	tests := []struct {
+		name      string
+		namespace string
+		out       string
+	}{
+		{name: "human-readable qemu-img output", namespace: "machine-disk-info-parse", out: humanReadableInfo},
+		{name: "malformed JSON", namespace: "machine-disk-info-malformed", out: `{"virtual-size": `},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fx := newMachineFixture(t, c)
+			vmDisksDir := fx.r.Config.VMDiskDir
+			lc := newLinkedCluster(t, c, tt.namespace, "capi-cluster")
+			lm := newLinkedMachine(t, c, lc, "node-1", true)
+			key := client.ObjectKeyFromObject(lm.hm)
 
-	// The unreadable disk was converted and resized from the base image.
-	if got := len(fx.qemu.qemuCalls("convert")); got != 1 {
-		t.Errorf("qemu-img convert called %d times, want 1", got)
-	}
-	if got := len(fx.qemu.qemuCalls("resize")); got != 1 {
-		t.Errorf("qemu-img resize called %d times, want 1", got)
-	}
-	// The size probe still used force-share.
-	infos := fx.qemu.qemuCalls("info")
-	if got := len(infos); got != 1 {
-		t.Fatalf("qemu-img info called %d times, want 1", got)
-	}
-	wantInfo := []string{"info", "-U", diskPath}
-	if !reflect.DeepEqual(infos[0].args, wantInfo) {
-		t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
+			// qemu-img info succeeds but returns output the size cannot be
+			// parsed from.
+			diskPath := filepath.Join(vmDisksDir, lm.name+"-root.qcow2")
+			fx.qemu.fail["info"] = qemuFailure{stderr: []byte(tt.out), err: nil}
+
+			_, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
+			if err == nil {
+				t.Fatal("Reconcile succeeded with unparseable qemu-img info, want the parse error")
+			}
+			if !strings.Contains(err.Error(), "parse qemu-img info") {
+				t.Errorf("Reconcile error = %q, want it to include the info parse error", err)
+			}
+			// The unreadable size must not trigger a convert of a possibly
+			// correct disk.
+			if got := len(fx.qemu.qemuCalls("convert")); got != 0 {
+				t.Errorf("qemu-img convert called %d times, want 0", got)
+			}
+			if got := len(fx.qemu.qemuCalls("resize")); got != 0 {
+				t.Errorf("qemu-img resize called %d times, want 0", got)
+			}
+			// The size probe still used force-share and --output=json.
+			infos := fx.qemu.qemuCalls("info")
+			if got := len(infos); got != 1 {
+				t.Fatalf("qemu-img info called %d times, want 1", got)
+			}
+			wantInfo := []string{"info", "-U", "--output=json", diskPath}
+			if !reflect.DeepEqual(infos[0].args, wantInfo) {
+				t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
+			}
+		})
 	}
 }
 
