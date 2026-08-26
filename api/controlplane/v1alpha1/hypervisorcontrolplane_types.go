@@ -17,7 +17,6 @@ limitations under the License.
 package controlplanev1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
@@ -42,14 +41,41 @@ type HypervisorControlPlaneSpec struct {
 // HypervisorControlPlaneMachineTemplate defines the template for Machines in
 // a HypervisorControlPlane object.
 type HypervisorControlPlaneMachineTemplate struct {
-	// InfrastructureRef is a required reference to a custom resource offered
-	// by an infrastructure provider, here a HypervisorMachineTemplate.
-	InfrastructureRef corev1.ObjectReference `json:"infrastructureRef"`
-
 	// Metadata is the standard object's metadata of the machines created from
 	// this template.
 	// +optional
 	Metadata clusterv1.ObjectMeta `json:"metadata,omitempty,omitzero"`
+
+	// Spec defines the spec for Machines in a HypervisorControlPlane object.
+	// +required
+	Spec HypervisorControlPlaneMachineTemplateSpec `json:"spec,omitempty,omitzero"`
+}
+
+// HypervisorControlPlaneMachineTemplateSpec defines the spec for Machines in
+// a HypervisorControlPlane object.
+type HypervisorControlPlaneMachineTemplateSpec struct {
+	// InfrastructureRef is a required reference to a custom resource offered
+	// by an infrastructure provider, here a HypervisorMachineTemplate. The
+	// version is inferred from the contract labels of the referenced CRD, and
+	// the reference carries no namespace: it resolves in the owning control
+	// plane's namespace.
+	// +required
+	InfrastructureRef clusterv1.ContractVersionedObjectReference `json:"infrastructureRef,omitempty,omitzero"`
+}
+
+// ControlPlaneInitializationStatus provides observations of the
+// HypervisorControlPlane initialization process.
+// NOTE: fields in this struct are part of the Cluster API contract and are
+// used to orchestrate initial provisioning.
+type ControlPlaneInitializationStatus struct {
+	// ControlPlaneInitialized is true when the provider reports that the
+	// Kubernetes control plane is initialized; a control plane is considered
+	// initialized when it can accept requests, no matter if this happens
+	// before the control plane is fully provisioned or not.
+	// NOTE: this field is part of the Cluster API contract and it is used to
+	// orchestrate initial provisioning.
+	// +optional
+	ControlPlaneInitialized *bool `json:"controlPlaneInitialized,omitempty"`
 }
 
 // HypervisorControlPlaneStatus defines the observed state of
@@ -65,7 +91,17 @@ type HypervisorControlPlaneStatus struct {
 	// initialized and thus it can accept requests.
 	// NOTE: this field is part of the Cluster API contract and it is used to
 	// orchestrate provisioning.
+	// Deprecated: the v1beta1 contract path. Kept in tandem with
+	// Initialization.ControlPlaneInitialized, the v1beta2 path, until the
+	// flat field is removed.
 	Initialized bool `json:"initialized"`
+
+	// Initialization provides observations of the HypervisorControlPlane
+	// initialization process.
+	// NOTE: this field is part of the Cluster API contract and it is used to
+	// orchestrate initial provisioning.
+	// +optional
+	Initialization ControlPlaneInitializationStatus `json:"initialization,omitempty,omitzero"`
 
 	// Selector is the label selector in string format to avoid introspection
 	// by clients, and is used to provide the CRD-based integration for the
