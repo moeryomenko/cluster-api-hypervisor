@@ -135,6 +135,23 @@ spec:
                 description: FailureReason is a machine-readable reason for the last
                   failure.
                 type: string
+              initialization:
+                description: |-
+                  Initialization reports the CAPI v1beta2 bootstrap-contract
+                  initialization status: whether the bootstrap data Secret has been
+                  created and its name. CAPI's machine controller reads these fields to
+                  release the Machine from WaitingForDataSecret.
+                properties:
+                  dataSecretCreated:
+                    description: |-
+                      DataSecretCreated reports whether the bootstrap data Secret has been
+                      created.
+                    type: boolean
+                  dataSecretName:
+                    description: DataSecretName is the name of the bootstrap data
+                      Secret.
+                    type: string
+                type: object
               ready:
                 description: Ready indicates the bootstrap data Secret has been rendered.
                 type: boolean

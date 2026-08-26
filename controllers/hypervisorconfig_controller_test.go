@@ -62,6 +62,13 @@ limitations under the License.
 //     keys cannot contain "/"), and writes the conventional Secret
 //     <config>-data; status.dataSecretName names it and the config is marked
 //     ready with the DataSecretAvailable condition true.
+//   - CAPI v1beta2 bootstrap-contract initialization status: after the data
+//     Secret is rendered, status.initialization.dataSecretCreated is true and
+//     status.initialization.dataSecretName names the <config>-data Secret —
+//     the fields CAPI's machine controller reads to release the Machine from
+//     WaitingForDataSecret. Before the Secret exists (resolution or write
+//     failure) the block stays absent or dataSecretCreated stays false, and a
+//     config stored before the fields existed reconciles without panic.
 //   - Kubeconfigs: the controller renders admin/controller-manager/scheduler
 //     kubeconfigs for a control-plane node and kubelet.conf for every node
 //     through the injected renderer with the server URL https://<cp-ip>:6443
@@ -1118,4 +1125,326 @@ func TestConfigKubeconfigServerURL(t *testing.T) {
 
 		wantRenderCalls(t, fx.render.calls, wantURL, "system:node:worker-1")
 	})
+}
+
+// ---------------------------------------------------------------------------
+// CAPI v1beta2 bootstrap-contract initialization status (TASK-010B).
+//
+// The contract, verified against the pinned sigs.k8s.io/cluster-api v1.13.5
+// module: the machine controller's reconcileBootstrap reads
+// contract.Bootstrap().DataSecretCreated("v1beta2") at the path
+// status.initialization.dataSecretCreated (a JSON boolean; absent means the
+// Machine stays WaitingForDataSecret) and contract.Bootstrap().DataSecretName()
+// at status.dataSecretName. The reference kubeadm bootstrap provider models
+// the block as Initialization KubeadmConfigInitializationStatus with
+// DataSecretCreated *bool `json:"dataSecretCreated,omitempty"`. The tests
+// below pin the same wire shape on HypervisorConfigStatus plus the controller
+// behavior that populates it.
+//
+// The status type currently lacks the Initialization field entirely, so the
+// tests read the contract through the JSON document and reflection instead of
+// typed field access: they compile against the unfixed code and fail on
+// behavior (the initialization block is absent), which is the preferred red
+// phase for this task.
+// ---------------------------------------------------------------------------
+
+// bootstrapInitializationContract mirrors the CAPI v1beta2 bootstrap-contract
+// status block the machine controller reads: status.initialization with
+// dataSecretCreated and dataSecretName. The test decodes the config status
+// JSON into this shape, so the assertions pin the exact JSON tags CAPI reads
+// without depending on the provider's Go field names.
+type bootstrapInitializationContract struct {
+	Initialization *struct {
+		DataSecretCreated *bool   `json:"dataSecretCreated"`
+		DataSecretName    *string `json:"dataSecretName"`
+	} `json:"initialization"`
+}
+
+// configStatusInitialization decodes the bootstrap-contract initialization
+// block from the config's status JSON, returning the contract shape (nil
+// Initialization when the block is absent).
+func configStatusInitialization(
+	t *testing.T,
+	cfg *bootstrapv1alpha1.HypervisorConfig,
+) *bootstrapInitializationContract {
+	t.Helper()
+	raw, err := json.Marshal(cfg.Status)
+	if err != nil {
+		t.Fatalf("Marshal config status: %v", err)
+	}
+	contract := &bootstrapInitializationContract{}
+	if err := json.Unmarshal(raw, contract); err != nil {
+		t.Fatalf("Unmarshal config status into bootstrap contract: %v", err)
+	}
+	return contract
+}
+
+// assertInitializationCreated fails the test unless the contract block reports
+// the data Secret created with the given name: dataSecretCreated true and
+// dataSecretName set to wantName.
+func assertInitializationCreated(t *testing.T, contract *bootstrapInitializationContract, wantName string) {
+	t.Helper()
+	if contract == nil || contract.Initialization == nil {
+		t.Fatal("status.initialization block absent; CAPI's machine controller would keep the Machine WaitingForDataSecret")
+	}
+	if contract.Initialization.DataSecretCreated == nil || !*contract.Initialization.DataSecretCreated {
+		t.Error("status.initialization.dataSecretCreated != true after the data Secret was rendered")
+	}
+	if contract.Initialization.DataSecretName == nil || *contract.Initialization.DataSecretName != wantName {
+		t.Errorf(
+			"status.initialization.dataSecretName = %v, want %q",
+			contract.Initialization.DataSecretName,
+			wantName,
+		)
+	}
+}
+
+// assertInitializationNotCreated fails the test unless the contract block does
+// NOT report the data Secret created: either the block is absent or
+// dataSecretCreated is false. The Machine must not be signaled ready before
+// the Secret exists.
+func assertInitializationNotCreated(t *testing.T, contract *bootstrapInitializationContract) {
+	t.Helper()
+	if contract == nil || contract.Initialization == nil {
+		return
+	}
+	if contract.Initialization.DataSecretCreated != nil && *contract.Initialization.DataSecretCreated {
+		t.Error("status.initialization.dataSecretCreated = true before the data Secret exists")
+	}
+}
+
+// failingSecretCreateClient wraps a client.Client and injects an error into
+// Create calls for the Secret named secretName, leaving every other operation
+// untouched. It lets the tests exercise the data-Secret write failure without
+// disturbing the cluster PKI Secret write or the object CRUD.
+type failingSecretCreateClient struct {
+	client.Client
+	secretName string
+	err        error
+}
+
+// Create implements the client.Client Create seam.
+func (f *failingSecretCreateClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	if secret, ok := obj.(*corev1.Secret); ok && secret.Name == f.secretName {
+		return f.err
+	}
+	return f.Client.Create(ctx, obj, opts...)
+}
+
+// isBoolKind reports whether the type is a bool or a pointer to a bool.
+func isBoolKind(t reflect.Type) bool {
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return t.Kind() == reflect.Bool
+}
+
+// isStringKind reports whether the type is a string or a pointer to a string.
+func isStringKind(t reflect.Type) bool {
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return t.Kind() == reflect.String
+}
+
+// TestConfigStatusInitializationJSONContract pins the wire shape of the
+// bootstrap-contract initialization block on HypervisorConfigStatus: a JSON
+// document carrying status.initialization.dataSecretCreated (boolean) and
+// status.initialization.dataSecretName (string) must survive a
+// marshal/unmarshal round trip through the status type with the exact keys
+// CAPI reads. The document is decoded into the typed status and encoded back,
+// so a wrong json tag or a missing field drops the block and fails the test.
+func TestConfigStatusInitializationJSONContract(t *testing.T) {
+	const doc = `{"initialization":{"dataSecretCreated":true,"dataSecretName":"cp-1-config-data"},"dataSecretName":"cp-1-config-data"}`
+
+	var status bootstrapv1alpha1.HypervisorConfigStatus
+	if err := json.Unmarshal([]byte(doc), &status); err != nil {
+		t.Fatalf("Unmarshal contract document: %v", err)
+	}
+	raw, err := json.Marshal(&status)
+	if err != nil {
+		t.Fatalf("Marshal status: %v", err)
+	}
+
+	var out map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("Unmarshal marshaled status: %v", err)
+	}
+	initRaw, ok := out["initialization"]
+	if !ok {
+		t.Fatalf("status JSON lacks the initialization block CAPI reads: %s", raw)
+	}
+	var init map[string]json.RawMessage
+	if err := json.Unmarshal(initRaw, &init); err != nil {
+		t.Fatalf("Unmarshal initialization block: %v", err)
+	}
+
+	var created bool
+	if err := json.Unmarshal(init["dataSecretCreated"], &created); err != nil {
+		t.Fatalf("initialization.dataSecretCreated is not a JSON boolean: %s", initRaw)
+	}
+	if !created {
+		t.Error("initialization.dataSecretCreated = false after round trip, want true")
+	}
+
+	var name string
+	if err := json.Unmarshal(init["dataSecretName"], &name); err != nil {
+		t.Fatalf("initialization.dataSecretName is not a JSON string: %s", initRaw)
+	}
+	if name != "cp-1-config-data" {
+		t.Errorf("initialization.dataSecretName = %q, want %q", name, "cp-1-config-data")
+	}
+}
+
+// TestConfigStatusInitializationFieldShape pins the typed shape of the
+// bootstrap-contract initialization field on HypervisorConfigStatus: an
+// Initialization field tagged `initialization` whose type carries
+// DataSecretCreated (tagged `dataSecretCreated`, bool-kind) and DataSecretName
+// (tagged `dataSecretName`, string-kind). The JSON round-trip test pins the
+// wire shape; this test pins the Go shape the controller code will reference.
+// The kind checks accept both value and pointer fields, matching the kubeadm
+// reference implementation's *bool.
+func TestConfigStatusInitializationFieldShape(t *testing.T) {
+	statusType := reflect.TypeOf(bootstrapv1alpha1.HypervisorConfigStatus{})
+	field, ok := statusType.FieldByName("Initialization")
+	if !ok {
+		t.Fatal("HypervisorConfigStatus has no Initialization field; add the CAPI v1beta2 bootstrap-contract initialization status")
+	}
+	if got := strings.Split(field.Tag.Get("json"), ",")[0]; got != "initialization" {
+		t.Errorf("Initialization json tag = %q, want %q", got, "initialization")
+	}
+
+	initType := field.Type
+	for initType.Kind() == reflect.Ptr {
+		initType = initType.Elem()
+	}
+	if initType.Kind() != reflect.Struct {
+		t.Fatalf("Initialization type %s is not a struct", field.Type)
+	}
+
+	created, ok := initType.FieldByName("DataSecretCreated")
+	if !ok {
+		t.Fatal("Initialization type has no DataSecretCreated field")
+	}
+	if got := strings.Split(created.Tag.Get("json"), ",")[0]; got != "dataSecretCreated" {
+		t.Errorf("DataSecretCreated json tag = %q, want %q", got, "dataSecretCreated")
+	}
+	if !isBoolKind(created.Type) {
+		t.Errorf("DataSecretCreated type %s is not bool-kind", created.Type)
+	}
+
+	name, ok := initType.FieldByName("DataSecretName")
+	if !ok {
+		t.Fatal("Initialization type has no DataSecretName field")
+	}
+	if got := strings.Split(name.Tag.Get("json"), ",")[0]; got != "dataSecretName" {
+		t.Errorf("DataSecretName json tag = %q, want %q", got, "dataSecretName")
+	}
+	if !isStringKind(name.Type) {
+		t.Errorf("DataSecretName type %s is not string-kind", name.Type)
+	}
+}
+
+// TestConfigInitializationStatusSetAfterRender pins the controller's
+// bootstrap-contract status write: after the data Secret is rendered,
+// status.initialization.dataSecretCreated is true and
+// status.initialization.dataSecretName names the conventional <config>-data
+// Secret. CAPI's machine controller reads these fields to release the Machine
+// from WaitingForDataSecret.
+func TestConfigInitializationStatusSetAfterRender(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newConfigFixture(t, c)
+	lc := newLinkedCluster(t, c, "config-init-set", "capi-cluster")
+	lcfg := newLinkedConfig(t, c, lc, lc.name, "cp-1", true, testCPIP, nil)
+	fx.reconcileConfig(t, lcfg.cfg)
+
+	cfg := getConfig(t, c, lcfg.cfg)
+	assertInitializationCreated(t, configStatusInitialization(t, cfg), lcfg.name+"-data")
+}
+
+// TestConfigInitializationNotSetBeforeSecret pins the negative contract: a
+// config that has not rendered a data Secret (resolution failure) must not
+// signal the Machine ready — status.initialization.dataSecretCreated stays
+// false or the block is absent.
+func TestConfigInitializationNotSetBeforeSecret(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newConfigFixture(t, c)
+	lc := newLinkedCluster(t, c, "config-init-notset", "capi-cluster")
+	cfg := &bootstrapv1alpha1.HypervisorConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "orphan-config", Namespace: lc.namespace},
+		Spec: bootstrapv1alpha1.HypervisorConfigSpec{
+			ClusterName: lc.name,
+		},
+	}
+	if err := c.Create(t.Context(), cfg); err != nil {
+		t.Fatalf("create orphan HypervisorConfig: %v", err)
+	}
+
+	_, _ = fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cfg)})
+
+	got := getConfig(t, c, cfg)
+	assertConfigFailure(t, got)
+	assertInitializationNotCreated(t, configStatusInitialization(t, got))
+}
+
+// TestConfigInitializationStatusIdempotent pins the idempotent status write: a
+// second reconcile with the initialization fields already set neither errors
+// nor changes them.
+func TestConfigInitializationStatusIdempotent(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newConfigFixture(t, c)
+	lc := newLinkedCluster(t, c, "config-init-idem", "capi-cluster")
+	lcfg := newLinkedConfig(t, c, lc, lc.name, "cp-1", true, testCPIP, nil)
+	fx.reconcileConfig(t, lcfg.cfg)
+
+	first := getConfig(t, c, lcfg.cfg)
+	assertInitializationCreated(t, configStatusInitialization(t, first), lcfg.name+"-data")
+
+	// The second reconcile must not error when the fields are already set.
+	fx.reconcileConfig(t, lcfg.cfg)
+
+	second := getConfig(t, c, lcfg.cfg)
+	assertInitializationCreated(t, configStatusInitialization(t, second), lcfg.name+"-data")
+}
+
+// TestConfigInitializationSecretCreateFailure pins the write-failure edge:
+// when the data Secret cannot be created, the reconcile errors and the status
+// is NOT marked created — the Machine must not be signaled ready.
+func TestConfigInitializationSecretCreateFailure(t *testing.T) {
+	c := mustReconcileClient(t)
+	lc := newLinkedCluster(t, c, "config-init-fail", "capi-cluster")
+	lcfg := newLinkedConfig(t, c, lc, lc.name, "cp-1", true, testCPIP, nil)
+
+	errCreate := errors.New("fake: data secret create denied")
+	failing := &failingSecretCreateClient{Client: c, secretName: lcfg.name + "-data", err: errCreate}
+	fx := newConfigFixture(t, failing)
+
+	_, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lcfg.cfg)})
+	if err == nil {
+		t.Fatal("Reconcile succeeded with a failing data Secret create, want an error")
+	}
+	if !errors.Is(err, errCreate) {
+		t.Errorf("Reconcile error %v does not wrap %v", err, errCreate)
+	}
+
+	got := getConfig(t, failing, lcfg.cfg)
+	assertConfigFailure(t, got)
+	assertInitializationNotCreated(t, configStatusInitialization(t, got))
+}
+
+// TestConfigInitializationBackwardCompat pins the upgrade edge: a
+// HypervisorConfig stored before the initialization status fields existed
+// (zero-value status — the typed client stores no initialization key) must
+// reconcile without panic and the controller must populate the contract
+// fields.
+func TestConfigInitializationBackwardCompat(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newConfigFixture(t, c)
+	lc := newLinkedCluster(t, c, "config-init-bc", "capi-cluster")
+	lcfg := newLinkedConfig(t, c, lc, lc.name, "cp-1", true, testCPIP, nil)
+
+	fx.reconcileConfig(t, lcfg.cfg)
+
+	cfg := getConfig(t, c, lcfg.cfg)
+	assertInitializationCreated(t, configStatusInitialization(t, cfg), lcfg.name+"-data")
 }

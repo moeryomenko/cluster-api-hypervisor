@@ -48,6 +48,12 @@ type HypervisorConfigStatus struct {
 	// bootstrap data for the node.
 	DataSecretName *string `json:"dataSecretName,omitempty"`
 
+	// Initialization reports the CAPI v1beta2 bootstrap-contract
+	// initialization status: whether the bootstrap data Secret has been
+	// created and its name. CAPI's machine controller reads these fields to
+	// release the Machine from WaitingForDataSecret.
+	Initialization *HypervisorConfigInitializationStatus `json:"initialization,omitempty,omitzero"`
+
 	// FailureReason is a machine-readable reason for the last failure.
 	FailureReason string `json:"failureReason,omitempty"`
 
@@ -56,6 +62,19 @@ type HypervisorConfigStatus struct {
 
 	// Conditions defines current service state of the HypervisorConfig.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// HypervisorConfigInitializationStatus mirrors the CAPI v1beta2
+// bootstrap-contract initialization block (kubeadm's
+// KubeadmConfigInitializationStatus): dataSecretCreated reports whether the
+// bootstrap data Secret exists and dataSecretName names it.
+type HypervisorConfigInitializationStatus struct {
+	// DataSecretCreated reports whether the bootstrap data Secret has been
+	// created.
+	DataSecretCreated *bool `json:"dataSecretCreated,omitempty"`
+
+	// DataSecretName is the name of the bootstrap data Secret.
+	DataSecretName string `json:"dataSecretName,omitempty"`
 }
 
 // +kubebuilder:object:root=true

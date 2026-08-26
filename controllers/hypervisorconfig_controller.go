@@ -222,6 +222,11 @@ func (r *HypervisorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	cfg.Status.FailureReason = ""
 	cfg.Status.FailureMessage = ""
 	cfg.Status.DataSecretName = &dataSecretName
+	created := true
+	cfg.Status.Initialization = &bootstrapv1alpha1.HypervisorConfigInitializationStatus{
+		DataSecretCreated: &created,
+		DataSecretName:    dataSecretName,
+	}
 	markDataSecretAvailable(cfg, metav1.ConditionTrue, "BootstrapDataRendered", "bootstrap data Secret rendered")
 	if err := r.Status().Update(ctx, cfg); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update HypervisorConfig status: %w", err)
