@@ -325,6 +325,14 @@ func (v *opLoggingVM) SetDiskPaths(paths []string) {
 	v.inner.SetDiskPaths(paths)
 }
 
+func (v *opLoggingVM) SetCPU(cpu int32) {
+	v.inner.SetCPU(cpu)
+}
+
+func (v *opLoggingVM) SetRAM(ramMiB int32) {
+	v.inner.SetRAM(ramMiB)
+}
+
 func (v *opLoggingVM) EnsureRunning(ctx context.Context) error {
 	v.log.add("VM.EnsureRunning")
 	return v.inner.EnsureRunning(ctx)

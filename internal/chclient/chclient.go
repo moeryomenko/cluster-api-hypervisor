@@ -49,9 +49,17 @@ type Client interface {
 	// and cloud-hypervisor rejects the boot.
 	SetFirmware(firmware string)
 	// SetDiskPaths supplies the host-side disk images attached to the VM at
-	// the next configuration push: the root qcow2 first, then any confext
-	// data raws. Call it before EnsureRunning.
+	// the next configuration push: the root qcow2 first, then the CIDATA
+	// disk, then any confext data raws. Call it before EnsureRunning.
 	SetDiskPaths(paths []string)
+	// SetCPU supplies the spec vCPU count. A non-positive value omits the
+	// cpus section from the pushed configuration so cloud-hypervisor applies
+	// its own default. Call it before EnsureRunning.
+	SetCPU(cpu int32)
+	// SetRAM supplies the spec memory size in MiB. A non-positive value falls
+	// back to the cloud-hypervisor default memory footprint. Call it before
+	// EnsureRunning.
+	SetRAM(ramMiB int32)
 	// EnsureRunning spawns the cloud-hypervisor process when it is not
 	// running, pushes the VM configuration over the API when the VM does not
 	// exist yet, and boots the VM. It is a no-op when the VM is already
@@ -76,12 +84,14 @@ type VMClient struct {
 	socket  string
 
 	// netConfig holds the --net argv-form device string rendered by the
-	// controller; firmware and diskPaths hold the boot medium and disk
-	// images. All three are consumed by pushConfig when EnsureRunning
-	// creates the VM.
+	// controller; firmware, diskPaths, cpu and ramMiB hold the boot medium,
+	// disk images, and spec cpu/ram shape. All are consumed by pushConfig
+	// when EnsureRunning creates the VM.
 	netConfig string
 	firmware  string
 	diskPaths []string
+	cpu       int32
+	ramMiB    int32
 }
 
 // socketReadyTimeout bounds how long EnsureRunning waits for the API socket
@@ -119,6 +129,18 @@ func (c *VMClient) SetFirmware(firmware string) {
 // push.
 func (c *VMClient) SetDiskPaths(paths []string) {
 	c.diskPaths = paths
+}
+
+// SetCPU records the spec vCPU count used to build the cpus section of the
+// pushed configuration.
+func (c *VMClient) SetCPU(cpu int32) {
+	c.cpu = cpu
+}
+
+// SetRAM records the spec memory size in MiB used to build the memory section
+// of the pushed configuration.
+func (c *VMClient) SetRAM(ramMiB int32) {
+	c.ramMiB = ramMiB
 }
 
 // EnsureRunning spawns the cloud-hypervisor process when it is not running,
@@ -162,13 +184,18 @@ func (c *VMClient) ensureBooted(ctx context.Context) error {
 }
 
 // pushConfig builds the VM configuration from the recorded net device
-// string, firmware, and disk paths, and pushes it with vm.create. The
-// firmware is required: without it cloud-hypervisor accepts the create but
-// rejects the later boot as not bootable, so the misconfiguration surfaces
-// here instead. When a net device is configured, guest memory must be shared
-// for vhost-user, so the memory section pins the cloud-hypervisor default
-// size with shared=true; without a net device no memory section is sent and
-// the library defaults apply untouched.
+// string, firmware, disk paths, and spec cpu/ram shape, and pushes it with
+// vm.create. The firmware is required: without it cloud-hypervisor accepts
+// the create but rejects the later boot as not bootable, so the
+// misconfiguration surfaces here instead. The cpus section carries the spec
+// vCPU count as both boot_vcpus and max_vcpus; a non-positive count omits the
+// section so cloud-hypervisor applies its own default. When a net device is
+// configured, guest memory must be shared for vhost-user, so the memory
+// section pins the spec RAM converted from MiB to bytes — falling back to the
+// cloud-hypervisor default footprint when the spec RAM is non-positive — with
+// shared=true; without a net device no memory section is sent and the library
+// defaults apply untouched. The CIDATA disk (the image whose path ends in
+// -cidata.img) is attached read-only; every other disk stays writable.
 func (c *VMClient) pushConfig(ctx context.Context) error {
 	if c.firmware == "" {
 		return errors.New("push vm config: no firmware configured (SetFirmware)")
@@ -177,8 +204,11 @@ func (c *VMClient) pushConfig(ctx context.Context) error {
 	cfg := ch.VmConfig{
 		Payload: &ch.PayloadConfig{Firmware: c.firmware},
 	}
+	if c.cpu > 0 {
+		cfg.Cpus = &ch.CpusConfig{BootVCPUs: int(c.cpu), MaxVCPUs: int(c.cpu)}
+	}
 	for _, path := range c.diskPaths {
-		cfg.Disks = append(cfg.Disks, ch.DiskConfig{Path: path})
+		cfg.Disks = append(cfg.Disks, ch.DiskConfig{Path: path, Readonly: isCIDATADisk(path)})
 	}
 	if c.netConfig != "" {
 		net, err := ch.ParseNetConfig(c.netConfig)
@@ -186,13 +216,28 @@ func (c *VMClient) pushConfig(ctx context.Context) error {
 			return fmt.Errorf("push vm config: %w", err)
 		}
 		cfg.Net = []ch.NetConfig{net}
-		cfg.Memory = &ch.MemoryConfig{Size: ch.DefaultMemorySize, Shared: true}
+		memorySize := ch.DefaultMemorySize
+		if c.ramMiB > 0 {
+			memorySize = int64(c.ramMiB) * 1024 * 1024
+		}
+		cfg.Memory = &ch.MemoryConfig{Size: memorySize, Shared: true}
 	}
 
 	if err := c.client.Create(ctx, cfg); err != nil {
 		return fmt.Errorf("push vm config: %w", err)
 	}
 	return nil
+}
+
+// cidataDiskSuffix is the file-name suffix of the CIDATA disk image the
+// machine controller produces (<vm-disks>/<name>-cidata.img). The client
+// identifies the read-only disk by this suffix when building the vm.create
+// body.
+const cidataDiskSuffix = "-cidata.img"
+
+// isCIDATADisk reports whether path names the machine's CIDATA disk image.
+func isCIDATADisk(path string) bool {
+	return strings.HasSuffix(path, cidataDiskSuffix)
 }
 
 // vmAbsentBodyMarker is the body substring some cloud-hypervisor versions

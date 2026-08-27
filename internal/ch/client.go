@@ -69,6 +69,14 @@ type PayloadConfig struct {
 	Firmware string `json:"firmware,omitempty"`
 }
 
+// CpusConfig is the vCPU section of a VmConfig. BootVCPUs is the vCPU count
+// the VM boots with; MaxVCPUs is the ceiling the guest can hot-add up to.
+// Both carry the same spec value: the provider does not expose hot-add.
+type CpusConfig struct {
+	BootVCPUs int `json:"boot_vcpus"`
+	MaxVCPUs  int `json:"max_vcpus"`
+}
+
 // MemoryConfig is the guest memory section of a VmConfig. Size is in bytes.
 // Shared must be true when any vhost-user device is attached: cloud-hypervisor
 // rejects booting such a VM on private memory.
@@ -78,9 +86,12 @@ type MemoryConfig struct {
 }
 
 // DiskConfig is one disk entry of a VmConfig. Path is the host-side image
-// file (qcow2 or raw) backing the virtio-blk device.
+// file (qcow2 or raw) backing the virtio-blk device. Readonly attaches the
+// disk read-only (readonly: true in the vm.create body); the CIDATA disk is
+// the only read-only disk — the guest must not rewrite its cloud-init parts.
 type DiskConfig struct {
-	Path string `json:"path"`
+	Path     string `json:"path"`
+	Readonly bool   `json:"readonly,omitempty"`
 }
 
 // NetConfig is one net device entry of a VmConfig. VhostUser with
@@ -102,6 +113,7 @@ type NetConfig struct {
 // memory size.
 type VmConfig struct {
 	Payload *PayloadConfig `json:"payload,omitempty"`
+	Cpus    *CpusConfig    `json:"cpus,omitempty"`
 	Memory  *MemoryConfig  `json:"memory,omitempty"`
 	Disks   []DiskConfig   `json:"disks,omitempty"`
 	Net     []NetConfig    `json:"net,omitempty"`

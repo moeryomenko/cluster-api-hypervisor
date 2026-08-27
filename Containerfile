@@ -7,6 +7,7 @@
 #   - cloud-hypervisor : per-VM subprocess management
 #   - qemu-img         : root disk convert/resize
 #   - mksquashfs       : confext data disk packaging (squashfs-tools)
+#   - mkdosfs/mcopy    : CIDATA disk build (dosfstools + mtools)
 #
 # DNS and DHCP are served by the k8netd daemon (a separate user quadlet), so
 # no DNS forwarder ships in this image.
@@ -42,6 +43,8 @@ FROM alpine:edge@sha256:266f29255458134745f2bf588cb23ed1ed1768b96ff2580a05d70a8a
 ARG CLOUD_HYPERVISOR_VERSION=48.0-r0
 ARG QEMU_IMG_VERSION=11.1.0-r0
 ARG SQUASHFS_TOOLS_VERSION=4.7.5-r0
+ARG DOSFSTOOLS_VERSION=4.2-r2
+ARG MTOOLS_VERSION=4.0.49-r0
 ARG LIBCAP_VERSION=2.78-r0
 
 # libcap ships setcap, used below to strip the file capability the Alpine
@@ -56,6 +59,8 @@ RUN apk add --no-cache \
         cloud-hypervisor=${CLOUD_HYPERVISOR_VERSION} \
         qemu-img=${QEMU_IMG_VERSION} \
         squashfs-tools=${SQUASHFS_TOOLS_VERSION} \
+        dosfstools=${DOSFSTOOLS_VERSION} \
+        mtools=${MTOOLS_VERSION} \
         libcap=${LIBCAP_VERSION} \
     && (setcap -r /usr/bin/cloud-hypervisor || true)
 

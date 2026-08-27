@@ -175,6 +175,19 @@ type recordingExecRunner struct {
 	disks  map[string]int64       // disk path -> virtual size in bytes
 	locked map[string]bool        // disk paths held by a running VM's qemu-img lock
 	fail   map[string]qemuFailure // per-subcommand (output, error) override
+
+	// mkdosfsRequiresTarget makes the mkdosfs simulation behave like the
+	// real binary: it refuses to format a target file that does not exist
+	// ("mkdosfs: unable to open <img>: No such file or directory", exit 1).
+	// The CIDATA build must pre-create the image (dd/truncate, the
+	// create-cloudinit.sh precedent) before formatting; the strengthened
+	// TestMachineCIDATADiskBuilt subtest enables this mode to pin that
+	// behavior. Off by default so the rest of the suite keeps the lenient
+	// simulation.
+	mkdosfsRequiresTarget bool
+	// mkdosfsExisted records whether the mkdosfs target file existed on disk
+	// at invocation time.
+	mkdosfsExisted bool
 }
 
 // newRecordingExecRunner builds an empty runner with a live disk store.
@@ -201,6 +214,36 @@ func (f *recordingExecRunner) Run(_ context.Context, name string, args ...string
 	case "qemu-img":
 		return f.qemuImg(args)
 	case "mksquashfs":
+		return f.out, nil
+	case "mkdosfs":
+		// The CIDATA disk build formats the image with mkdosfs (the
+		// create-cloudinit.sh precedent). Simulate the format by creating the
+		// image file named by the last argument, so the CIDATA disk exists on
+		// disk for the file-existence assertions; a per-subcommand override
+		// fails the build. In realistic mode the simulation matches the real
+		// binary: mkdosfs refuses to format a target that does not exist, so
+		// the build must pre-create the image before formatting.
+		if fail, ok := f.fail["mkdosfs"]; ok {
+			return fail.stderr, fail.err
+		}
+		img := args[len(args)-1]
+		if _, err := os.Stat(img); err == nil {
+			f.mkdosfsExisted = true
+		} else if f.mkdosfsRequiresTarget {
+			return []byte("mkdosfs: unable to open " + img + ": No such file or directory"), errors.New("exit status 1")
+		}
+		if err := os.WriteFile(img, []byte("CIDATA-FAT16"), 0o644); err != nil {
+			return nil, err
+		}
+		return f.out, nil
+	case "mcopy":
+		// The CIDATA disk build copies each rendered part into the image with
+		// mcopy. The invocation is already recorded in f.calls; the source
+		// files are written by the implementation, so the test reads them from
+		// the recorded arguments.
+		if fail, ok := f.fail["mcopy"]; ok {
+			return fail.stderr, fail.err
+		}
 		return f.out, nil
 	default:
 		return nil, fmt.Errorf("recordingExecRunner: unexpected binary %q", name)
@@ -1207,6 +1250,186 @@ func TestMachineCIDATARenderedWithAllocatedIP(t *testing.T) {
 	}
 }
 
+// TestMachineCIDATADiskBuilt pins requirement 1: reconcileCIDATA produces the
+// CIDATA disk image at <vm-disks>/<name>-cidata.img from the rendered parts
+// instead of discarding them. The disk must exist and be non-empty after a
+// reconcile of a machine with bootstrap data, and the failure paths (render
+// failure, disk build failure) must abort the reconcile without leaving a
+// disk behind.
+func TestMachineCIDATADiskBuilt(t *testing.T) {
+	c := mustReconcileClient(t)
+
+	t.Run("bootstrap machine gets a cidata disk image", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		lc := newLinkedCluster(t, c, "machine-cidata-disk", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+		// The fake mkdosfs behaves like the real binary: it refuses to
+		// format a target file that does not exist. The build must
+		// pre-create the image (dd/truncate, the create-cloudinit.sh
+		// precedent) before formatting; against a build that removes the
+		// stale image and formats the missing path the reconcile fails here.
+		fx.qemu.mkdosfsRequiresTarget = true
+		fx.pack.mkdosfsRequiresTarget = true
+
+		fx.reconcileMachine(t, lm.hm)
+
+		cidataDisk := filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-cidata.img")
+		info, err := os.Stat(cidataDisk)
+		if err != nil {
+			t.Fatalf("CIDATA disk %q missing after reconcile: %v", cidataDisk, err)
+		}
+		if info.Size() == 0 {
+			t.Errorf("CIDATA disk %q is empty", cidataDisk)
+		}
+
+		// The mkdosfs invocation must have seen the image file already on
+		// disk: real mkdosfs cannot open a missing target, so a build that
+		// formats before pre-creating the image fails on every reconcile.
+		if !fx.qemu.mkdosfsExisted && !fx.pack.mkdosfsExisted {
+			t.Error("mkdosfs ran before the CIDATA image file existed; the build must pre-create the image before formatting")
+		}
+	})
+
+	t.Run("render failure aborts reconcile and leaves no disk", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		lc := newLinkedCluster(t, c, "machine-cidata-renderfail", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+		fx.render.err = errors.New("render exploded")
+		if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lm.hm)}); err == nil {
+			t.Fatal("Reconcile succeeded with a failing renderer, want error")
+		}
+
+		cidataDisk := filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-cidata.img")
+		if _, err := os.Stat(cidataDisk); !os.IsNotExist(err) {
+			t.Errorf("CIDATA disk %q exists after render failure (stat error %v), want absent", cidataDisk, err)
+		}
+	})
+
+	t.Run("machine without bootstrap data gets no cidata disk", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		lc := newLinkedCluster(t, c, "machine-cidata-noboot", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", false)
+
+		fx.reconcileMachine(t, lm.hm)
+
+		cidataDisk := filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-cidata.img")
+		if _, err := os.Stat(cidataDisk); !os.IsNotExist(err) {
+			t.Errorf("CIDATA disk %q exists without bootstrap data (stat error %v), want absent", cidataDisk, err)
+		}
+	})
+
+	t.Run("cidata disk build failure aborts reconcile", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		lc := newLinkedCluster(t, c, "machine-cidata-buildfail", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+		// The CIDATA build is expected to reuse one of the exec seams; fail
+		// the mkdosfs step on whichever runner the implementation uses.
+		fx.qemu.fail["mkdosfs"] = qemuFailure{stderr: []byte("mkdosfs: cannot format"), err: errors.New("exit status 1")}
+		fx.pack.fail["mkdosfs"] = qemuFailure{stderr: []byte("mkdosfs: cannot format"), err: errors.New("exit status 1")}
+
+		if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lm.hm)}); err == nil {
+			t.Fatal("Reconcile succeeded with a failing CIDATA build, want error")
+		}
+	})
+}
+
+// cidataBuildCalls returns the recorded mkdosfs/mcopy invocations across the
+// fixture's exec runners, in invocation order. The CIDATA build is expected
+// to reuse one of the existing exec seams (the QemuImg func or the confext
+// packager runner); observing both keeps the test agnostic to which one.
+func cidataBuildCalls(fx *machineFixture) []recordedExecCall {
+	var calls []recordedExecCall
+	for _, runner := range []*recordingExecRunner{fx.qemu, fx.pack} {
+		for _, call := range runner.calls {
+			if call.name == "mkdosfs" || call.name == "mcopy" {
+				calls = append(calls, call)
+			}
+		}
+	}
+
+	return calls
+}
+
+// TestMachineCIDATADiskContainsRenderedParts pins requirement 1's "created
+// from the rendered parts, not discarded": the CIDATA build consumes the
+// three rendered parts. The build is expected to reuse the exec seam
+// (mkdosfs + mcopy, the create-cloudinit.sh precedent); the test asserts the
+// recorded invocations carry the exact rendered part contents into the image
+// under the NoCloud file names.
+func TestMachineCIDATADiskContainsRenderedParts(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	lc := newLinkedCluster(t, c, "machine-cidata-parts", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+	fx.reconcileMachine(t, lm.hm)
+
+	buildCalls := cidataBuildCalls(fx)
+	if len(buildCalls) == 0 {
+		t.Fatal("no CIDATA build invocations recorded (mkdosfs/mcopy); the rendered parts were discarded")
+	}
+
+	// The rendered parts the controller produced.
+	if got := len(fx.render.calls); got != 1 {
+		t.Fatalf("CIDATA render called %d times, want 1", got)
+	}
+	parts, err := cloudinit.Render(fx.render.calls[0])
+	if err != nil {
+		t.Fatalf("cloudinit.Render: %v", err)
+	}
+
+	// mkdosfs formats the image with the CIDATA label.
+	var mkdosfsCalls []recordedExecCall
+	for _, call := range buildCalls {
+		if call.name == "mkdosfs" {
+			mkdosfsCalls = append(mkdosfsCalls, call)
+		}
+	}
+	if len(mkdosfsCalls) != 1 {
+		t.Fatalf("mkdosfs called %d times, want 1: %+v", len(mkdosfsCalls), buildCalls)
+	}
+	joined := strings.Join(mkdosfsCalls[0].args, " ")
+	if !strings.Contains(joined, "-F") || !strings.Contains(joined, "16") {
+		t.Errorf("mkdosfs args %v do not format FAT16", mkdosfsCalls[0].args)
+	}
+	if !strings.Contains(joined, "CIDATA") {
+		t.Errorf("mkdosfs args %v do not set the CIDATA label", mkdosfsCalls[0].args)
+	}
+
+	// mcopy writes each rendered part into the image under its NoCloud name.
+	copied := map[string]string{} // ::name -> source file
+	for _, call := range buildCalls {
+		if call.name != "mcopy" {
+			continue
+		}
+		if len(call.args) < 3 {
+			t.Errorf("mcopy call %+v has too few arguments", call.args)
+			continue
+		}
+		dst := call.args[len(call.args)-1]
+		src := call.args[len(call.args)-2]
+		copied[dst] = src
+	}
+	for _, name := range []string{"user-data", "meta-data", "network-config"} {
+		src, ok := copied["::"+name]
+		if !ok {
+			t.Errorf("mcopy did not write ::%s into the image (copied %v)", name, copied)
+			continue
+		}
+		got, err := os.ReadFile(src)
+		if err != nil {
+			t.Errorf("read mcopy source %q: %v", src, err)
+			continue
+		}
+		if !bytes.Equal(got, parts[name]) {
+			t.Errorf("::%s content = %q, want the rendered part %q", name, got, parts[name])
+		}
+	}
+}
+
 // HypervisorMachine controller contract, part 2: the VM lifecycle (reconcile
 // steps 6-8).
 //
@@ -1347,47 +1570,166 @@ func TestMachineVMBootsWithVhostUserNetConfig(t *testing.T) {
 // TestMachineVMHandsFirmwareAndDisksToClient pins the boot-medium wiring:
 // before the VM boots, the controller hands the VM client the firmware image
 // from the provider config and the machine's disk images — the root qcow2
-// first, then every packaged confext raw in the machine's data directory,
-// sorted by file name. A machine with no confext data directory carries the
-// root disk alone.
+// first, then the CIDATA disk image, then every packaged confext raw in the
+// machine's data directory, sorted by file name. The CIDATA disk occupies
+// /dev/vdb (shifting the confext raws to vdc+), so it must sit directly after
+// the root disk. A machine with no confext data directory carries the root
+// and CIDATA disks alone; a machine with no bootstrap data carries the root
+// disk alone.
 func TestMachineVMHandsFirmwareAndDisksToClient(t *testing.T) {
 	c := mustReconcileClient(t)
+
+	t.Run("root, cidata, then confext raws", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		lc := newLinkedCluster(t, c, "machine-vm-bootcfg", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+		// A packaged confext output directory with two raws; ReadDir sorts by
+		// file name, so the expected attachment order is a.raw then b.raw.
+		dataDir := filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-data")
+		if err := os.MkdirAll(dataDir, 0o755); err != nil {
+			t.Fatalf("create confext data dir: %v", err)
+		}
+		for _, name := range []string{"b.raw", "a.raw", "ignored.txt"} {
+			if err := os.WriteFile(filepath.Join(dataDir, name), []byte("x"), 0o644); err != nil {
+				t.Fatalf("write confext artifact %s: %v", name, err)
+			}
+		}
+
+		fx.vm.State = ch.VMState("Running")
+		fx.reconcileMachine(t, lm.hm)
+
+		if got := len(fx.vm.Firmwares); got != 1 {
+			t.Fatalf("SetFirmware called %d times, want 1 (recorded %v)", got, fx.vm.Firmwares)
+		}
+		if fx.vm.Firmwares[0] != testFirmware {
+			t.Errorf("firmware = %q, want %q", fx.vm.Firmwares[0], testFirmware)
+		}
+
+		if got := len(fx.vm.DiskPathSets); got != 1 {
+			t.Fatalf("SetDiskPaths called %d times, want 1 (recorded %v)", got, fx.vm.DiskPathSets)
+		}
+		wantDisks := []string{
+			filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-root.qcow2"),
+			filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-cidata.img"),
+			filepath.Join(dataDir, "a.raw"),
+			filepath.Join(dataDir, "b.raw"),
+		}
+		if !reflect.DeepEqual(fx.vm.DiskPathSets[0], wantDisks) {
+			t.Errorf("disk paths = %v, want %v", fx.vm.DiskPathSets[0], wantDisks)
+		}
+	})
+
+	t.Run("no confext raws carries root and cidata only", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		lc := newLinkedCluster(t, c, "machine-vm-bootcfg-noconfext", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+		// Empty the bootstrap tree so packaging produces no raws; the CIDATA
+		// disk is still rendered from the linked bootstrap config.
+		secret := &corev1.Secret{}
+		if err := c.Get(t.Context(), client.ObjectKeyFromObject(lm.secret), secret); err != nil {
+			t.Fatalf("Get bootstrap Secret: %v", err)
+		}
+		secret.Data = map[string][]byte{"tree.json": []byte("{}")}
+		if err := c.Update(t.Context(), secret); err != nil {
+			t.Fatalf("empty bootstrap tree: %v", err)
+		}
+
+		fx.vm.State = ch.VMState("Running")
+		fx.reconcileMachine(t, lm.hm)
+
+		if got := len(fx.vm.DiskPathSets); got != 1 {
+			t.Fatalf("SetDiskPaths called %d times, want 1 (recorded %v)", got, fx.vm.DiskPathSets)
+		}
+		wantDisks := []string{
+			filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-root.qcow2"),
+			filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-cidata.img"),
+		}
+		if !reflect.DeepEqual(fx.vm.DiskPathSets[0], wantDisks) {
+			t.Errorf("disk paths = %v, want %v", fx.vm.DiskPathSets[0], wantDisks)
+		}
+	})
+
+	t.Run("machine without bootstrap carries root only", func(t *testing.T) {
+		fx := newMachineFixture(t, c)
+		lc := newLinkedCluster(t, c, "machine-vm-bootcfg-noboot", "capi-cluster")
+		lm := newLinkedMachine(t, c, lc, "node-1", false)
+
+		fx.vm.State = ch.VMState("Running")
+		fx.reconcileMachine(t, lm.hm)
+
+		if got := len(fx.vm.DiskPathSets); got != 1 {
+			t.Fatalf("SetDiskPaths called %d times, want 1 (recorded %v)", got, fx.vm.DiskPathSets)
+		}
+		wantDisks := []string{
+			filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-root.qcow2"),
+		}
+		if !reflect.DeepEqual(fx.vm.DiskPathSets[0], wantDisks) {
+			t.Errorf("disk paths = %v, want %v", fx.vm.DiskPathSets[0], wantDisks)
+		}
+	})
+}
+
+// TestMachineVMHandsCPUAndRAMToClient pins the cpu/ram wiring: before the VM
+// boots, the controller hands the VM client the machine's spec vCPU count and
+// memory size in MiB, so the vm.create push carries the spec shape instead of
+// the hardcoded 512 MiB / 1 vCPU defaults.
+func TestMachineVMHandsCPUAndRAMToClient(t *testing.T) {
+	c := mustReconcileClient(t)
 	fx := newMachineFixture(t, c)
-	lc := newLinkedCluster(t, c, "machine-vm-bootcfg", "capi-cluster")
+	lc := newLinkedCluster(t, c, "machine-vm-cpuram", "capi-cluster")
 	lm := newLinkedMachine(t, c, lc, "node-1", true)
 
-	// A packaged confext output directory with two raws; ReadDir sorts by
-	// file name, so the expected attachment order is a.raw then b.raw.
-	dataDir := filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-data")
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		t.Fatalf("create confext data dir: %v", err)
+	fx.vm.State = ch.VMState("Running")
+	fx.reconcileMachine(t, lm.hm)
+
+	if got := len(fx.vm.CPUs); got != 1 {
+		t.Fatalf("SetCPU called %d times, want 1 (recorded %v)", got, fx.vm.CPUs)
 	}
-	for _, name := range []string{"b.raw", "a.raw", "ignored.txt"} {
-		if err := os.WriteFile(filepath.Join(dataDir, name), []byte("x"), 0o644); err != nil {
-			t.Fatalf("write confext artifact %s: %v", name, err)
-		}
+	if fx.vm.CPUs[0] != testMachineCPU {
+		t.Errorf("cpu = %d, want spec cpu %d", fx.vm.CPUs[0], testMachineCPU)
+	}
+	if got := len(fx.vm.RAMs); got != 1 {
+		t.Fatalf("SetRAM called %d times, want 1 (recorded %v)", got, fx.vm.RAMs)
+	}
+	if fx.vm.RAMs[0] != testMachineRAM {
+		t.Errorf("ram = %d, want spec ram %d", fx.vm.RAMs[0], testMachineRAM)
+	}
+}
+
+// TestMachineVMHandlesZeroSpecCPUAndRAM pins the graceful zero-spec contract:
+// a machine whose spec leaves CPU and RAM unset (the webhook normally rejects
+// this, but a hand-built object can carry it) still reconciles without error
+// and passes the zero values through to the client, which renders the
+// cloud-hypervisor defaults instead of crashing or pushing invalid config.
+func TestMachineVMHandlesZeroSpecCPUAndRAM(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	lc := newLinkedCluster(t, c, "machine-vm-zero-cpuram", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+	hm := getMachine(t, c, lm.hm)
+	hm.Spec.CPU = 0
+	hm.Spec.RAM = 0
+	if err := c.Update(t.Context(), hm); err != nil {
+		t.Fatalf("update HypervisorMachine spec: %v", err)
 	}
 
 	fx.vm.State = ch.VMState("Running")
 	fx.reconcileMachine(t, lm.hm)
 
-	if got := len(fx.vm.Firmwares); got != 1 {
-		t.Fatalf("SetFirmware called %d times, want 1 (recorded %v)", got, fx.vm.Firmwares)
+	if got := len(fx.vm.CPUs); got != 1 {
+		t.Fatalf("SetCPU called %d times, want 1 (recorded %v)", got, fx.vm.CPUs)
 	}
-	if fx.vm.Firmwares[0] != testFirmware {
-		t.Errorf("firmware = %q, want %q", fx.vm.Firmwares[0], testFirmware)
+	if fx.vm.CPUs[0] != 0 {
+		t.Errorf("cpu = %d, want the zero spec value passed through", fx.vm.CPUs[0])
 	}
-
-	if got := len(fx.vm.DiskPathSets); got != 1 {
-		t.Fatalf("SetDiskPaths called %d times, want 1 (recorded %v)", got, fx.vm.DiskPathSets)
+	if got := len(fx.vm.RAMs); got != 1 {
+		t.Fatalf("SetRAM called %d times, want 1 (recorded %v)", got, fx.vm.RAMs)
 	}
-	wantDisks := []string{
-		filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-root.qcow2"),
-		filepath.Join(dataDir, "a.raw"),
-		filepath.Join(dataDir, "b.raw"),
-	}
-	if !reflect.DeepEqual(fx.vm.DiskPathSets[0], wantDisks) {
-		t.Errorf("disk paths = %v, want %v", fx.vm.DiskPathSets[0], wantDisks)
+	if fx.vm.RAMs[0] != 0 {
+		t.Errorf("ram = %d, want the zero spec value passed through", fx.vm.RAMs[0])
 	}
 }
 

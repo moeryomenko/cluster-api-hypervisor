@@ -30,9 +30,10 @@ import (
 // field is nil. Calls records each invoked operation by name in call order:
 // "EnsureRunning", "Shutdown", "Stop", "Info". NetConfigs records every net
 // device string supplied through SetNetConfig, Firmwares every firmware path
-// supplied through SetFirmware, and DiskPathSets every disk path list
-// supplied through SetDiskPaths, in call order. The zero value is usable:
-// every operation succeeds and no state is reported.
+// supplied through SetFirmware, DiskPathSets every disk path list supplied
+// through SetDiskPaths, CPUs every vCPU count supplied through SetCPU, and
+// RAMs every memory size in MiB supplied through SetRAM, in call order. The
+// zero value is usable: every operation succeeds and no state is reported.
 type FakeClient struct {
 	State            ch.VMState
 	EnsureRunningErr error
@@ -43,6 +44,8 @@ type FakeClient struct {
 	NetConfigs       []string
 	Firmwares        []string
 	DiskPathSets     [][]string
+	CPUs             []int32
+	RAMs             []int32
 }
 
 // SetNetConfig records the net device string for assertions.
@@ -58,6 +61,16 @@ func (f *FakeClient) SetFirmware(firmware string) {
 // SetDiskPaths records the disk path list for assertions.
 func (f *FakeClient) SetDiskPaths(paths []string) {
 	f.DiskPathSets = append(f.DiskPathSets, paths)
+}
+
+// SetCPU records the vCPU count for assertions.
+func (f *FakeClient) SetCPU(cpu int32) {
+	f.CPUs = append(f.CPUs, cpu)
+}
+
+// SetRAM records the memory size in MiB for assertions.
+func (f *FakeClient) SetRAM(ramMiB int32) {
+	f.RAMs = append(f.RAMs, ramMiB)
 }
 
 // EnsureRunning records the call and returns the configured error, if any.

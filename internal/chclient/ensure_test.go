@@ -28,7 +28,12 @@ limitations under the License.
 //     cloud-hypervisor versions. The create body carries the firmware path,
 //     every disk path, and the parsed vhost-user net parameters (socket,
 //     mac, num_queues raised to the cloud-hypervisor floor of 2), plus
-//     shared guest memory for the vhost-user device.
+//     shared guest memory for the vhost-user device. The memory size is the
+//     spec RAM converted from MiB to bytes (SetRAM), and the cpus section
+//     carries the spec vCPU count as both boot_vcpus and max_vcpus (SetCPU);
+//     an absent or non-positive CPU omits the cpus section so cloud-hypervisor
+//     applies its own default, and an absent or non-positive RAM falls back to
+//     the cloud-hypervisor default memory footprint.
 //   - A VM already in the Created state keeps its configuration: the
 //     sequence is info, boot with no second create (idempotent re-run).
 //   - A Running VM is a no-op: the sequence is info only.
@@ -125,7 +130,9 @@ func newTestVMClient(t *testing.T, handler http.Handler) *VMClient {
 }
 
 // scriptedVMClient returns a client wired to rec and pre-loaded with the
-// boot configuration every happy-path case pushes.
+// boot configuration every happy-path case pushes: the vhost-user net device,
+// the firmware, the disk images, and the spec cpu/ram shape (2 vCPUs, 2048
+// MiB) the machine controller hands over.
 func scriptedVMClient(t *testing.T, rec *apiRecorder) *VMClient {
 	t.Helper()
 	c := newTestVMClient(t, rec)
@@ -135,11 +142,16 @@ func scriptedVMClient(t *testing.T, rec *apiRecorder) *VMClient {
 		"/build/vm-disks/node-1-root.qcow2",
 		"/build/vm-disks/node-1-data/z-kubelet.raw",
 	})
+	c.SetCPU(2)
+	c.SetRAM(2048)
 	return c
 }
 
 // TestEnsureBootedCreatesThenBoots pins the first-boot flow: info answers
 // 404 (no VM), so the full config is pushed and the VM boots, in that order.
+// The pushed config carries the spec cpu/ram shape: a cpus section with the
+// vCPU count as boot_vcpus and max_vcpus, and a memory size converted from
+// the spec RAM in MiB to bytes.
 func TestEnsureBootedCreatesThenBoots(t *testing.T) {
 	rec := &apiRecorder{infoStatus: http.StatusNotFound}
 	c := scriptedVMClient(t, rec)
@@ -158,6 +170,8 @@ func TestEnsureBootedCreatesThenBoots(t *testing.T) {
 		t.Fatalf("create body is not valid JSON: %v (body %q)", err, rec.createBody())
 	}
 	assertCreateField(t, cfg, "payload.firmware", "/build/CLOUDHV.fd")
+	assertCreateField(t, cfg, "cpus.boot_vcpus", float64(2))
+	assertCreateField(t, cfg, "cpus.max_vcpus", float64(2))
 	assertCreateField(t, cfg, "disks.0.path", "/build/vm-disks/node-1-root.qcow2")
 	assertCreateField(t, cfg, "disks.1.path", "/build/vm-disks/node-1-data/z-kubelet.raw")
 	assertCreateField(t, cfg, "net.0.vhost_user", true)
@@ -165,6 +179,118 @@ func TestEnsureBootedCreatesThenBoots(t *testing.T) {
 	assertCreateField(t, cfg, "net.0.mac", "c6:e5:50:1c:ec:ab")
 	assertCreateField(t, cfg, "net.0.num_queues", float64(2))
 	assertCreateField(t, cfg, "memory.shared", true)
+	assertCreateField(t, cfg, "memory.size", float64(2048*1024*1024))
+}
+
+// TestEnsureBootedAbsentCPUOmitsCpusField pins the graceful absent-CPU
+// contract: a zero vCPU count (spec left unset) omits the cpus section so
+// cloud-hypervisor applies its own default, while the spec-derived memory
+// size is still pushed.
+func TestEnsureBootedAbsentCPUOmitsCpusField(t *testing.T) {
+	rec := &apiRecorder{infoStatus: http.StatusNotFound}
+	c := scriptedVMClient(t, rec)
+	c.SetCPU(0)
+
+	if err := c.ensureBooted(t.Context()); err != nil {
+		t.Fatalf("ensureBooted() error = %v, want nil", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(rec.createBody(), &cfg); err != nil {
+		t.Fatalf("create body is not valid JSON: %v (body %q)", err, rec.createBody())
+	}
+	assertCreateFieldAbsent(t, cfg, "cpus")
+	assertCreateField(t, cfg, "memory.size", float64(2048*1024*1024))
+}
+
+// TestEnsureBootedAbsentRAMFallsBackToDefault pins the graceful absent-RAM
+// contract: a zero memory size (spec left unset) falls back to the
+// cloud-hypervisor default footprint instead of pushing a zero-byte memory
+// section, while the spec-derived vCPU count is still pushed.
+func TestEnsureBootedAbsentRAMFallsBackToDefault(t *testing.T) {
+	rec := &apiRecorder{infoStatus: http.StatusNotFound}
+	c := scriptedVMClient(t, rec)
+	c.SetRAM(0)
+
+	if err := c.ensureBooted(t.Context()); err != nil {
+		t.Fatalf("ensureBooted() error = %v, want nil", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(rec.createBody(), &cfg); err != nil {
+		t.Fatalf("create body is not valid JSON: %v (body %q)", err, rec.createBody())
+	}
+	assertCreateField(t, cfg, "cpus.boot_vcpus", float64(2))
+	assertCreateField(t, cfg, "cpus.max_vcpus", float64(2))
+	assertCreateField(t, cfg, "memory.size", float64(ch.DefaultMemorySize))
+}
+
+// TestEnsureBootedNegativeSpecValuesFallBack pins the graceful negative-spec
+// contract: the webhook rejects CPU/RAM <= 0 at admission, but a machine that
+// slips through (or a hand-built config) must not push a negative vCPU count
+// or a negative memory size. Negative values behave like absent ones: no cpus
+// section, and the default memory footprint.
+func TestEnsureBootedNegativeSpecValuesFallBack(t *testing.T) {
+	rec := &apiRecorder{infoStatus: http.StatusNotFound}
+	c := scriptedVMClient(t, rec)
+	c.SetCPU(-1)
+	c.SetRAM(-1)
+
+	if err := c.ensureBooted(t.Context()); err != nil {
+		t.Fatalf("ensureBooted() error = %v, want nil", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(rec.createBody(), &cfg); err != nil {
+		t.Fatalf("create body is not valid JSON: %v (body %q)", err, rec.createBody())
+	}
+	assertCreateFieldAbsent(t, cfg, "cpus")
+	assertCreateField(t, cfg, "memory.size", float64(ch.DefaultMemorySize))
+}
+
+// TestEnsureBootedCIDATADiskReadonly pins requirement 5: the CIDATA disk is
+// attached read-only. The vm.create body must carry readonly: true for the
+// CIDATA disk entry while the root and confext disks stay writable (no
+// readonly key on their entries).
+func TestEnsureBootedCIDATADiskReadonly(t *testing.T) {
+	rec := &apiRecorder{infoStatus: http.StatusNotFound}
+	c := newTestVMClient(t, rec)
+	c.SetNetConfig("vhost_user=true,socket=/run/user/1000/k8snet/node-1.sock,mac=c6:e5:50:1c:ec:ab,num_queues=1")
+	c.SetFirmware("/build/CLOUDHV.fd")
+	c.SetDiskPaths([]string{
+		"/build/vm-disks/node-1-root.qcow2",
+		"/build/vm-disks/node-1-cidata.img",
+		"/build/vm-disks/node-1-data/z-kubelet.raw",
+	})
+
+	if err := c.ensureBooted(t.Context()); err != nil {
+		t.Fatalf("ensureBooted() error = %v, want nil", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(rec.createBody(), &cfg); err != nil {
+		t.Fatalf("create body is not valid JSON: %v (body %q)", err, rec.createBody())
+	}
+	assertCreateField(t, cfg, "disks.1.path", "/build/vm-disks/node-1-cidata.img")
+	assertCreateField(t, cfg, "disks.1.readonly", true)
+
+	// The root and confext disks stay writable: no readonly key on their
+	// entries. The CIDATA disk sits at index 1, so the writable entries are
+	// disks[0] (root) and disks[2] (confext).
+	disks, ok := cfg["disks"].([]any)
+	if !ok || len(disks) != 3 {
+		t.Fatalf("create body disks = %#v, want 3 entries", cfg["disks"])
+	}
+	for i, name := range []string{"root", "confext"} {
+		idx := i * 2 // skip the CIDATA disk at index 1
+		entry, ok := disks[idx].(map[string]any)
+		if !ok {
+			t.Fatalf("disks.%d = %#v, want an object", idx, disks[idx])
+		}
+		if _, ok := entry["readonly"]; ok {
+			t.Errorf("disks.%d (%s) carries readonly %v, want writable", idx, name, entry["readonly"])
+		}
+	}
 }
 
 // TestEnsureBootedAbsentVMShapes pins that both absent-VM answers trigger
@@ -415,4 +541,26 @@ func assertCreateField(t *testing.T, doc map[string]any, path string, want any) 
 	if cur != want {
 		t.Errorf("JSON path %q = %v, want %v", path, cur, want)
 	}
+}
+
+// assertCreateFieldAbsent fails unless the dotted path is absent from the
+// decoded JSON document. It pins omission contracts (for example no cpus
+// section when the spec leaves CPU unset).
+func assertCreateFieldAbsent(t *testing.T, doc map[string]any, path string) {
+	t.Helper()
+
+	cur := any(doc)
+	for _, seg := range strings.Split(path, ".") {
+		switch node := cur.(type) {
+		case map[string]any:
+			next, ok := node[seg]
+			if !ok {
+				return
+			}
+			cur = next
+		default:
+			t.Fatalf("JSON path %q: segment %q traverses non-container %T", path, seg, cur)
+		}
+	}
+	t.Errorf("JSON path %q present as %v, want absent", path, cur)
 }

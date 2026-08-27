@@ -268,8 +268,10 @@ func TestClientInfo(t *testing.T) {
 // TestClientCreate pins the vm.create contract: PUT /api/v1/vm.create with
 // the VmConfig as the JSON body, nil for a 2xx response, and a typed
 // StatusError carrying the status code for any non-2xx response. The body is
-// decoded on the server side and must carry the firmware path, every disk
-// path, and the vhost-user net parameters verbatim.
+// decoded on the server side and must carry the firmware path, the cpus
+// section (boot_vcpus and max_vcpus from the spec vCPU count), the memory
+// size in bytes derived from the spec RAM, every disk path, and the
+// vhost-user net parameters verbatim.
 func TestClientCreate(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -302,7 +304,8 @@ func TestClientCreate(t *testing.T) {
 
 			cfg := ch.VmConfig{
 				Payload: &ch.PayloadConfig{Firmware: "/build/CLOUDHV.fd"},
-				Memory:  &ch.MemoryConfig{Size: 512 * 1024 * 1024, Shared: true},
+				Cpus:    &ch.CpusConfig{BootVCPUs: 2, MaxVCPUs: 2},
+				Memory:  &ch.MemoryConfig{Size: 2048 * 1024 * 1024, Shared: true},
 				Disks: []ch.DiskConfig{
 					{Path: "/build/vm-disks/node-1-root.qcow2"},
 					{Path: "/build/vm-disks/node-1-data/z-kubelet.raw"},
@@ -334,6 +337,8 @@ func TestClientCreate(t *testing.T) {
 				t.Fatalf("Create body is not valid JSON: %v (body %q)", err, body)
 			}
 			assertJSONPath(t, got, "payload.firmware", cfg.Payload.Firmware)
+			assertJSONPath(t, got, "cpus.boot_vcpus", float64(cfg.Cpus.BootVCPUs))
+			assertJSONPath(t, got, "cpus.max_vcpus", float64(cfg.Cpus.MaxVCPUs))
 			assertJSONPath(t, got, "memory.size", float64(cfg.Memory.Size))
 			assertJSONPath(t, got, "memory.shared", true)
 			assertJSONPath(t, got, "disks.0.path", cfg.Disks[0].Path)
@@ -343,6 +348,31 @@ func TestClientCreate(t *testing.T) {
 			assertJSONPath(t, got, "net.0.mac", cfg.Net[0].MAC)
 			assertJSONPath(t, got, "net.0.num_queues", float64(cfg.Net[0].NumQueues))
 		})
+	}
+}
+
+// TestClientCreateOmitsCpusWhenNil pins the absent-CPU contract: a VmConfig
+// without a cpus section serializes without the "cpus" key, so cloud-hypervisor
+// applies its own default vCPU count. The cpu/ram threading fix must keep this
+// behavior for machines whose spec leaves CPU unset.
+func TestClientCreateOmitsCpusWhenNil(t *testing.T) {
+	rec := newRecorder(http.StatusNoContent, "")
+	client := mustNewClient(t, newSocketServer(t, rec))
+
+	cfg := ch.VmConfig{
+		Payload: &ch.PayloadConfig{Firmware: "/build/CLOUDHV.fd"},
+	}
+	if err := client.Create(t.Context(), cfg); err != nil {
+		t.Fatalf("Create returned %v, want nil", err)
+	}
+
+	_, _, body := rec.snapshot()
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("Create body is not valid JSON: %v (body %q)", err, body)
+	}
+	if _, ok := got["cpus"]; ok {
+		t.Errorf("Create body carries a cpus section %v, want none for a nil Cpus config", got["cpus"])
 	}
 }
 

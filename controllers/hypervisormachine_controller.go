@@ -72,6 +72,12 @@ const (
 	// publishes for control-plane machines next to the apiserver port
 	// (controlPlaneAPIServerPort).
 	controlPlaneSSHPort int32 = 22
+
+	// cidataDiskSize is the size of the pre-created CIDATA disk image in
+	// bytes (4 MiB, matching the create-cloudinit.sh precedent of 8192
+	// 512-byte sectors). The image file must exist before mkdosfs runs:
+	// the real binary refuses to format a missing target.
+	cidataDiskSize = 4 * 1024 * 1024
 )
 
 // HypervisorMachineReconciler reconciles a HypervisorMachine object: it
@@ -300,14 +306,24 @@ func (r *HypervisorMachineReconciler) reconcileDelete(
 	return ctrl.Result{}, nil
 }
 
-// removeMachineDisks removes the machine's root disk and the confext data
-// disk artifacts — the packaged .raw output directory and the staging tree —
-// from the VM disk directory. Missing artifacts are tolerated so teardown is
-// idempotent.
+// removeMachineDisks removes the machine's root disk, the CIDATA disk and its
+// rendered-parts staging tree, and the confext data disk artifacts — the
+// packaged .raw output directory and the staging tree — from the VM disk
+// directory. Missing artifacts are tolerated so teardown is idempotent.
 func removeMachineDisks(vmDisksDir, name string) error {
 	rootDisk := filepath.Join(vmDisksDir, name+"-root.qcow2")
 	if err := os.Remove(rootDisk); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove root disk %q: %w", rootDisk, err)
+	}
+
+	cidataDisk := filepath.Join(vmDisksDir, name+"-cidata.img")
+	if err := os.Remove(cidataDisk); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove CIDATA disk %q: %w", cidataDisk, err)
+	}
+
+	cidataPartsDir := filepath.Join(vmDisksDir, name+"-cidata-parts")
+	if err := os.RemoveAll(cidataPartsDir); err != nil {
+		return fmt.Errorf("remove CIDATA parts dir %q: %w", cidataPartsDir, err)
 	}
 
 	dataDir := filepath.Join(vmDisksDir, name+"-data")
@@ -783,9 +799,11 @@ func (r *HypervisorMachineReconciler) resolveSSHPublicKey(
 // reconcileCIDATA renders the three cloud-init parts for the machine through
 // the injected renderer with the machine hostname and the SSH public key
 // resolved from the linked bootstrap config (spec.sshPublicKey, falling back
-// to the HYPERVISOR_SSH_PUBLIC_KEY_FILE file). Network configuration is DHCP
-// (no static IP). A machine with no linked bootstrap config has no key to
-// inject and skips rendering without error.
+// to the HYPERVISOR_SSH_PUBLIC_KEY_FILE file), and builds the CIDATA disk
+// image <vm-disks>/<name>-cidata.img carrying the rendered parts under their
+// NoCloud file names. Network configuration is DHCP (no static IP). A machine
+// with no linked bootstrap config has no key to inject and skips rendering
+// without error.
 func (r *HypervisorMachineReconciler) reconcileCIDATA(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
@@ -805,21 +823,80 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 		return fmt.Errorf("get bootstrap config %q: %w", key, err)
 	}
 
-	// The render itself is the identity contract pinned here: it validates
-	// that the three CIDATA parts render for this machine. The rendered parts
-	// feed the CIDATA disk of the VM boot step in a later phase.
 	sshPublicKey, err := r.resolveSSHPublicKey(config)
 	if err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render cloud-init data: %v", err)
 		return fmt.Errorf("render cloud-init data for %q: %w", machine.Name, err)
 	}
-	if _, err := r.RenderCloudInit(cloudinit.Data{
+	parts, err := r.RenderCloudInit(cloudinit.Data{
 		InstanceID:   machine.Name,
 		Hostname:     machine.Name,
 		SSHPublicKey: sshPublicKey,
-	}); err != nil {
+	})
+	if err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render cloud-init data: %v", err)
 		return fmt.Errorf("render cloud-init data for %q: %w", machine.Name, err)
+	}
+
+	if err := r.buildCIDATADisk(ctx, hm, parts); err != nil {
+		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to build CIDATA disk for %q: %v", machine.Name, err)
+		return fmt.Errorf("build CIDATA disk for %q: %w", machine.Name, err)
+	}
+
+	return nil
+}
+
+// buildCIDATADisk produces the machine's CIDATA disk image
+// <vm-disks>/<name>-cidata.img: a FAT16 image labeled CIDATA holding the
+// three rendered cloud-init parts under their NoCloud file names (user-data,
+// meta-data, network-config). The image is formatted with mkdosfs and the
+// parts are copied in with mcopy through the exec seam, following the k8labs
+// create-cloudinit.sh precedent. The rendered parts are staged under
+// <vm-disks>/<name>-cidata-parts/ so the build is reproducible and the
+// staging tree is removed with the machine on teardown.
+func (r *HypervisorMachineReconciler) buildCIDATADisk(
+	ctx context.Context,
+	hm *infrastructurev1alpha1.HypervisorMachine,
+	parts map[string][]byte,
+) error {
+	partsDir := filepath.Join(r.Config.VMDiskDir, hm.Name+"-cidata-parts")
+	if err := os.MkdirAll(partsDir, 0o755); err != nil {
+		return fmt.Errorf("create CIDATA parts dir %q: %w", partsDir, err)
+	}
+	for name, content := range parts {
+		if err := os.WriteFile(filepath.Join(partsDir, name), content, 0o644); err != nil {
+			return fmt.Errorf("write CIDATA part %q: %w", name, err)
+		}
+	}
+
+	diskPath := filepath.Join(r.Config.VMDiskDir, hm.Name+"-cidata.img")
+	// A previous reconcile may have left a formatted image; mkdosfs refuses
+	// to format an existing filesystem, so rebuild from a clean slate.
+	if err := os.Remove(diskPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale CIDATA disk %q: %w", diskPath, err)
+	}
+	// Real mkdosfs cannot open a target that does not exist, so pre-create
+	// the image file before formatting (the create-cloudinit.sh precedent:
+	// a 4 MiB zeroed image).
+	f, err := os.OpenFile(diskPath, os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("create CIDATA disk %q: %w", diskPath, err)
+	}
+	if err := f.Truncate(cidataDiskSize); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("size CIDATA disk %q: %w", diskPath, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close CIDATA disk %q: %w", diskPath, err)
+	}
+	if _, err := r.QemuImg(ctx, "mkdosfs", "-F", "16", "-s", "1", "-n", "CIDATA", diskPath); err != nil {
+		return fmt.Errorf("format CIDATA disk %q: %w", diskPath, err)
+	}
+	for _, name := range []string{"user-data", "meta-data", "network-config"} {
+		src := filepath.Join(partsDir, name)
+		if _, err := r.QemuImg(ctx, "mcopy", "-i", diskPath, src, "::"+name); err != nil {
+			return fmt.Errorf("copy %s into CIDATA disk %q: %w", name, diskPath, err)
+		}
 	}
 
 	return nil
@@ -829,8 +906,9 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 // client (vmClientFor). Before the first boot it hands the VM client the
 // boot configuration: the k8netd vhost-user net
 // device string — the port socket path of the machine and its MAC, single
-// queue pair (REQ-005) —, the firmware image from the provider config, and
-// the disk images (the root qcow2 plus any packaged confext raws). The VM
+// queue pair (REQ-005) —, the firmware image from the provider config, the
+// disk images (the root qcow2, then the CIDATA disk when one was built, then
+// any packaged confext raws), and the spec cpu/ram shape. The VM
 // client pushes that configuration over the cloud-hypervisor API before it
 // boots, then the controller records the provider ID; on every reconcile it
 // asks the client for the VM state and reports the VMProvisioned condition
@@ -853,6 +931,16 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 	vm.SetNetConfig(netConfig)
 
 	diskPaths := []string{filepath.Join(r.Config.VMDiskDir, hm.Name+"-root.qcow2")}
+	// The CIDATA disk sits directly after the root disk (it occupies
+	// /dev/vdb, shifting the confext raws to vdc+); a machine without
+	// bootstrap data has no CIDATA disk and carries the root disk alone.
+	cidataDisk := filepath.Join(r.Config.VMDiskDir, hm.Name+"-cidata.img")
+	if _, err := os.Stat(cidataDisk); err == nil {
+		diskPaths = append(diskPaths, cidataDisk)
+	} else if !os.IsNotExist(err) {
+		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to stat CIDATA disk for %q: %v", hm.Name, err)
+		return fmt.Errorf("stat CIDATA disk for %q: %w", hm.Name, err)
+	}
 	confextRaws, err := confextRawPaths(r.Config.VMDiskDir, hm.Name)
 	if err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to list confext raws for %q: %v", hm.Name, err)
@@ -862,6 +950,8 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 
 	vm.SetFirmware(r.Config.Firmware)
 	vm.SetDiskPaths(diskPaths)
+	vm.SetCPU(hm.Spec.CPU)
+	vm.SetRAM(hm.Spec.RAM)
 
 	if hm.Status.ProviderID == nil {
 		if err := vm.EnsureRunning(ctx); err != nil {
