@@ -61,14 +61,18 @@ func Render(d Data) (map[string][]byte, error) {
 		"\n" +
 		"# Grow the root partition/LVM to the disk once on first boot, then\n" +
 		"# activate the confext images carried on the confext data disks.\n" +
-		"# The loop walks every virtio block device: the root disk /dev/vda\n" +
-		"# and the CIDATA disk /dev/vdb are skipped (by name and by label), and\n" +
-		"# each remaining disk is a squashfs of one confext tree, so the confext\n" +
-		"# name comes from the tree's extension-release metadata and the image\n" +
-		"# lands in /var/lib/confexts/ under that name (the image-file model).\n" +
+		"# The loop walks every virtio block device: the root disk /dev/vda and\n" +
+		"# its partitions (/dev/vda1, /dev/vda2, ...) are skipped by a /dev/vda*\n" +
+		"# prefix guard, the CIDATA disk is skipped by label, and a disk whose\n" +
+		"# tree carries no extension-release metadata is skipped (the glob would\n" +
+		"# otherwise degrade the name to \"*\" and copy the whole disk to a literal\n" +
+		"# *.raw file). Each remaining disk is a squashfs of one confext tree, so\n" +
+		"# the confext name comes from the tree's extension-release metadata and\n" +
+		"# the image lands in /var/lib/confexts/ under that name (the image-file\n" +
+		"# model).\n" +
 		"runcmd:\n" +
 		"  - [ /usr/local/sbin/resize-rootfs.sh ]\n" +
-		"  - [ bash, -c, \"for d in /dev/vd*; do [ \\\"$d\\\" = /dev/vda ] && continue; [ \\\"$(blkid -s LABEL -o value \\\"$d\\\")\\\" = CIDATA ] && continue; mkdir -p /mnt/confexts; mount \\\"$d\\\" /mnt/confexts; name=$(basename /mnt/confexts/etc/extension-release.d/extension-release.*); name=${name#extension-release.}; cp \\\"$d\\\" /var/lib/confexts/\\\"$name\\\".raw; umount /mnt/confexts; done; systemd-confext refresh\" ]\n"
+		"  - [ bash, -c, \"for d in /dev/vd*; do case \\\"$d\\\" in /dev/vda*) continue;; esac; [ \\\"$(blkid -s LABEL -o value \\\"$d\\\")\\\" = CIDATA ] && continue; mkdir -p /mnt/confexts; mount \\\"$d\\\" /mnt/confexts; name=$(basename /mnt/confexts/etc/extension-release.d/extension-release.*); name=${name#extension-release.}; [ \\\"$name\\\" = \\\"*\\\" ] && { umount /mnt/confexts; continue; }; cp \\\"$d\\\" /var/lib/confexts/\\\"$name\\\".raw; umount /mnt/confexts; done; systemd-confext refresh\" ]\n"
 
 	metaData := fmt.Sprintf("instance-id: %s\nlocal-hostname: %s\n", d.InstanceID, d.Hostname)
 

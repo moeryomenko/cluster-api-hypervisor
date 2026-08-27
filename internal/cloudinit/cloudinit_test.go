@@ -279,6 +279,11 @@ func confextRuncmdSkips(commands string, dev confextDevice) bool {
 	if dev.path == "/dev/vda" && strings.Contains(commands, "/dev/vda") {
 		return true
 	}
+	// The root disk's PARTITIONS (/dev/vda1, /dev/vda2, ...) are skipped by a
+	// /dev/vda* prefix guard (e.g. `case "$d" in /dev/vda*) continue;; esac`).
+	if strings.HasPrefix(dev.path, "/dev/vda") && rootDiskPrefixGuardPresent(commands) {
+		return true
+	}
 	// Only squashfs disks are confexts; the root disk is ext4/xfs/btrfs.
 	if strings.Contains(commands, "squashfs") && dev.fsType != "squashfs" {
 		return true
@@ -289,6 +294,15 @@ func confextRuncmdSkips(commands string, dev confextDevice) bool {
 	}
 
 	return false
+}
+
+// rootDiskPrefixGuardPresent reports whether the runcmd excludes the whole
+// root disk AND its partitions via a /dev/vda* prefix guard. The fix skips
+// /dev/vda1/vda2/vda3 (which carry no extension-release and would otherwise be
+// copied as a literal *.raw) with a case pattern such as
+// `case "$d" in /dev/vda*) continue;; esac`.
+func rootDiskPrefixGuardPresent(commands string) bool {
+	return strings.Contains(commands, "/dev/vda*")
 }
 
 // globGuardPresent reports whether the runcmd requires the extension-release
@@ -304,14 +318,16 @@ func globGuardPresent(commands string) bool {
 
 // TestRenderUserDataRuncmdSkipsRootDisk pins the root-disk exclusion: the
 // first-boot confext activation loop walks every virtio block device
-// (/dev/vd*), so it sees the root disk /dev/vda alongside the CIDATA disk
-// and the confext data disks. The root disk carries no extension-release
+// (/dev/vd*), so it sees the root disk /dev/vda AND its partitions
+// (/dev/vda1, /dev/vda2, /dev/vda3) alongside the CIDATA disk and the confext
+// data disks. The root disk and its partitions carry no extension-release
 // metadata, so a loop that copies unconditionally after the glob degrades
-// the confext name to "*" and copies the entire root disk to
-// /var/lib/confexts/*.raw. The runcmd must exclude the root disk — by
-// skipping /dev/vda, by processing only squashfs disks, or by requiring the
-// extension-release glob to match before copying — while still copying every
-// confext disk and skipping the CIDATA disk by label.
+// the confext name to "*" and copies the entire root disk/partition to
+// /var/lib/confexts/*.raw. The runcmd must exclude the root disk AND its
+// partitions — by skipping /dev/vda and /dev/vda*, by processing only
+// squashfs disks, or by requiring the extension-release glob to match before
+// copying — while still copying every confext disk and skipping the CIDATA
+// disk by label.
 func TestRenderUserDataRuncmdSkipsRootDisk(t *testing.T) {
 	parts, err := cloudinit.Render(validData())
 	if err != nil {
@@ -321,20 +337,108 @@ func TestRenderUserDataRuncmdSkipsRootDisk(t *testing.T) {
 	commands := joinedRuncmd(t, parts["user-data"])
 
 	devices := []confextDevice{
-		{path: "/dev/vda", fsType: "ext4"}, // root disk: no extension-release
+		{path: "/dev/vda", fsType: "ext4"},  // root disk: no extension-release
+		{path: "/dev/vda1", fsType: "ext4"}, // root partition: no extension-release
+		{path: "/dev/vda2", fsType: "ext4"}, // root partition: no extension-release
+		{path: "/dev/vda3", fsType: "ext4"}, // root partition: no extension-release
 		{path: "/dev/vdb", label: "CIDATA", fsType: "vfat"},
 		{path: "/dev/vdc", fsType: "squashfs", releaseName: "z-kubelet-node1"},
 	}
 	copied := simulateConfextRuncmd(commands, devices)
 
-	if dest, ok := copied["/dev/vda"]; ok {
-		t.Errorf("runcmd copies the root disk /dev/vda to %q; the root disk must be excluded from confext activation:\n%s", dest, commands)
+	for _, root := range []string{"/dev/vda", "/dev/vda1", "/dev/vda2", "/dev/vda3"} {
+		if dest, ok := copied[root]; ok {
+			t.Errorf("runcmd copies the root disk/partition %s to %q; the root disk and its partitions must be excluded from confext activation:\n%s", root, dest, commands)
+		}
 	}
 	if dest, ok := copied["/dev/vdb"]; ok {
 		t.Errorf("runcmd copies the CIDATA disk /dev/vdb to %q; the CIDATA disk must be skipped by label:\n%s", dest, commands)
 	}
 	if got := copied["/dev/vdc"]; got != "/var/lib/confexts/z-kubelet-node1.raw" {
 		t.Errorf("runcmd copies the confext disk /dev/vdc to %q, want /var/lib/confexts/z-kubelet-node1.raw:\n%s", got, commands)
+	}
+}
+
+// TestRenderUserDataRuncmdSkipsDiskWithoutExtensionRelease pins requirement 2:
+// a disk whose extension-release glob does not match must be skipped, not
+// copied as a literal *.raw. The current runcmd degrades the confext name to
+// "*" when the glob does not match and copies the whole disk to
+// /var/lib/confexts/*.raw; the fix must guard the copy on the glob matching
+// (skip the device when the derived name is the degraded "*").
+func TestRenderUserDataRuncmdSkipsDiskWithoutExtensionRelease(t *testing.T) {
+	parts, err := cloudinit.Render(validData())
+	if err != nil {
+		t.Fatalf("Render with valid data returned error: %v", err)
+	}
+
+	commands := joinedRuncmd(t, parts["user-data"])
+
+	devices := []confextDevice{
+		// An extra data disk with no extension-release.d: not a confext.
+		{path: "/dev/vdd", fsType: "ext4"},
+		// A real confext disk must still be copied.
+		{path: "/dev/vdc", fsType: "squashfs", releaseName: "z-etcd"},
+	}
+	copied := simulateConfextRuncmd(commands, devices)
+
+	if dest, ok := copied["/dev/vdd"]; ok {
+		t.Errorf("runcmd copies the no-extension-release disk /dev/vdd to %q; a disk without extension-release must be skipped, not copied:\n%s", dest, commands)
+	}
+	if got := copied["/dev/vdc"]; got != "/var/lib/confexts/z-etcd.raw" {
+		t.Errorf("runcmd copies the confext disk /dev/vdc to %q, want /var/lib/confexts/z-etcd.raw:\n%s", got, commands)
+	}
+}
+
+// TestRenderUserDataRuncmdNeverProducesStarRaw pins requirement 4: the runcmd
+// must never be able to produce a literal /var/lib/confexts/*.raw file. It
+// simulates the runcmd over a full device set (root disk + partitions + CIDATA
+// + confexts + a no-extension-release data disk) and asserts no copy lands on
+// the literal *.raw destination. The current runcmd's quoted-glob quirk
+// (`cp "$d" /var/lib/confexts/"$name".raw` with name degraded to "*") produces
+// exactly this file for the root partitions and any no-extension-release disk.
+func TestRenderUserDataRuncmdNeverProducesStarRaw(t *testing.T) {
+	parts, err := cloudinit.Render(validData())
+	if err != nil {
+		t.Fatalf("Render with valid data returned error: %v", err)
+	}
+
+	commands := joinedRuncmd(t, parts["user-data"])
+
+	devices := []confextDevice{
+		{path: "/dev/vda", fsType: "ext4"},
+		{path: "/dev/vda1", fsType: "ext4"},
+		{path: "/dev/vda2", fsType: "ext4"},
+		{path: "/dev/vda3", fsType: "ext4"},
+		{path: "/dev/vdb", label: "CIDATA", fsType: "vfat"},
+		{path: "/dev/vdc", fsType: "squashfs", releaseName: "z-kubelet-node1"},
+		{path: "/dev/vdd", fsType: "ext4"}, // no extension-release
+	}
+	copied := simulateConfextRuncmd(commands, devices)
+
+	for path, dest := range copied {
+		if dest == "/var/lib/confexts/*.raw" {
+			t.Errorf("runcmd produces the literal *.raw file for %s; the quoted-glob quirk must be eliminated:\n%s", path, commands)
+		}
+	}
+}
+
+// TestRenderUserDataRuncmdValidWithNoConfextDisks pins the edge case where no
+// confext disks are attached: the runcmd must still render as valid YAML and
+// carry the confext-activation loop. The runcmd is static, so this holds both
+// before and after the fix.
+func TestRenderUserDataRuncmdValidWithNoConfextDisks(t *testing.T) {
+	parts, err := cloudinit.Render(validData())
+	if err != nil {
+		t.Fatalf("Render with valid data returned error: %v", err)
+	}
+
+	var doc map[string]any
+	if err := yaml.Unmarshal(parts["user-data"], &doc); err != nil {
+		t.Fatalf("user-data is not valid YAML: %v", err)
+	}
+	commands := joinedRuncmd(t, parts["user-data"])
+	if !strings.Contains(commands, "for d in") || !strings.Contains(commands, "/dev/vd") {
+		t.Errorf("runcmd does not carry the confext-activation loop; runcmd:\n%s", commands)
 	}
 }
 
