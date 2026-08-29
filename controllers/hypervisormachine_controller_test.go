@@ -1744,6 +1744,9 @@ func TestMachineVMProviderID(t *testing.T) {
 	if *hm.Status.ProviderID != wantProviderID {
 		t.Errorf("status.providerID = %q, want %q", *hm.Status.ProviderID, wantProviderID)
 	}
+	if hm.Spec.ProviderID == nil || *hm.Spec.ProviderID != wantProviderID {
+		t.Errorf("spec.providerID = %v, want %q", hm.Spec.ProviderID, wantProviderID)
+	}
 
 	if ip := statusInternalIP(hm); ip == "" {
 		t.Error("status.addresses lost the internal IP")

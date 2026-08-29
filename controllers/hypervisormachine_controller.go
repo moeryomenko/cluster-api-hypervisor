@@ -993,7 +993,14 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 			return fmt.Errorf("boot VM for %q: %w", machine.Name, err)
 		}
 
-		providerID := fmt.Sprintf("hypervisor://%s/%s", hm.Spec.ClusterName, hm.Name)
+		providerID := fmt.Sprintf("hypervisor://%s/%s", machine.Spec.ClusterName, hm.Name)
+		// The CAPI v1beta2 machine controller reads the provider identity
+		// from spec.providerID per the infrastructure contract, so persist it
+		// there (not just in status) or the Machine never becomes Ready.
+		hm.Spec.ProviderID = &providerID
+		if err := r.Update(ctx, hm); err != nil {
+			return fmt.Errorf("update HypervisorMachine spec.providerID: %w", err)
+		}
 		hm.Status.ProviderID = &providerID
 	}
 
