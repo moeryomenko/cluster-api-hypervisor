@@ -338,18 +338,47 @@ func (r *HypervisorConfigReconciler) controlPlaneAddress(
 		return ip, defaultControlPlanePort, nil
 	}
 
-	hc, err := r.linkedHypervisorCluster(ctx, cluster)
+	// The HypervisorCluster endpoint is 127.0.0.1:6443 (host reachability via
+	// the control-plane VM's passt forward), which is wrong for a worker's
+	// kubelet: the kubelet must reach the apiserver over the k8netd L2 segment
+	// at the control-plane VM's internal IP, not the loopback. Resolve the
+	// first control-plane machine's internal IP instead.
+	cpIP, ok, err := r.controlPlaneMachineInternalIP(ctx, cluster)
 	if err != nil {
 		return "", 0, err
 	}
-	if hc == nil || hc.Status.ControlPlaneEndpoint.Host == "" {
-		return "", 0, fmt.Errorf("Cluster %q has no control-plane endpoint", cluster.Name)
+	if !ok {
+		return "", 0, fmt.Errorf("Cluster %q has no control-plane machine with an internal IP", cluster.Name)
 	}
-	port = hc.Status.ControlPlaneEndpoint.Port
-	if port == 0 {
-		port = defaultControlPlanePort
+	return cpIP, defaultControlPlanePort, nil
+}
+
+// controlPlaneMachineInternalIP resolves the static internal IP of the first
+// control-plane Machine backing the cluster, from its HypervisorMachine
+// status. It is what worker kubelets must dial (over the k8netd L2 segment)
+// to reach the apiserver.
+func (r *HypervisorConfigReconciler) controlPlaneMachineInternalIP(
+	ctx context.Context,
+	cluster *clusterv1.Cluster,
+) (string, bool, error) {
+	machines := &clusterv1.MachineList{}
+	selector := client.MatchingLabels{
+		clusterv1.ClusterNameLabel:         cluster.Name,
+		clusterv1.MachineControlPlaneLabel: "",
 	}
-	return hc.Status.ControlPlaneEndpoint.Host, port, nil
+	if err := r.List(ctx, machines, client.InNamespace(cluster.Namespace), selector); err != nil {
+		return "", false, fmt.Errorf("list control-plane machines: %w", err)
+	}
+	for i := range machines.Items {
+		ip, ok, err := r.machineInternalIP(ctx, &machines.Items[i])
+		if err != nil {
+			return "", false, err
+		}
+		if ok {
+			return ip, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // machineInternalIP returns the static internal IP of the HypervisorMachine
@@ -381,27 +410,6 @@ func (r *HypervisorConfigReconciler) machineInternalIP(
 		}
 	}
 	return "", false, nil
-}
-
-// linkedHypervisorCluster resolves the HypervisorCluster of the CAPI Cluster
-// through its infrastructure reference, or nil when the reference is absent
-// or missing.
-func (r *HypervisorConfigReconciler) linkedHypervisorCluster(
-	ctx context.Context,
-	cluster *clusterv1.Cluster,
-) (*infrastructurev1alpha1.HypervisorCluster, error) {
-	ref := cluster.Spec.InfrastructureRef
-	if !ref.IsDefined() || ref.Kind != "HypervisorCluster" || ref.Name == "" {
-		return nil, nil
-	}
-	hc := &infrastructurev1alpha1.HypervisorCluster{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: ref.Name}, hc); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("get infrastructure cluster %q: %w", ref.Name, err)
-	}
-	return hc, nil
 }
 
 // clusterPKI returns the cluster-scoped PKI for the config's cluster: the
