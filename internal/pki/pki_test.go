@@ -71,6 +71,7 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"net"
+	"slices"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -267,10 +268,8 @@ func TestGenerateClusterPKIApiserverCertificateSANs(t *testing.T) {
 	})
 
 	t.Run("node name is a DNS SAN", func(t *testing.T) {
-		for _, got := range cert.DNSNames {
-			if got == cpName {
-				return
-			}
+		if slices.Contains(cert.DNSNames, cpName) {
+			return
 		}
 		t.Errorf("apiserver certificate DNS SANs %v do not contain %q", cert.DNSNames, cpName)
 	})
@@ -624,13 +623,7 @@ func TestGenerateClusterPKISANsContainReservedIPAndLoopback(t *testing.T) {
 		t.Errorf("apiserver cert IP SANs %v do not contain 127.0.0.1 (REQ-006 VC-06)", cert.IPAddresses)
 	}
 	// DNS SAN must still contain cpName; the IP SAN change must not drop it.
-	foundDNS := false
-	for _, dns := range cert.DNSNames {
-		if dns == cpName {
-			foundDNS = true
-			break
-		}
-	}
+	foundDNS := slices.Contains(cert.DNSNames, cpName)
 	if !foundDNS {
 		t.Errorf("apiserver cert DNS SANs %v do not contain %q after loopback addition", cert.DNSNames, cpName)
 	}

@@ -156,12 +156,21 @@ func GenerateClusterPKI(cpIP, cpName string) (ClusterPKI, error) {
 		return ClusterPKI{}, err
 	}
 
+	// apiserverCert SANs: the control-plane node IP and the loopback (the
+	// kubelet and host connect via those), host.containers.internal (the
+	// management-plane controllers reach the published port through the host),
+	// and 10.96.0.1 (the kubernetes Service clusterIP that in-cluster clients
+	// — Cilium init, CoreDNS, metrics-server — use to reach the apiserver).
+	// Without the Service IP SAN, those in-cluster clients fail TLS when the
+	// kubernetes Service DNATs to the apiserver.
+	serviceIP := net.ParseIP("10.96.0.1")
 	apiserverCert, apiserverKey, err := newLeafKeyAndCert(
 		"kube-apiserver",
 		x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		[]string{cpName},
-		[]net.IP{ip, loopback},
+		[]string{cpName, "host.containers.internal"},
+		[]net.IP{ip, loopback, serviceIP},
+		nil,
 		caCert, caKey,
 	)
 	if err != nil {
@@ -171,7 +180,7 @@ func GenerateClusterPKI(cpIP, cpName string) (ClusterPKI, error) {
 		"front-proxy-client",
 		x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		nil, nil,
+		nil, nil, nil,
 		frontProxyCACert, frontProxyCAKey,
 	)
 	if err != nil {
@@ -181,7 +190,7 @@ func GenerateClusterPKI(cpIP, cpName string) (ClusterPKI, error) {
 		"service-account",
 		x509.KeyUsageDigitalSignature,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		nil, nil,
+		nil, nil, nil,
 		caCert, caKey,
 	)
 	if err != nil {
@@ -228,6 +237,7 @@ func GenerateKubeletCert(clusterPKI ClusterPKI, nodeName string) (certPEM, keyPE
 		x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		nil, nil,
+		[]string{"system:nodes"},
 		caCert, caKey,
 	)
 }
@@ -316,6 +326,7 @@ func newLeafKeyAndCert(
 	extKeyUsage []x509.ExtKeyUsage,
 	dnsNames []string,
 	ipAddresses []net.IP,
+	organization []string,
 	caCert *x509.Certificate,
 	caKey crypto.Signer,
 ) (certPEM, keyPEM []byte, err error) {
@@ -323,7 +334,7 @@ func newLeafKeyAndCert(
 	if err != nil {
 		return nil, nil, err
 	}
-	template, err := newLeafTemplate(cn, keyUsage, extKeyUsage, dnsNames, ipAddresses)
+	template, err := newLeafTemplate(cn, keyUsage, extKeyUsage, dnsNames, ipAddresses, organization)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -335,15 +346,15 @@ func newLeafKeyAndCert(
 }
 
 // newLeafTemplate builds the certificate template for a CA-signed leaf with
-// the given common name, key usage, extended key usage, DNS SANs, and IP
-// SANs. Every leaf shares the same validity window and gets a fresh random
-// serial number.
+// the given common name, key usage, extended key usage, DNS SANs, IP
+// SANs, and organization.
 func newLeafTemplate(
 	cn string,
 	keyUsage x509.KeyUsage,
 	extKeyUsage []x509.ExtKeyUsage,
 	dnsNames []string,
 	ipAddresses []net.IP,
+	organization []string,
 ) (*x509.Certificate, error) {
 	serial, err := newSerial()
 	if err != nil {
@@ -352,7 +363,7 @@ func newLeafTemplate(
 	notBefore, notAfter := validityWindow(leafValidity)
 	return &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: cn},
+		Subject:               pkix.Name{CommonName: cn, Organization: organization},
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
 		KeyUsage:              keyUsage,
