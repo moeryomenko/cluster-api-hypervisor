@@ -57,7 +57,7 @@ type quadletUnit struct {
 func parseUnit(data string) *quadletUnit {
 	u := &quadletUnit{sections: make(map[string]map[string][]string)}
 	current := ""
-	for _, line := range strings.Split(data, "\n") {
+	for line := range strings.SplitSeq(data, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			if current == "" && line != "" {
@@ -98,7 +98,7 @@ type bindMount struct {
 // bare "ro" flag and ro=true / readonly=true spellings.
 func parseBindMount(value string) bindMount {
 	m := bindMount{}
-	for _, part := range strings.Split(value, ",") {
+	for part := range strings.SplitSeq(value, ",") {
 		part = strings.TrimSpace(part)
 		switch {
 		case strings.EqualFold(part, "ro"):
@@ -158,7 +158,7 @@ func (u *quadletUnit) mounts() []bindMount {
 // last-wins on repeated Exec=), so each directive is tokenized.
 func (u *quadletUnit) execFlagValue(flag string) string {
 	for _, v := range u.values("Container", "Exec") {
-		for _, token := range strings.Fields(v) {
+		for token := range strings.FieldsSeq(v) {
 			if assigned, ok := strings.CutPrefix(token, flag+"="); ok {
 				return assigned
 			}
@@ -216,7 +216,10 @@ func TestUnitCoreDirectives(t *testing.T) {
 		}
 	}
 	if !seccompUnconfined {
-		t.Errorf("[Container] PodmanArgs = %v, want --security-opt seccomp=unconfined among values", u.values("Container", "PodmanArgs"))
+		t.Errorf(
+			"[Container] PodmanArgs = %v, want --security-opt seccomp=unconfined among values",
+			u.values("Container", "PodmanArgs"),
+		)
 	}
 
 	for _, v := range u.values("Container", "PodmanArgs") {
@@ -240,7 +243,10 @@ func TestUnitSingleExecLine(t *testing.T) {
 
 	execLines := u.values("Container", "Exec")
 	if len(execLines) != 1 {
-		t.Fatalf("[Container] Exec = %v, want exactly one directive (podman 6.x quadlet is last-wins on repeated Exec=)", execLines)
+		t.Fatalf(
+			"[Container] Exec = %v, want exactly one directive (podman 6.x quadlet is last-wins on repeated Exec=)",
+			execLines,
+		)
 	}
 
 	flags := []string{
@@ -342,7 +348,10 @@ func TestUnitMounts(t *testing.T) {
 
 	pki := findSourceContaining("capishim/pki")
 	if pki == nil {
-		t.Fatalf("no Mount sources <capishim-state>/pki; the mgmt kubeconfig references PKI material by absolute host path; mounts = %+v", mounts)
+		t.Fatalf(
+			"no Mount sources <capishim-state>/pki; the mgmt kubeconfig references PKI material by absolute host path; mounts = %+v",
+			mounts,
+		)
 	}
 	if !pki.readonly {
 		t.Errorf("pki mount (source %q) is not read-only; REQ-007 requires ro", pki.source)
@@ -493,7 +502,10 @@ func TestMakefileInstallQuadletIdempotent(t *testing.T) {
 		strings.Contains(first, "install -D") ||
 		strings.Contains(first, "install -d")
 	if !hasDirCreation {
-		t.Errorf("recipe neither mkdir -p's the destination nor uses install -D/-d; re-runs are not guaranteed safe:\n%s", first)
+		t.Errorf(
+			"recipe neither mkdir -p's the destination nor uses install -D/-d; re-runs are not guaranteed safe:\n%s",
+			first,
+		)
 	}
 
 	copyCmdIdx := -1
