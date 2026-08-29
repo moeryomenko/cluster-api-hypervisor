@@ -162,7 +162,6 @@ func TestK8NetdSocket_PreservesCustomValueVerbatim(t *testing.T) {
 		"/var/tmp/k8netd-123.sock",
 	}
 	for _, custom := range cases {
-		custom := custom
 		t.Run(custom, func(t *testing.T) {
 			t.Parallel()
 			env := map[string]string{"HYPERVISOR_K8NETD_SOCKET": custom}
@@ -204,7 +203,7 @@ func TestK8NetdSocket_QueriedByLoad(t *testing.T) {
 func TestDnsmasqFieldRemoved(t *testing.T) {
 	t.Parallel()
 
-	typ := reflect.TypeOf(config.Config{})
+	typ := reflect.TypeFor[config.Config]()
 	if fieldExists(t, typ, "Dnsmasq") {
 		t.Errorf("Config still has field Dnsmasq — REQ-002 requires the Dnsmasq field be removed")
 	}
@@ -244,7 +243,7 @@ func TestHYPERVISOR_DNSMASQ_DoesNotAffectConfig(t *testing.T) {
 
 	// Structurally there should be no Dnsmasq field; if there is, the two
 	// configs would differ in that field, which is itself a failure.
-	typ := reflect.TypeOf(config.Config{})
+	typ := reflect.TypeFor[config.Config]()
 	if fieldExists(t, typ, "Dnsmasq") {
 		t.Fatalf("Config still has Dnsmasq field — cannot verify ignore semantics until field is removed")
 	}
