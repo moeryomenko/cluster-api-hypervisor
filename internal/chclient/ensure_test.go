@@ -467,8 +467,7 @@ func TestEnsureBootedTransportErrorSurfaces(t *testing.T) {
 	if err == nil {
 		t.Fatal("ensureBooted() = nil against a dead socket, want error")
 	}
-	var statusErr *ch.StatusError
-	if errors.As(err, &statusErr) {
+	if _, ok := errors.AsType[*ch.StatusError](err); ok {
 		t.Errorf("error %v is a StatusError, want a transport error", err)
 	}
 }
@@ -514,7 +513,7 @@ func assertCreateField(t *testing.T, doc map[string]any, path string, want any) 
 	t.Helper()
 
 	cur := any(doc)
-	for _, seg := range strings.Split(path, ".") {
+	for seg := range strings.SplitSeq(path, ".") {
 		switch node := cur.(type) {
 		case map[string]any:
 			next, ok := node[seg]
@@ -550,7 +549,7 @@ func assertCreateFieldAbsent(t *testing.T, doc map[string]any, path string) {
 	t.Helper()
 
 	cur := any(doc)
-	for _, seg := range strings.Split(path, ".") {
+	for seg := range strings.SplitSeq(path, ".") {
 		switch node := cur.(type) {
 		case map[string]any:
 			next, ok := node[seg]

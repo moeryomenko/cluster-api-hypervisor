@@ -197,7 +197,10 @@ func TestRenderUserDataFirstBootRuncmd(t *testing.T) {
 	// extension-release.d/, never *.raw files. Copying *.raw from the mount
 	// would copy nothing and leave the confexts inactive.
 	if strings.Contains(commands, "*.raw") {
-		t.Errorf("runcmd copies *.raw from the mounted tree; the confext disk is a squashfs of the tree, not a directory of .raw files:\n%s", commands)
+		t.Errorf(
+			"runcmd copies *.raw from the mounted tree; the confext disk is a squashfs of the tree, not a directory of .raw files:\n%s",
+			commands,
+		)
 	}
 }
 
@@ -348,14 +351,27 @@ func TestRenderUserDataRuncmdSkipsRootDisk(t *testing.T) {
 
 	for _, root := range []string{"/dev/vda", "/dev/vda1", "/dev/vda2", "/dev/vda3"} {
 		if dest, ok := copied[root]; ok {
-			t.Errorf("runcmd copies the root disk/partition %s to %q; the root disk and its partitions must be excluded from confext activation:\n%s", root, dest, commands)
+			t.Errorf(
+				"runcmd copies the root disk/partition %s to %q; the root disk and its partitions must be excluded from confext activation:\n%s",
+				root,
+				dest,
+				commands,
+			)
 		}
 	}
 	if dest, ok := copied["/dev/vdb"]; ok {
-		t.Errorf("runcmd copies the CIDATA disk /dev/vdb to %q; the CIDATA disk must be skipped by label:\n%s", dest, commands)
+		t.Errorf(
+			"runcmd copies the CIDATA disk /dev/vdb to %q; the CIDATA disk must be skipped by label:\n%s",
+			dest,
+			commands,
+		)
 	}
 	if got := copied["/dev/vdc"]; got != "/var/lib/confexts/z-kubelet-node1.raw" {
-		t.Errorf("runcmd copies the confext disk /dev/vdc to %q, want /var/lib/confexts/z-kubelet-node1.raw:\n%s", got, commands)
+		t.Errorf(
+			"runcmd copies the confext disk /dev/vdc to %q, want /var/lib/confexts/z-kubelet-node1.raw:\n%s",
+			got,
+			commands,
+		)
 	}
 }
 
@@ -382,7 +398,11 @@ func TestRenderUserDataRuncmdSkipsDiskWithoutExtensionRelease(t *testing.T) {
 	copied := simulateConfextRuncmd(commands, devices)
 
 	if dest, ok := copied["/dev/vdd"]; ok {
-		t.Errorf("runcmd copies the no-extension-release disk /dev/vdd to %q; a disk without extension-release must be skipped, not copied:\n%s", dest, commands)
+		t.Errorf(
+			"runcmd copies the no-extension-release disk /dev/vdd to %q; a disk without extension-release must be skipped, not copied:\n%s",
+			dest,
+			commands,
+		)
 	}
 	if got := copied["/dev/vdc"]; got != "/var/lib/confexts/z-etcd.raw" {
 		t.Errorf("runcmd copies the confext disk /dev/vdc to %q, want /var/lib/confexts/z-etcd.raw:\n%s", got, commands)
@@ -417,7 +437,11 @@ func TestRenderUserDataRuncmdNeverProducesStarRaw(t *testing.T) {
 
 	for path, dest := range copied {
 		if dest == "/var/lib/confexts/*.raw" {
-			t.Errorf("runcmd produces the literal *.raw file for %s; the quoted-glob quirk must be eliminated:\n%s", path, commands)
+			t.Errorf(
+				"runcmd produces the literal *.raw file for %s; the quoted-glob quirk must be eliminated:\n%s",
+				path,
+				commands,
+			)
 		}
 	}
 }

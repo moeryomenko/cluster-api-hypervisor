@@ -67,7 +67,7 @@ func dhcpValidData() cloudinit.Data {
 // TestCloudInit_DataStructHasNoStaticFields asserts IP/Gateway/DNS are gone.
 func TestCloudInit_DataStructHasNoStaticFields(t *testing.T) {
 	t.Parallel()
-	rt := reflect.TypeOf(cloudinit.Data{})
+	rt := reflect.TypeFor[cloudinit.Data]()
 	for _, name := range []string{"IP", "Gateway", "DNS"} {
 		if _, ok := rt.FieldByName(name); ok {
 			t.Errorf("cloudinit.Data still has field %q; REQ-004 requires it removed or unused in DHCP mode", name)
