@@ -98,16 +98,24 @@ func TestManagerStartsWithEnvTestAndServesHealthz(t *testing.T) {
 	caPath := filepath.Join(certDir, "ca.crt")
 	writeFile(t, caPath, caPEM)
 
+	healthPort := freePort(t)
+	webhookPort := freePort(t)
+	metricsPort := freePort(t)
+
 	mgr := startManager(t,
 		"--kubeconfig", kubeconfigPath,
 		"--webhook-cert-dir", certDir,
-		"--webhook-port", "9443",
-		"--health-addr", ":9440",
+		"--webhook-port", strconv.Itoa(webhookPort),
+		"--health-addr", fmt.Sprintf(":%d", healthPort),
+		"--metrics-bind-addr", fmt.Sprintf(":%d", metricsPort),
 	)
 
-	waitForHealthz(t, mgr, "http://127.0.0.1:9440/healthz", 30*time.Second)
+	waitForHealthz(t, mgr, fmt.Sprintf("http://127.0.0.1:%d/healthz", healthPort), 30*time.Second)
 
-	const webhookURL = "https://127.0.0.1:9443/validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisorcluster"
+	webhookURL := fmt.Sprintf(
+		"https://127.0.0.1:%d/validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisorcluster",
+		webhookPort,
+	)
 	assertWebhookSpeaksTLS(t, mgr, webhookURL, caPath, 15*time.Second)
 
 	mgr.stop(t)
@@ -180,6 +188,21 @@ func (m *runningManager) alive() bool {
 	default:
 		return true
 	}
+}
+
+// freePort returns an available TCP port on 127.0.0.1 by briefly binding to
+// port 0 and reading the OS-assigned port number.
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for free port: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	if err := l.Close(); err != nil {
+		t.Fatalf("close free port listener: %v", err)
+	}
+	return port
 }
 
 // buildManagerBinary compiles the provider binary from the repository root
@@ -521,26 +544,31 @@ func TestMainInfraControllersRegistered(t *testing.T) {
 	// The concurrency flags are passed at their non-default value 2, so the
 	// metrics series values prove the flags are plumbed into the controller
 	// options and not merely accepted.
+	healthPort := freePort(t)
+	webhookPort := freePort(t)
+	metricsPort := freePort(t)
+
 	mgr := startManager(t,
 		"--kubeconfig", kubeconfigPath,
 		"--webhook-cert-dir", certDir,
-		"--webhook-port", "9443",
-		"--health-addr", ":9440",
+		"--webhook-port", strconv.Itoa(webhookPort),
+		"--health-addr", fmt.Sprintf(":%d", healthPort),
+		"--metrics-bind-addr", fmt.Sprintf(":%d", metricsPort),
 		"--hypervisorcluster-concurrency", "2",
 		"--hypervisormachine-concurrency", "2",
 	)
 
-	waitForHealthz(t, mgr, "http://127.0.0.1:9440/healthz", 30*time.Second)
+	waitForHealthz(t, mgr, fmt.Sprintf("http://127.0.0.1:%d/healthz", healthPort), 30*time.Second)
 
 	// Registration proof without host operations: the metrics endpoint
 	// exposes a max-concurrent-reconciles series per infrastructure
 	// controller carrying the concurrency flag value, and both controllers
 	// record a successful reconcile on the test objects. A reconcile that
 	// attempted host work would surface as an error result instead.
-	waitForControllerConcurrency(t, mgr, "hypervisorcluster", 2, 30*time.Second)
-	waitForControllerConcurrency(t, mgr, "hypervisormachine", 2, 30*time.Second)
-	waitForControllerReconcileSuccess(t, mgr, "hypervisorcluster", 30*time.Second)
-	waitForControllerReconcileSuccess(t, mgr, "hypervisormachine", 30*time.Second)
+	waitForControllerConcurrency(t, mgr, metricsPort, "hypervisorcluster", 2, 30*time.Second)
+	waitForControllerConcurrency(t, mgr, metricsPort, "hypervisormachine", 2, 30*time.Second)
+	waitForControllerReconcileSuccess(t, mgr, metricsPort, "hypervisorcluster", 30*time.Second)
+	waitForControllerReconcileSuccess(t, mgr, metricsPort, "hypervisormachine", 30*time.Second)
 
 	// The paused gate holds at the manager level: the paused
 	// HypervisorCluster is never modified — same resource version, no
@@ -692,11 +720,10 @@ func capiCRDDirectory() (string, error) {
 }
 
 // scrapeMetrics performs one GET of the manager metrics endpoint and returns
-// the body on a 200 response. The manager binds the metrics server to the
-// controller-runtime default address :8080.
-func scrapeMetrics(mgr *runningManager) (string, error) {
+// the body on a 200 response.
+func scrapeMetrics(mgr *runningManager, metricsPort int) (string, error) {
 	httpClient := &http.Client{Timeout: 2 * time.Second}
-	resp, err := httpClient.Get("http://127.0.0.1:8080/metrics")
+	resp, err := httpClient.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", metricsPort))
 	if err != nil {
 		return "", err
 	}
@@ -716,6 +743,7 @@ func scrapeMetrics(mgr *runningManager) (string, error) {
 func waitForControllerConcurrency(
 	t *testing.T,
 	mgr *runningManager,
+	metricsPort int,
 	controller string,
 	want int,
 	timeout time.Duration,
@@ -729,7 +757,7 @@ func waitForControllerConcurrency(
 		if !mgr.alive() {
 			t.Fatalf("manager exited while waiting for controller %q concurrency; stderr:\n%s", controller, mgr.stderr.String())
 		}
-		body, err := scrapeMetrics(mgr)
+		body, err := scrapeMetrics(mgr, metricsPort)
 		if err == nil {
 			lastBody = body
 			if m := re.FindStringSubmatch(body); m != nil {
@@ -751,7 +779,13 @@ func waitForControllerConcurrency(
 // operation records a success; a controller that attempted host work and
 // failed records an error result instead, which the failure message
 // surfaces.
-func waitForControllerReconcileSuccess(t *testing.T, mgr *runningManager, controller string, timeout time.Duration) {
+func waitForControllerReconcileSuccess(
+	t *testing.T,
+	mgr *runningManager,
+	metricsPort int,
+	controller string,
+	timeout time.Duration,
+) {
 	t.Helper()
 
 	re := regexp.MustCompile(
@@ -763,7 +797,7 @@ func waitForControllerReconcileSuccess(t *testing.T, mgr *runningManager, contro
 		if !mgr.alive() {
 			t.Fatalf("manager exited while waiting for controller %q reconcile; stderr:\n%s", controller, mgr.stderr.String())
 		}
-		body, err := scrapeMetrics(mgr)
+		body, err := scrapeMetrics(mgr, metricsPort)
 		if err == nil {
 			lastBody = body
 			if m := re.FindStringSubmatch(body); m != nil {
@@ -933,29 +967,34 @@ func TestMainBootstrapControllersRegistered(t *testing.T) {
 	// The concurrency flags are passed at their non-default value 2, so the
 	// metrics series values prove the flags are plumbed into the controller
 	// options and not merely accepted.
+	healthPort := freePort(t)
+	webhookPort := freePort(t)
+	metricsPort := freePort(t)
+
 	mgr := startManager(t,
 		"--kubeconfig", kubeconfigPath,
 		"--webhook-cert-dir", certDir,
-		"--webhook-port", "9443",
-		"--health-addr", ":9440",
+		"--webhook-port", strconv.Itoa(webhookPort),
+		"--health-addr", fmt.Sprintf(":%d", healthPort),
+		"--metrics-bind-addr", fmt.Sprintf(":%d", metricsPort),
 		"--hypervisorconfig-concurrency", "2",
 		"--hypervisorcontrolplane-concurrency", "2",
 	)
 
-	waitForHealthz(t, mgr, "http://127.0.0.1:9440/healthz", 30*time.Second)
+	waitForHealthz(t, mgr, fmt.Sprintf("http://127.0.0.1:%d/healthz", healthPort), 30*time.Second)
 
 	// Registration proof without host operations or side effects: the metrics
 	// endpoint exposes a max-concurrent-reconciles series per controller
 	// carrying the concurrency flag value.
-	waitForControllerConcurrency(t, mgr, "hypervisorconfig", 2, 30*time.Second)
-	waitForControllerConcurrency(t, mgr, "hypervisorcontrolplane", 2, 30*time.Second)
+	waitForControllerConcurrency(t, mgr, metricsPort, "hypervisorconfig", 2, 30*time.Second)
+	waitForControllerConcurrency(t, mgr, metricsPort, "hypervisorcontrolplane", 2, 30*time.Second)
 
 	// Zero reconcile side effects: with no fixture objects on the control
 	// plane, neither controller records any reconcile during a settle window.
 	// A reconcile that ran would surface as a reconcile_total series and fail
 	// the assertion.
-	assertNoControllerReconciles(t, mgr, "hypervisorconfig", 5*time.Second)
-	assertNoControllerReconciles(t, mgr, "hypervisorcontrolplane", 5*time.Second)
+	assertNoControllerReconciles(t, mgr, metricsPort, "hypervisorconfig", 5*time.Second)
+	assertNoControllerReconciles(t, mgr, metricsPort, "hypervisorcontrolplane", 5*time.Second)
 
 	mgr.stop(t)
 }
@@ -967,7 +1006,13 @@ func TestMainBootstrapControllersRegistered(t *testing.T) {
 // series at value 0 when a controller starts (Controller.Start's
 // initMetrics), so series presence alone is not a side effect; a reconcile
 // that ran carries a count above 0 and fails the assertion.
-func assertNoControllerReconciles(t *testing.T, mgr *runningManager, controller string, timeout time.Duration) {
+func assertNoControllerReconciles(
+	t *testing.T,
+	mgr *runningManager,
+	metricsPort int,
+	controller string,
+	timeout time.Duration,
+) {
 	t.Helper()
 
 	re := regexp.MustCompile(`controller_runtime_reconcile_total\{controller="` + controller + `"(?:,[^}]*)?\} (\d+)`)
@@ -980,7 +1025,7 @@ func assertNoControllerReconciles(t *testing.T, mgr *runningManager, controller 
 				mgr.stderr.String(),
 			)
 		}
-		body, err := scrapeMetrics(mgr)
+		body, err := scrapeMetrics(mgr, metricsPort)
 		if err == nil {
 			for _, m := range re.FindAllStringSubmatch(body, -1) {
 				n, err := strconv.Atoi(m[1])
