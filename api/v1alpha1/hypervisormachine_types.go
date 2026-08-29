@@ -40,6 +40,13 @@ type HypervisorMachineSpec struct {
 	// name.
 	MAC string `json:"mac,omitempty"`
 
+	// ProviderID is the infrastructure provider ID in the form
+	// hypervisor://<cluster>/<machine>. It is set by the controller once the
+	// VM has booted; the Cluster API machine controller reads it from
+	// spec.providerID per the infrastructure contract.
+	// +optional
+	ProviderID *string `json:"providerID,omitempty"`
+
 	// RetainDiskOnDelete determines whether the root disk survives VM
 	// deletion. Defaults to false: the disk is removed with the VM.
 	RetainDiskOnDelete bool `json:"retainDiskOnDelete,omitempty"`

@@ -57,6 +57,13 @@ spec:
                   controller derives the address from a stable hash of cluster/machine
                   name.
                 type: string
+              providerID:
+                description: |-
+                  ProviderID is the infrastructure provider ID in the form
+                  hypervisor://<cluster>/<machine>. It is set by the controller once the
+                  VM has booted; the Cluster API machine controller reads it from
+                  spec.providerID per the infrastructure contract.
+                type: string
               ram:
                 description: RAM is the VM memory in MiB.
                 format: int32
