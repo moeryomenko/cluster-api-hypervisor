@@ -161,7 +161,11 @@ func TestControlPlaneKubeconfigUpdatesInPlaceWhenAllocationChanges(t *testing.T)
 	secondDoc := parseKubeconfig(t, second.Data[kubeconfigSecretDataKey])
 	wantServer := "https://127.0.0.1:26555"
 	if len(secondDoc.Clusters) != 1 || secondDoc.Clusters[0].Cluster.Server != wantServer {
-		t.Errorf("kubeconfig server after re-allocation = %+v, want %q (reconciled to current)", secondDoc.Clusters, wantServer)
+		t.Errorf(
+			"kubeconfig server after re-allocation = %+v, want %q (reconciled to current)",
+			secondDoc.Clusters,
+			wantServer,
+		)
 	}
 }
 
@@ -214,7 +218,12 @@ func TestControlPlaneHealthProbeUsesAllocatedHostPort(t *testing.T) {
 	}
 	call := fx.health.calls[0]
 	if call.host != "127.0.0.1" || call.port != allocatedHostPort {
-		t.Errorf("healthz polled endpoint %s:%d, want 127.0.0.1:%d (the recorded allocation)", call.host, call.port, allocatedHostPort)
+		t.Errorf(
+			"healthz polled endpoint %s:%d, want 127.0.0.1:%d (the recorded allocation)",
+			call.host,
+			call.port,
+			allocatedHostPort,
+		)
 	}
 	if call.host == testCPIP {
 		t.Errorf("healthz polled the VM internal IP %q, which has no host route", call.host)

@@ -114,8 +114,8 @@ func newMachineK8netdReconciler(
 	}
 	if !found {
 		var fields []string
-		for i := 0; i < rt.NumField(); i++ {
-			fields = append(fields, rt.Field(i).Name+":"+rt.Field(i).Type.String())
+		for field := range rt.Fields() {
+			fields = append(fields, field.Name+":"+field.Type.String())
 		}
 		t.Fatalf(
 			"HypervisorMachineReconciler has no *k8netd.Client field; fields=%v (expected Net/NewAllocator removed, K8netd added for REQ-004)",
@@ -162,7 +162,7 @@ func methodIndex(reqs []fake.CapturedRequest, method string) int {
 // controller still carries Net/NewAllocator.
 func TestHypervisorMachineK8netd_ReconcilerHasNoLegacyFields(t *testing.T) {
 	t.Parallel()
-	rt := reflect.TypeOf(HypervisorMachineReconciler{})
+	rt := reflect.TypeFor[HypervisorMachineReconciler]()
 	for _, name := range []string{"NewAllocator"} {
 		if _, ok := rt.FieldByName(name); ok {
 			t.Errorf(
@@ -183,8 +183,8 @@ func TestHypervisorMachineK8netd_ReconcilerHasNoLegacyFields(t *testing.T) {
 	}
 	kcType := reflect.TypeOf(k8netd.NewClient(""))
 	hasK8netd := false
-	for i := 0; i < rt.NumField(); i++ {
-		if rt.Field(i).Type == kcType {
+	for field := range rt.Fields() {
+		if field.Type == kcType {
 			hasK8netd = true
 			break
 		}
@@ -199,7 +199,7 @@ func TestHypervisorMachineK8netd_ReconcilerHasNoLegacyFields(t *testing.T) {
 // struct still has them.
 func TestHypervisorMachineK8netd_DataStructHasNoStaticIPFields(t *testing.T) {
 	t.Parallel()
-	rt := reflect.TypeOf(cloudinit.Data{})
+	rt := reflect.TypeFor[cloudinit.Data]()
 	for _, name := range []string{"IP", "Gateway", "DNS"} {
 		if _, ok := rt.FieldByName(name); ok {
 			t.Errorf(

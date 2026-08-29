@@ -138,8 +138,8 @@ func newK8netdReconciler(t *testing.T, c client.Client, srv *fake.Server) *Hyper
 	}
 	if !found {
 		var fields []string
-		for i := 0; i < rt.NumField(); i++ {
-			fields = append(fields, rt.Field(i).Name+":"+rt.Field(i).Type.String())
+		for field := range rt.Fields() {
+			fields = append(fields, field.Name+":"+field.Type.String())
 		}
 		t.Fatalf(
 			"HypervisorClusterReconciler has no *k8netd.Client field; fields=%v (expected Net/Nft/Dnsmasq/NewAllocator removed, K8netd added)",
@@ -175,7 +175,7 @@ func countMethod(reqs []fake.CapturedRequest, method string) int {
 // Net/Nft/Dnsmasq/NewAllocator.
 func TestHypervisorClusterK8netd_ReconcilerHasNoLegacyFields(t *testing.T) {
 	t.Parallel()
-	rt := reflect.TypeOf(HypervisorClusterReconciler{})
+	rt := reflect.TypeFor[HypervisorClusterReconciler]()
 	legacy := []string{"Net", "Nft", "Dnsmasq", "NewAllocator"}
 	for _, name := range legacy {
 		if _, ok := rt.FieldByName(name); ok {
@@ -188,8 +188,8 @@ func TestHypervisorClusterK8netd_ReconcilerHasNoLegacyFields(t *testing.T) {
 	// Also assert a k8netd client field exists.
 	kcType := reflect.TypeOf(k8netd.NewClient(""))
 	hasK8netd := false
-	for i := 0; i < rt.NumField(); i++ {
-		if rt.Field(i).Type == kcType {
+	for field := range rt.Fields() {
+		if field.Type == kcType {
 			hasK8netd = true
 			break
 		}

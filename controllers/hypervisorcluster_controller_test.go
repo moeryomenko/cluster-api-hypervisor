@@ -579,7 +579,6 @@ func TestReconcileControlPlaneEndpointLoopbackWithDynamicIPs(t *testing.T) {
 func TestReconcileControlPlaneEndpointLoopbackGate(t *testing.T) {
 	c := mustReconcileClient(t)
 	t.Run("uninitialized control plane leaves endpoint empty", func(t *testing.T) {
-
 		r := newTestReconciler(t, c)
 		lc := newLinkedCluster(t, c, "hc-endpoint-gate-notinit", "capi-cluster")
 		newControlPlane(t, c, lc, false)
@@ -596,7 +595,6 @@ func TestReconcileControlPlaneEndpointLoopbackGate(t *testing.T) {
 		}
 	})
 	t.Run("no machine leaves endpoint empty", func(t *testing.T) {
-
 		r := newTestReconciler(t, c)
 		lc := newLinkedCluster(t, c, "hc-endpoint-gate-nomachine", "capi-cluster")
 		newControlPlane(t, c, lc, true)
@@ -686,13 +684,20 @@ func TestReconcileFindsClusterByInfrastructureRefWithoutOwnerRefOrClusterName(t 
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
 	if !got.Status.Ready {
-		t.Error("status.ready = false: Reconcile did not find the linked Cluster through the infrastructureRef back-reference, want provisioned")
+		t.Error(
+			"status.ready = false: Reconcile did not find the linked Cluster through the infrastructureRef back-reference, want provisioned",
+		)
 	}
-	if cond := findCondition(got, clusterv1.InfrastructureReadyCondition); cond == nil || cond.Status != metav1.ConditionTrue {
+	if cond := findCondition(got, clusterv1.InfrastructureReadyCondition); cond == nil ||
+		cond.Status != metav1.ConditionTrue {
 		t.Errorf("InfrastructureReady condition = %+v, want present and True", cond)
 	}
 	if provisioned, present := statusInitializationProvisioned(got.Status); !present || !provisioned {
-		t.Errorf("status.initialization.provisioned = (%t, present=%t), want true (CAPI v1beta2 cluster controller gate)", provisioned, present)
+		t.Errorf(
+			"status.initialization.provisioned = (%t, present=%t), want true (CAPI v1beta2 cluster controller gate)",
+			provisioned,
+			present,
+		)
 	}
 
 	// Second reconcile converges: provisioning stays idempotent through the

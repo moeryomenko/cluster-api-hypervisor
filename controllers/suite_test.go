@@ -37,6 +37,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -505,7 +506,7 @@ func firstRequestOf(t *testing.T, srv *fake.Server, method string) fake.Captured
 // conflict because the running controller updates the status concurrently.
 func armMachineFinalizer(t *testing.T, c client.Client, key client.ObjectKey) {
 	t.Helper()
-	for attempt := 0; attempt < 20; attempt++ {
+	for range 20 {
 		hm := &infrastructurev1alpha1.HypervisorMachine{}
 		if err := c.Get(t.Context(), key, hm); err != nil {
 			t.Fatalf("get HypervisorMachine to arm finalizer: %v", err)
@@ -613,13 +614,7 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 		key := client.ObjectKeyFromObject(lm.hm)
 		eventuallyF(t, 120*time.Second, "machine provisioned: port lifecycle + VM start + status IP", func() bool {
 			ops := s.ops.snapshot()
-			hasPort := false
-			for _, op := range ops {
-				if op == "AllocateIP" {
-					hasPort = true
-					break
-				}
-			}
+			hasPort := slices.Contains(ops, "AllocateIP")
 			if !hasPort {
 				return false
 			}
@@ -671,7 +666,15 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 		}
 		wantAttachMAC := mac.Derive(lc.name, lm.name)
 		if attach.Port != lm.name || attach.Network != lc.name || attach.MAC != wantAttachMAC {
-			t.Errorf("AttachPort = (%q, %q, %q), want (%q, %q, %q)", attach.Port, attach.Network, attach.MAC, lm.name, lc.name, wantAttachMAC)
+			t.Errorf(
+				"AttachPort = (%q, %q, %q), want (%q, %q, %q)",
+				attach.Port,
+				attach.Network,
+				attach.MAC,
+				lm.name,
+				lc.name,
+				wantAttachMAC,
+			)
 		}
 
 		// AllocateIP params: network == cluster name, mac == derived MAC.
@@ -714,8 +717,14 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 			t.Fatalf("teardown ops missing after mark %d: trace %v", mark, s.ops.snapshot())
 		}
 		if !(st > sd && dp > st && dpo > dp) {
-			t.Errorf("teardown order after mark %d = [Shutdown:%d Stop:%d DetachPort:%d DeletePort:%d], want Stop>Shutdown, DetachPort>Stop, DeletePort>DetachPort",
-				mark, sd, st, dp, dpo)
+			t.Errorf(
+				"teardown order after mark %d = [Shutdown:%d Stop:%d DetachPort:%d DeletePort:%d], want Stop>Shutdown, DetachPort>Stop, DeletePort>DetachPort",
+				mark,
+				sd,
+				st,
+				dp,
+				dpo,
+			)
 		}
 	})
 

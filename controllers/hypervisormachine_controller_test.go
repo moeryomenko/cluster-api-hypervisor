@@ -80,6 +80,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -300,12 +301,7 @@ func (f *recordingExecRunner) qemuImg(args []string) ([]byte, error) {
 // hasForceShare reports whether the qemu-img invocation carries the -U
 // (force-share) flag, which lets a locked disk's metadata be read.
 func hasForceShare(args []string) bool {
-	for _, arg := range args {
-		if arg == "-U" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(args, "-U")
 }
 
 // qemuCalls returns the recorded qemu-img invocations for the subcommand, in
@@ -462,7 +458,7 @@ func newLinkedMachine(
 		if err := c.Create(ctx, lm.config); err != nil {
 			t.Fatalf("create HypervisorConfig: %v", err)
 		}
-		lm.config.Status.DataSecretName = stringPtr(name + "-data")
+		lm.config.Status.DataSecretName = new(name + "-data")
 		if err := c.Status().Update(ctx, lm.config); err != nil {
 			t.Fatalf("set HypervisorConfig dataSecretName: %v", err)
 		}
@@ -622,11 +618,6 @@ func statusHostName(hm *infrastructurev1alpha1.HypervisorMachine) string {
 	}
 
 	return ""
-}
-
-// stringPtr returns a pointer to s.
-func stringPtr(s string) *string {
-	return &s
 }
 
 // TestMachineIdentityOwnerResolution pins the owner and cluster resolution
@@ -865,7 +856,7 @@ func TestMachineDisksRootDiskIdempotent(t *testing.T) {
 		lm := newLinkedMachine(t, c, lc, "node-1", true)
 		key := client.ObjectKeyFromObject(lm.hm)
 
-		for i := 0; i < 2; i++ {
+		for i := range 2 {
 			if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
 				t.Fatalf("Reconcile %d error: %v", i+1, err)
 			}
@@ -896,7 +887,7 @@ func TestMachineDisksRootDiskIdempotent(t *testing.T) {
 		diskPath := filepath.Join(vmDisksDir, lm.name+"-root.qcow2")
 		fx.qemu.disks[diskPath] = (testMachineDisk / 2) * 1024 * 1024
 
-		for i := 0; i < 2; i++ {
+		for i := range 2 {
 			if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
 				t.Fatalf("Reconcile %d error: %v", i+1, err)
 			}
@@ -1936,40 +1927,12 @@ func writeMachineConfextDisk(t *testing.T, vmDisksDir, name string) string {
 	return path
 }
 
-// writeMachineConfextStaging writes a real confext staging tree for the
-// machine under the fixture's VM disk directory, standing in for the tree the
-// packager seam only materializes in memory. The returned path is the staging
-// directory written.
-func writeMachineConfextStaging(t *testing.T, vmDisksDir, name string) string {
-	t.Helper()
-
-	dir := filepath.Join(vmDisksDir, name+"-confext-staging")
-	treeFile := filepath.Join(dir, "z-kubelet-node1", "etc", "kubernetes", "kubelet.conf")
-	if err := os.MkdirAll(filepath.Dir(treeFile), 0o755); err != nil {
-		t.Fatalf("create confext staging dir %q: %v", dir, err)
-	}
-	if err := os.WriteFile(treeFile, []byte("fixture staging tree"), 0o644); err != nil {
-		t.Fatalf("write staging tree file %q: %v", treeFile, err)
-	}
-
-	return dir
-}
-
 // assertPathRemoved fails the test when the path still exists.
 func assertPathRemoved(t *testing.T, path string) {
 	t.Helper()
 
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("path %q still exists after teardown (stat error %v)", path, err)
-	}
-}
-
-// assertPathExists fails the test when the path does not exist.
-func assertPathExists(t *testing.T, path string) {
-	t.Helper()
-
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("path %q missing after teardown: %v", path, err)
 	}
 }
 
@@ -2077,7 +2040,9 @@ func TestMachineVMInitializationProvisionedWhenRunning(t *testing.T) {
 		}
 		provisioned, present := statusInitializationProvisioned(hm.Status)
 		if !present {
-			t.Fatal("status.initialization.provisioned missing with the VM running: the CAPI v1beta2 machine controller waits on this field (InfrastructureReady stays False)")
+			t.Fatal(
+				"status.initialization.provisioned missing with the VM running: the CAPI v1beta2 machine controller waits on this field (InfrastructureReady stays False)",
+			)
 		}
 		if !provisioned {
 			t.Error("status.initialization.provisioned = false with the VM running, want true")
@@ -2112,7 +2077,11 @@ func TestMachineVMInitializationProvisionedWhenRunning(t *testing.T) {
 
 		hm := getMachine(t, c, lm.hm)
 		if provisioned, present := statusInitializationProvisioned(hm.Status); !present || !provisioned {
-			t.Errorf("status.initialization.provisioned = (%t, present=%t) after two reconciles, want true", provisioned, present)
+			t.Errorf(
+				"status.initialization.provisioned = (%t, present=%t) after two reconciles, want true",
+				provisioned,
+				present,
+			)
 		}
 	})
 }

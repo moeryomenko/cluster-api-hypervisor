@@ -1233,7 +1233,7 @@ func (f *failingSecretCreateClient) Create(ctx context.Context, obj client.Objec
 
 // isBoolKind reports whether the type is a bool or a pointer to a bool.
 func isBoolKind(t reflect.Type) bool {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Kind() == reflect.Bool
@@ -1241,7 +1241,7 @@ func isBoolKind(t reflect.Type) bool {
 
 // isStringKind reports whether the type is a string or a pointer to a string.
 func isStringKind(t reflect.Type) bool {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t.Kind() == reflect.String
@@ -1305,17 +1305,19 @@ func TestConfigStatusInitializationJSONContract(t *testing.T) {
 // The kind checks accept both value and pointer fields, matching the kubeadm
 // reference implementation's *bool.
 func TestConfigStatusInitializationFieldShape(t *testing.T) {
-	statusType := reflect.TypeOf(bootstrapv1alpha1.HypervisorConfigStatus{})
+	statusType := reflect.TypeFor[bootstrapv1alpha1.HypervisorConfigStatus]()
 	field, ok := statusType.FieldByName("Initialization")
 	if !ok {
-		t.Fatal("HypervisorConfigStatus has no Initialization field; add the CAPI v1beta2 bootstrap-contract initialization status")
+		t.Fatal(
+			"HypervisorConfigStatus has no Initialization field; add the CAPI v1beta2 bootstrap-contract initialization status",
+		)
 	}
-	if got := strings.Split(field.Tag.Get("json"), ",")[0]; got != "initialization" {
+	if got, _, _ := strings.Cut(field.Tag.Get("json"), ","); got != "initialization" {
 		t.Errorf("Initialization json tag = %q, want %q", got, "initialization")
 	}
 
 	initType := field.Type
-	for initType.Kind() == reflect.Ptr {
+	for initType.Kind() == reflect.Pointer {
 		initType = initType.Elem()
 	}
 	if initType.Kind() != reflect.Struct {
@@ -1326,7 +1328,7 @@ func TestConfigStatusInitializationFieldShape(t *testing.T) {
 	if !ok {
 		t.Fatal("Initialization type has no DataSecretCreated field")
 	}
-	if got := strings.Split(created.Tag.Get("json"), ",")[0]; got != "dataSecretCreated" {
+	if got, _, _ := strings.Cut(created.Tag.Get("json"), ","); got != "dataSecretCreated" {
 		t.Errorf("DataSecretCreated json tag = %q, want %q", got, "dataSecretCreated")
 	}
 	if !isBoolKind(created.Type) {
@@ -1337,7 +1339,7 @@ func TestConfigStatusInitializationFieldShape(t *testing.T) {
 	if !ok {
 		t.Fatal("Initialization type has no DataSecretName field")
 	}
-	if got := strings.Split(name.Tag.Get("json"), ",")[0]; got != "dataSecretName" {
+	if got, _, _ := strings.Cut(name.Tag.Get("json"), ","); got != "dataSecretName" {
 		t.Errorf("DataSecretName json tag = %q, want %q", got, "dataSecretName")
 	}
 	if !isStringKind(name.Type) {

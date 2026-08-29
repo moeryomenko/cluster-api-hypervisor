@@ -594,8 +594,11 @@ func TestControlPlaneMachineInfraResolvedThroughMachineTemplateSpec(t *testing.T
 		Name:     m.Name,
 	}
 	if !reflect.DeepEqual(m.Spec.InfrastructureRef, wantRef) {
-		t.Errorf("spec.infrastructureRef = %+v, want the concrete HypervisorMachine reference %+v resolved through machineTemplate.spec.infrastructureRef",
-			m.Spec.InfrastructureRef, wantRef)
+		t.Errorf(
+			"spec.infrastructureRef = %+v, want the concrete HypervisorMachine reference %+v resolved through machineTemplate.spec.infrastructureRef",
+			m.Spec.InfrastructureRef,
+			wantRef,
+		)
 	}
 
 	hm := &infrastructurev1alpha1.HypervisorMachine{}
@@ -604,10 +607,19 @@ func TestControlPlaneMachineInfraResolvedThroughMachineTemplateSpec(t *testing.T
 	}
 	wantSpec := referenced.Spec.Template.Spec
 	if hm.Spec != wantSpec {
-		t.Errorf("HypervisorMachine spec = %+v, want the REFERENCED template's spec.template.spec %+v (CPU 8), not another namespace template", hm.Spec, wantSpec)
+		t.Errorf(
+			"HypervisorMachine spec = %+v, want the REFERENCED template's spec.template.spec %+v (CPU 8), not another namespace template",
+			hm.Spec,
+			wantSpec,
+		)
 	}
 	if got := hm.Annotations[clusterv1.TemplateClonedFromNameAnnotation]; got != referenced.Name {
-		t.Errorf("HypervisorMachine %s cloned-from annotation = %q, want the referenced template %q", hm.Name, got, referenced.Name)
+		t.Errorf(
+			"HypervisorMachine %s cloned-from annotation = %q, want the referenced template %q",
+			hm.Name,
+			got,
+			referenced.Name,
+		)
 	}
 	wantGroupKind := "HypervisorMachineTemplate." + infrastructurev1alpha1.GroupVersion.Group
 	if got := hm.Annotations[clusterv1.TemplateClonedFromGroupKindAnnotation]; got != wantGroupKind {
@@ -1054,8 +1066,16 @@ type recordingHealthCheck struct {
 }
 
 // check implements the CheckAPIServerHealth seam.
-func (s *recordingHealthCheck) check(_ context.Context, host string, port int32, clientCert, clientKey, caCert []byte) error {
-	s.calls = append(s.calls, healthCheckCall{host: host, port: port, clientCert: clientCert, clientKey: clientKey, caCert: caCert})
+func (s *recordingHealthCheck) check(
+	_ context.Context,
+	host string,
+	port int32,
+	clientCert, clientKey, caCert []byte,
+) error {
+	s.calls = append(
+		s.calls,
+		healthCheckCall{host: host, port: port, clientCert: clientCert, clientKey: clientKey, caCert: caCert},
+	)
 	return s.result
 }
 
@@ -1771,7 +1791,11 @@ func TestControlPlaneKubeconfigServerIsLoopback(t *testing.T) {
 	// Health check must be polled through the published loopback endpoint,
 	// never the VM internal IP (no host route into the k8netd L2 segment).
 	if call := fx.health.calls[0]; call.host != "127.0.0.1" || call.port != 26443 {
-		t.Errorf("healthz polled endpoint %s:%d, want 127.0.0.1:26443 (published allocation, not the VM IP)", call.host, call.port)
+		t.Errorf(
+			"healthz polled endpoint %s:%d, want 127.0.0.1:26443 (published allocation, not the VM IP)",
+			call.host,
+			call.port,
+		)
 	}
 
 	secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
