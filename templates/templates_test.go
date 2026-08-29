@@ -347,7 +347,11 @@ func splitYAMLDocuments(t *testing.T, path string) [][]byte {
 	}
 }
 
-func requireTemplateRef(t *testing.T, ref clusterv1.ClusterClassTemplateReference, path string) clusterv1.ClusterClassTemplateReference {
+func requireTemplateRef(
+	t *testing.T,
+	ref clusterv1.ClusterClassTemplateReference,
+	path string,
+) clusterv1.ClusterClassTemplateReference {
 	t.Helper()
 	if !ref.IsDefined() {
 		t.Fatalf("%s must be set", path)
@@ -358,7 +362,12 @@ func requireTemplateRef(t *testing.T, ref clusterv1.ClusterClassTemplateReferenc
 	return ref
 }
 
-func assertTemplateRefTarget(t *testing.T, ref clusterv1.ClusterClassTemplateReference, kind string, gv schema.GroupVersion) {
+func assertTemplateRefTarget(
+	t *testing.T,
+	ref clusterv1.ClusterClassTemplateReference,
+	kind string,
+	gv schema.GroupVersion,
+) {
 	t.Helper()
 	if ref.Kind != kind {
 		t.Errorf("ref %s must have kind %s, got %q", ref.Name, kind, ref.Kind)
@@ -534,7 +543,10 @@ func classRefs(cc clusterv1.ClusterClass) []namedTemplateRef {
 	refs := []namedTemplateRef{
 		{path: "spec.infrastructure.templateRef", ref: cc.Spec.Infrastructure.TemplateRef},
 		{path: "spec.controlPlane.templateRef", ref: cc.Spec.ControlPlane.TemplateRef},
-		{path: "spec.controlPlane.machineInfrastructure.templateRef", ref: cc.Spec.ControlPlane.MachineInfrastructure.TemplateRef},
+		{
+			path: "spec.controlPlane.machineInfrastructure.templateRef",
+			ref:  cc.Spec.ControlPlane.MachineInfrastructure.TemplateRef,
+		},
 	}
 	for i := range cc.Spec.Workers.MachineDeployments {
 		path := fmt.Sprintf("spec.workers.machineDeployments[%d]", i)
@@ -666,7 +678,11 @@ func TestClusterTemplateClusterTopology(t *testing.T) {
 	// Topology is a value type in v1beta2; an absent spec.topology yields an
 	// empty classRef.name, which the comparison below rejects.
 	if class != example.Spec.Topology.ClassRef.Name {
-		t.Errorf("spec.topology.classRef.name %q does not match the example Cluster class %q", class, example.Spec.Topology.ClassRef.Name)
+		t.Errorf(
+			"spec.topology.classRef.name %q does not match the example Cluster class %q",
+			class,
+			example.Spec.Topology.ClassRef.Name,
+		)
 	}
 
 	nestedMap(t, topo, "controlPlane")
@@ -815,7 +831,7 @@ func rawClusterTemplateClusterClass(t *testing.T) map[string]any {
 func mapPathValue(t *testing.T, root map[string]any, path string) any {
 	t.Helper()
 	var cur any = root
-	for _, seg := range strings.Split(path, ".") {
+	for seg := range strings.SplitSeq(path, ".") {
 		key := seg
 		index := -1
 		if i := strings.IndexByte(seg, '['); i >= 0 {

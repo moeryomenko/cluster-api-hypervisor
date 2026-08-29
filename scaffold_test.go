@@ -55,7 +55,7 @@ func TestToolchainContract(t *testing.T) {
 
 		var modulePath, goVersion string
 		goDirective := regexp.MustCompile(`^go ([0-9]+(?:\.[0-9]+)*)$`)
-		for _, line := range strings.Split(string(raw), "\n") {
+		for line := range strings.SplitSeq(string(raw), "\n") {
 			line = strings.TrimSpace(line)
 			switch {
 			case strings.HasPrefix(line, "module "):
@@ -112,7 +112,7 @@ func TestToolchainContract(t *testing.T) {
 
 		present := make(map[string]bool)
 		targetRE := regexp.MustCompile(`^([A-Za-z0-9_][A-Za-z0-9_.-]*):`)
-		for _, line := range strings.Split(string(raw), "\n") {
+		for line := range strings.SplitSeq(string(raw), "\n") {
 			line = strings.TrimSpace(line)
 			if m := targetRE.FindStringSubmatch(line); m != nil {
 				present[m[1]] = true
