@@ -34,7 +34,15 @@ linters:
       # every other deprecated API usage.
       - linters:
           - staticcheck
-        text: 'SA1019: mgr\.GetEventRecorderFor is deprecated: this uses the old events API and will be removed in a future release\. Please use GetEventRecorder instead\.'
+        text: 'SA1019: .+\.GetEventRecorderFor is deprecated: this uses the old events API'
+      # Deliberate use of the deprecated EventBroadcaster option on
+      # ctrl.Options. The manager runs as a single quadlet process for the
+      # lifetime of the cluster, so the goroutine-leak risk the deprecation
+      # warns about does not apply. The custom broadcaster configures a higher
+      # event-correlator burst size to avoid filtered events under load.
+      - linters:
+          - staticcheck
+        text: 'SA1019: \(sigs\.k8s\.io/controller-runtime\.Options\)\.EventBroadcaster is deprecated'
 
 run:
   concurrency: 4
