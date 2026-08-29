@@ -229,7 +229,7 @@ func (c *Client) call(ctx context.Context, method string, params any, result any
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
@@ -307,9 +307,6 @@ func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 		case <-timer.C:
 		}
 
-		delay = time.Duration(float64(delay) * 1.5)
-		if delay > maxDelay {
-			delay = maxDelay
-		}
+		delay = min(time.Duration(float64(delay)*1.5), maxDelay)
 	}
 }

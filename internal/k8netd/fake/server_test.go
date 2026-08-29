@@ -50,7 +50,7 @@ func dialAndCall(t *testing.T, socketPath string, req jsonRPCRequest) jsonRPCRes
 	if err != nil {
 		t.Fatalf("dial %q: %v", socketPath, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		t.Fatalf("encode request: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestFakeServer_InvalidEnvelopeReturnsInvalidParams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_, _ = conn.Write([]byte(`{"id":1,"method":"GetNetwork","params":{}}` + "\n"))
 	var resp jsonRPCResponse
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
@@ -249,7 +249,7 @@ func TestFakeServer_ConcurrentConnections(t *testing.T) {
 
 	const n = 20
 	done := make(chan struct{}, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(id int) {
 			resp := dialAndCall(t, sock, jsonRPCRequest{JSONRPC: "2.0", ID: id, Method: "GetNetwork"})
 			if resp.JSONRPC != "2.0" {
@@ -258,7 +258,7 @@ func TestFakeServer_ConcurrentConnections(t *testing.T) {
 			done <- struct{}{}
 		}(i)
 	}
-	for i := 0; i < n; i++ {
+	for range n {
 		<-done
 	}
 	if srv.RequestCount() != n {

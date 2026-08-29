@@ -62,12 +62,6 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd/fake"
 )
 
-// helper creates a client dialing the given fake server.
-func newClientForServer(t *testing.T, srv *fake.Server) *Client {
-	t.Helper()
-	return NewClient(srv.SocketPath())
-}
-
 // TestSentinelErrorsExist verifies that the five sentinels exist and are distinct.
 func TestSentinelErrorsExist(t *testing.T) {
 	t.Parallel()
