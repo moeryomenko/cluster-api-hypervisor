@@ -972,6 +972,22 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 	vm.SetRAM(hm.Spec.RAM)
 
 	if hm.Status.ProviderID == nil {
+		// REQ-004/REQ-008: a machine whose bootstrap config renders runtime
+		// confext data must NOT boot before that data exists — the confext
+		// raws are attached at first boot and a late attach would require a
+		// reboot. The control-plane apiserver renders each machine's
+		// bootstrap Secret (PKI + kubelet config) independently, so waiting
+		// for it here cannot deadlock; it only orders workers after the
+		// control plane has produced their config.
+		pending, err := r.bootstrapDataPending(ctx, machine)
+		if err != nil {
+			return err
+		}
+		if pending {
+			log := ctrl.LoggerFrom(ctx)
+			log.Info("bootstrap data not yet available, deferring VM boot", "machine", machine.Name)
+			return nil
+		}
 		if err := vm.EnsureRunning(ctx); err != nil {
 			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to boot VM for %q: %v", machine.Name, err)
 			return fmt.Errorf("boot VM for %q: %w", machine.Name, err)
@@ -1057,6 +1073,34 @@ func (r *HypervisorMachineReconciler) bootstrapDataSecretName(
 		return "", nil
 	}
 	return *config.Status.DataSecretName, nil
+}
+
+// bootstrapDataPending reports whether the machine's bootstrap provider is a
+// HypervisorConfig whose rendered data Secret is not yet available. Such a
+// machine must wait before its VM first boot (the confext raws that carry the
+// bootstrap config are attached at first boot, and a late attach would need a
+// reboot). Machines without a HypervisorConfig bootstrap ref always report
+// false — they have no confext payload to wait for.
+func (r *HypervisorMachineReconciler) bootstrapDataPending(
+	ctx context.Context,
+	machine *clusterv1.Machine,
+) (bool, error) {
+	ref := machine.Spec.Bootstrap.ConfigRef
+	if !ref.IsDefined() || ref.Kind != "HypervisorConfig" || ref.Name == "" {
+		return false, nil
+	}
+
+	config := &bootstrapv1alpha1.HypervisorConfig{}
+	key := client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}
+	if err := r.Get(ctx, key, config); err != nil {
+		if apierrors.IsNotFound(err) {
+			// The config object has not been created yet; the machine is not
+			// ready to boot until the config controller has rendered it.
+			return true, nil
+		}
+		return false, fmt.Errorf("get bootstrap config %q: %w", key, err)
+	}
+	return config.Status.DataSecretName == nil, nil
 }
 
 // SetupWithManager sets up the controller with the Manager, watching the
