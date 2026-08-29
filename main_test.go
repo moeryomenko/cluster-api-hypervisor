@@ -295,16 +295,13 @@ func assertWebhookSpeaksTLS(t *testing.T, mgr *runningManager, url, caPath strin
 // isTLSVerificationError reports whether err is a certificate or hostname
 // verification failure (as opposed to a connection-level error).
 func isTLSVerificationError(err error) bool {
-	var unknownAuthority x509.UnknownAuthorityError
-	if errors.As(err, &unknownAuthority) {
+	if _, ok := errors.AsType[x509.UnknownAuthorityError](err); ok {
 		return true
 	}
-	var invalidCertificate x509.CertificateInvalidError
-	if errors.As(err, &invalidCertificate) {
+	if _, ok := errors.AsType[x509.CertificateInvalidError](err); ok {
 		return true
 	}
-	var hostnameError x509.HostnameError
-	if errors.As(err, &hostnameError) {
+	if _, ok := errors.AsType[x509.HostnameError](err); ok {
 		return true
 	}
 	var verificationError *tls.CertificateVerificationError
