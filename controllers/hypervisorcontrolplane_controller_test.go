@@ -1332,7 +1332,7 @@ func TestControlPlaneReadinessWritesKubeconfig(t *testing.T) {
 		t.Fatalf("kubeconfig Secret has no %q data key (keys %v)", kubeconfigSecretDataKey, secret.Data)
 	}
 	doc := parseKubeconfig(t, data)
-	wantServer := "https://127.0.0.1:26443"
+	wantServer := "https://host.containers.internal:26443"
 	if len(doc.Clusters) != 1 || doc.Clusters[0].Cluster.Server != wantServer {
 		t.Errorf("kubeconfig server = %+v, want %q", doc.Clusters, wantServer)
 	}
@@ -1463,7 +1463,7 @@ func TestControlPlaneReadinessKubeconfigContent(t *testing.T) {
 	if len(doc.Clusters) != 1 {
 		t.Fatalf("kubeconfig has %d cluster entries, want 1", len(doc.Clusters))
 	}
-	wantServer := "https://127.0.0.1:26443"
+	wantServer := "https://host.containers.internal:26443"
 	if got := doc.Clusters[0].Cluster.Server; got != wantServer {
 		t.Errorf("kubeconfig server = %q, want %q", got, wantServer)
 	}
@@ -1771,7 +1771,7 @@ func TestControlPlaneKubeconfigServerIsLoopback(t *testing.T) {
 	c := mustReconcileClient(t)
 	// Use a non-default reserved IP to prove not hardcoded .20.
 	const reservedIP = "192.168.124.77"
-	const wantServer = "https://127.0.0.1:26443"
+	const wantServer = "https://host.containers.internal:26443"
 	lc := newLinkedCluster(t, c, "cp-kubeconfig-loopback", "capi-cluster")
 	machineName := lc.name + "-cp-0"
 	pk := mustGenerateClusterPKI(t, reservedIP, machineName)
@@ -1846,9 +1846,9 @@ func TestControlPlaneKubeconfigLoopbackWithDifferentReservedIPs(t *testing.T) {
 			fx.reconcileControlPlane(t, lcp.cp)
 			secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
 			doc := parseKubeconfig(t, secret.Data[kubeconfigSecretDataKey])
-			if doc.Clusters[0].Cluster.Server != "https://127.0.0.1:26443" {
+			if doc.Clusters[0].Cluster.Server != "https://host.containers.internal:26443" {
 				t.Errorf(
-					"reserved %s: kubeconfig server = %q, want https://127.0.0.1:26443",
+					"reserved %s: kubeconfig server = %q, want https://host.containers.internal:26443",
 					reservedIP,
 					doc.Clusters[0].Cluster.Server,
 				)

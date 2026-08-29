@@ -115,6 +115,18 @@ type HypervisorControlPlaneReconciler struct {
 	// endpoint recorded on the control-plane machine's status.publishedPorts —
 	// never the VM internal IP, which has no host route.
 	CheckAPIServerHealth func(ctx context.Context, host string, port int32, clientCert, clientKey, caCert []byte) error
+	// SeedClusterAdmin grants the workload kubeconfig user (cluster-ca)
+	// cluster-admin on the workload cluster once the apiserver is healthy.
+	// A fresh workload cluster starts with no RBAC, so the management-plane
+	// ClusterResourceSet controller could otherwise never connect to apply
+	// the addons (RBAC/Cilium/CoreDNS). The seed mints a system:masters client
+	// cert from the workload CA and creates the binding; it also pre-allocates
+	// the kube-dns Service (clusterIP 10.96.0.10) so the kubelet clusterDNS
+	// is deterministic before node configs render, and patches the workload
+	// cilium-config with k8sServiceHost/k8sServicePort pointing at the
+	// control-plane IP so Cilium talks to the apiserver directly. nil leaves
+	// the cluster un-seeded (used by tests).
+	SeedClusterAdmin func(ctx context.Context, serverURL, cpIP string, pk pki.ClusterPKI) error
 }
 
 // Reconcile moves the current state of the control-plane Machine set towards
@@ -162,7 +174,7 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 
 	replicas := max(cp.Spec.Replicas, 1)
 
-	for i := int32(0); i < replicas; i++ {
+	for i := range replicas {
 		machineName := fmt.Sprintf("%s-%d", cp.Name, i)
 
 		machine := &clusterv1.Machine{}
@@ -700,6 +712,18 @@ func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 
 	if err := r.ensureKubeconfigSecret(ctx, cp, cluster, serverURL, pk); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// Seed the workload cluster's initial RBAC so the management-plane
+	// addons controller can connect and apply the ClusterResourceSets. The
+	// kubeconfig user (cluster-ca) is granted cluster-admin; without this a
+	// fresh workload cluster is unreachable by the clustercache (no admin to
+	// bootstrap) and the cluster never becomes Ready.
+	if r.SeedClusterAdmin != nil {
+		if err := r.SeedClusterAdmin(ctx, serverURL, cpIP, pk); err != nil {
+			log.Error(err, "failed to seed workload cluster admin RBAC", "server", serverURL)
+			return ctrl.Result{}, err
+		}
 	}
 
 	if !cp.Status.Ready {

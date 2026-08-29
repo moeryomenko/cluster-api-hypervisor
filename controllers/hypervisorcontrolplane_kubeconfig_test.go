@@ -117,7 +117,7 @@ func TestControlPlaneKubeconfigServerURLFromPublishedAllocation(t *testing.T) {
 		t.Fatalf("kubeconfig Secret has no %q data key (keys %v)", kubeconfigSecretDataKey, secret.Data)
 	}
 	doc := parseKubeconfig(t, data)
-	wantServer := "https://127.0.0.1:26443"
+	wantServer := "https://host.containers.internal:26443"
 	if len(doc.Clusters) != 1 || doc.Clusters[0].Cluster.Server != wantServer {
 		t.Errorf("kubeconfig server = %+v, want %q (from the recorded 6443 allocation)", doc.Clusters, wantServer)
 	}
@@ -142,8 +142,8 @@ func TestControlPlaneKubeconfigUpdatesInPlaceWhenAllocationChanges(t *testing.T)
 	secretKey := kubeconfigSecretKey(lc.name, lc.namespace)
 	first := wantKubeconfigSecret(t, c, secretKey)
 	firstDoc := parseKubeconfig(t, first.Data[kubeconfigSecretDataKey])
-	if len(firstDoc.Clusters) != 1 || firstDoc.Clusters[0].Cluster.Server != "https://127.0.0.1:26443" {
-		t.Fatalf("initial kubeconfig server = %+v, want https://127.0.0.1:26443", firstDoc.Clusters)
+	if len(firstDoc.Clusters) != 1 || firstDoc.Clusters[0].Cluster.Server != "https://host.containers.internal:26443" {
+		t.Fatalf("initial kubeconfig server = %+v, want https://host.containers.internal:26443", firstDoc.Clusters)
 	}
 
 	// Force a re-allocation: the machine controller records a new 6443 host
@@ -159,7 +159,7 @@ func TestControlPlaneKubeconfigUpdatesInPlaceWhenAllocationChanges(t *testing.T)
 	}
 	second := wantKubeconfigSecret(t, c, secretKey)
 	secondDoc := parseKubeconfig(t, second.Data[kubeconfigSecretDataKey])
-	wantServer := "https://127.0.0.1:26555"
+	wantServer := "https://host.containers.internal:26555"
 	if len(secondDoc.Clusters) != 1 || secondDoc.Clusters[0].Cluster.Server != wantServer {
 		t.Errorf(
 			"kubeconfig server after re-allocation = %+v, want %q (reconciled to current)",
@@ -270,7 +270,7 @@ func TestControlPlaneEndpointResolutionIgnoresWorkerMachines(t *testing.T) {
 
 	secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
 	doc := parseKubeconfig(t, secret.Data[kubeconfigSecretDataKey])
-	wantServer := "https://127.0.0.1:26443"
+	wantServer := "https://host.containers.internal:26443"
 	if len(doc.Clusters) != 1 || doc.Clusters[0].Cluster.Server != wantServer {
 		t.Errorf("kubeconfig server = %+v, want %q (worker allocation 39999 must be ignored)", doc.Clusters, wantServer)
 	}
