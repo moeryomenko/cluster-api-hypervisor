@@ -369,9 +369,9 @@ func TestHypervisorControlPlaneConditionsContract(t *testing.T) {
 // the template. The json tags are pinned too because a round trip through the
 // same Go type cannot detect a wrong tag.
 func TestHypervisorControlPlaneMachineTemplateShapePinned(t *testing.T) {
-	machineTemplateType := reflect.TypeOf(controlplanev1alpha1.HypervisorControlPlaneMachineTemplate{})
-	specType := reflect.TypeOf(controlplanev1alpha1.HypervisorControlPlaneMachineTemplateSpec{})
-	contractRefType := reflect.TypeOf(clusterv1.ContractVersionedObjectReference{})
+	machineTemplateType := reflect.TypeFor[controlplanev1alpha1.HypervisorControlPlaneMachineTemplate]()
+	specType := reflect.TypeFor[controlplanev1alpha1.HypervisorControlPlaneMachineTemplateSpec]()
+	contractRefType := reflect.TypeFor[clusterv1.ContractVersionedObjectReference]()
 
 	tests := []struct {
 		name       string
@@ -397,7 +397,7 @@ func TestHypervisorControlPlaneMachineTemplateShapePinned(t *testing.T) {
 			name:       "machineTemplate keeps Metadata",
 			structType: machineTemplateType,
 			fieldName:  "Metadata",
-			wantType:   reflect.TypeOf(clusterv1.ObjectMeta{}),
+			wantType:   reflect.TypeFor[clusterv1.ObjectMeta](),
 			wantTag:    "metadata,omitempty,omitzero",
 		},
 		{
@@ -431,12 +431,14 @@ func TestHypervisorControlPlaneMachineTemplateShapePinned(t *testing.T) {
 
 	t.Run("spec.infrastructureRef carries no namespace field", func(t *testing.T) {
 		if _, ok := contractRefType.FieldByName("Namespace"); ok {
-			t.Error("ContractVersionedObjectReference has a Namespace field; the v1beta2 contract resolves references in the owning object's namespace")
+			t.Error(
+				"ContractVersionedObjectReference has a Namespace field; the v1beta2 contract resolves references in the owning object's namespace",
+			)
 		}
 	})
 
 	t.Run("spec.machineTemplate stays a required key", func(t *testing.T) {
-		specField, ok := reflect.TypeOf(controlplanev1alpha1.HypervisorControlPlaneSpec{}).FieldByName("MachineTemplate")
+		specField, ok := reflect.TypeFor[controlplanev1alpha1.HypervisorControlPlaneSpec]().FieldByName("MachineTemplate")
 		if !ok {
 			t.Fatal("HypervisorControlPlaneSpec has no MachineTemplate field")
 		}
@@ -476,7 +478,10 @@ func TestHypervisorControlPlaneMachineTemplateWireShape(t *testing.T) {
 			t.Fatalf("spec.machineTemplate missing, want the required key present (json: %s)", raw)
 		}
 		if string(mtRaw) != "{}" {
-			t.Errorf("zero-value spec.machineTemplate = %s, want {} (metadata and spec dropped by omitzero, no infrastructureRef at the old path)", mtRaw)
+			t.Errorf(
+				"zero-value spec.machineTemplate = %s, want {} (metadata and spec dropped by omitzero, no infrastructureRef at the old path)",
+				mtRaw,
+			)
 		}
 
 		var machineTemplateDoc map[string]json.RawMessage
@@ -532,7 +537,11 @@ func TestHypervisorControlPlaneMachineTemplateWireShape(t *testing.T) {
 		}
 		for _, banned := range []string{"apiVersion", "namespace"} {
 			if val, ok := ref[banned]; ok {
-				t.Errorf("machineTemplate.spec.infrastructureRef.%s = %s, want absent (contract-versioned references carry apiGroup/kind/name only)", banned, val)
+				t.Errorf(
+					"machineTemplate.spec.infrastructureRef.%s = %s, want absent (contract-versioned references carry apiGroup/kind/name only)",
+					banned,
+					val,
+				)
 			}
 		}
 	})
