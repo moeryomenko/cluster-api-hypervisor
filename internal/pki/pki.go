@@ -242,6 +242,36 @@ func GenerateKubeletCert(clusterPKI ClusterPKI, nodeName string) (certPEM, keyPE
 	)
 }
 
+// MintClientCert generates a fresh CA-signed client certificate and key for
+// the given common name and organization. It is used to bootstrap admin
+// access to a freshly-created workload cluster whose kubeconfig user has no
+// RBAC yet (the RBAC seed grants the kubeconfig user cluster-admin by
+// connecting once as system:masters). org may be nil.
+func MintClientCert(clusterPKI ClusterPKI, cn string, org []string) (certPEM, keyPEM []byte, err error) {
+	if cn == "" {
+		return nil, nil, fmt.Errorf("client cert CN must not be empty")
+	}
+	if len(clusterPKI.CA) == 0 || len(clusterPKI.CAKey) == 0 {
+		return nil, nil, fmt.Errorf("cluster PKI has no CA material")
+	}
+	caCert, err := parseCACertificate(clusterPKI.CA)
+	if err != nil {
+		return nil, nil, err
+	}
+	caKey, err := parseCAKey(clusterPKI.CAKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	return newLeafKeyAndCert(
+		cn,
+		x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment,
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		nil, nil,
+		org,
+		caCert, caKey,
+	)
+}
+
 // RenderKubeconfig renders a kubeconfig YAML document from PEM material. The
 // cluster server is exactly serverURL, the certificate-authority-data is the
 // base64 encoding of caPEM, the user is named exactly user, and the client
