@@ -51,6 +51,7 @@ package confexttree_test
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confexttree"
@@ -60,14 +61,15 @@ import (
 // Compile-time pins: the exported functions must exist with exactly these
 // names and signatures.
 var (
-	_ func(string, string, pki.ClusterPKI, []byte, []byte, []byte, []byte, []byte, []byte, []byte) (map[string][]byte, error) = confexttree.BuildControlPlane
-	_ func(string, pki.ClusterPKI, []byte, []byte, []byte) (map[string][]byte, error)                                         = confexttree.BuildWorker
+	_ func(string, string, string, pki.ClusterPKI, []byte, []byte, []byte, []byte, []byte, []byte, []byte) (map[string][]byte, error) = confexttree.BuildControlPlane
+	_ func(string, string, string, pki.ClusterPKI, []byte, []byte, []byte) (map[string][]byte, error)                                 = confexttree.BuildWorker
 )
 
 const (
-	testCPIP   = "192.168.124.10"
-	testCPName = "cp1"
-	testWorker = "worker1"
+	testCPIP    = "192.168.124.10"
+	testCluster = "cl1"
+	testCPName  = "cp1"
+	testWorker  = "worker1"
 )
 
 var (
@@ -158,7 +160,7 @@ func TestBuildControlPlaneFullKeySet(t *testing.T) {
 	kubeletCert, kubeletKey := mustKubeletCert(t, pk, testCPName)
 
 	tree, err := confexttree.BuildControlPlane(
-		testCPIP, testCPName, pk,
+		testCluster, testCPIP, testCPName, pk,
 		kubeletCert, kubeletKey, testKubeletKubeconf,
 		testAdminKubeconfig, testCMKubeconfig, testSchedKubeconfig, testEncryptionCfg,
 	)
@@ -184,7 +186,9 @@ func TestBuildControlPlaneFullKeySet(t *testing.T) {
 		"z-kubernetes-cp/etc/kubernetes/scheduler.kubeconfig",
 		"z-kubernetes-cp/etc/kubernetes/encryption-config.yaml",
 		"z-kubernetes-cp/etc/extension-release.d/extension-release.z-kubernetes-cp",
+		"z-kubernetes-cp/etc/k8s-service-nft.sh",
 		"z-kubelet-cp1/etc/kubernetes/kubelet.conf",
+		"z-kubelet-cp1/etc/kubernetes/provider-id.env",
 		"z-kubelet-cp1/etc/kubernetes/pki/ca.pem",
 		"z-kubelet-cp1/etc/kubernetes/pki/cp1.pem",
 		"z-kubelet-cp1/etc/kubernetes/pki/cp1-key.pem",
@@ -201,7 +205,7 @@ func TestBuildControlPlanePKIValues(t *testing.T) {
 	kubeletCert, kubeletKey := mustKubeletCert(t, pk, testCPName)
 
 	tree, err := confexttree.BuildControlPlane(
-		testCPIP, testCPName, pk,
+		testCluster, testCPIP, testCPName, pk,
 		kubeletCert, kubeletKey, testKubeletKubeconf,
 		testAdminKubeconfig, testCMKubeconfig, testSchedKubeconfig, testEncryptionCfg,
 	)
@@ -253,7 +257,7 @@ func TestBuildControlPlaneConfigAndKubeconfigValues(t *testing.T) {
 	kubeletCert, kubeletKey := mustKubeletCert(t, pk, testCPName)
 
 	tree, err := confexttree.BuildControlPlane(
-		testCPIP, testCPName, pk,
+		testCluster, testCPIP, testCPName, pk,
 		kubeletCert, kubeletKey, testKubeletKubeconf,
 		testAdminKubeconfig, testCMKubeconfig, testSchedKubeconfig, testEncryptionCfg,
 	)
@@ -299,14 +303,22 @@ func TestExtensionReleaseMetadata(t *testing.T) {
 	workerKubeletCert, workerKubeletKey := mustKubeletCert(t, pk, testWorker)
 
 	cpTree, err := confexttree.BuildControlPlane(
-		testCPIP, testCPName, pk,
+		testCluster, testCPIP, testCPName, pk,
 		cpKubeletCert, cpKubeletKey, testKubeletKubeconf,
 		testAdminKubeconfig, testCMKubeconfig, testSchedKubeconfig, testEncryptionCfg,
 	)
 	if err != nil {
 		t.Fatalf("BuildControlPlane error: %v", err)
 	}
-	workerTree, err := confexttree.BuildWorker(testWorker, pk, workerKubeletCert, workerKubeletKey, testKubeletKubeconf)
+	workerTree, err := confexttree.BuildWorker(
+		testCluster,
+		testCPIP,
+		testWorker,
+		pk,
+		workerKubeletCert,
+		workerKubeletKey,
+		testKubeletKubeconf,
+	)
 	if err != nil {
 		t.Fatalf("BuildWorker error: %v", err)
 	}
@@ -361,17 +373,27 @@ func TestBuildWorkerKeySetAndValues(t *testing.T) {
 	pk := mustPKI(t, testCPIP, testCPName)
 	kubeletCert, kubeletKey := mustKubeletCert(t, pk, testWorker)
 
-	tree, err := confexttree.BuildWorker(testWorker, pk, kubeletCert, kubeletKey, testKubeletKubeconf)
+	tree, err := confexttree.BuildWorker(
+		testCluster,
+		testCPIP,
+		testWorker,
+		pk,
+		kubeletCert,
+		kubeletKey,
+		testKubeletKubeconf,
+	)
 	if err != nil {
 		t.Fatalf("BuildWorker error: %v", err)
 	}
 
 	assertExactKeySet(t, tree,
 		"z-kubelet-worker1/etc/kubernetes/kubelet.conf",
+		"z-kubelet-worker1/etc/kubernetes/provider-id.env",
 		"z-kubelet-worker1/etc/kubernetes/pki/ca.pem",
 		"z-kubelet-worker1/etc/kubernetes/pki/worker1.pem",
 		"z-kubelet-worker1/etc/kubernetes/pki/worker1-key.pem",
 		"z-kubelet-worker1/etc/extension-release.d/extension-release.z-kubelet-worker1",
+		"z-kubelet-worker1/etc/k8s-service-nft.sh",
 	)
 
 	t.Run("kubelet kubeconfig", func(t *testing.T) {
@@ -389,6 +411,21 @@ func TestBuildWorkerKeySetAndValues(t *testing.T) {
 	t.Run("extension-release metadata", func(t *testing.T) {
 		assertTreeBytes(t, tree, "z-kubelet-worker1/etc/extension-release.d/extension-release.z-kubelet-worker1",
 			[]byte("ID=fedora\nVERSION_ID=44\nKERNEL_VERSION=7.1\nEXTENSION=z-kubelet-worker1\n"))
+	})
+	t.Run("provider-id env", func(t *testing.T) {
+		assertTreeBytes(t, tree, "z-kubelet-worker1/etc/kubernetes/provider-id.env",
+			[]byte("PROVIDER_ID=hypervisor://"+testCluster+"/"+testWorker+"\n"))
+	})
+	t.Run("apiserver nft DNAT targets the control-plane IP", func(t *testing.T) {
+		raw := tree["z-kubelet-worker1/etc/k8s-service-nft.sh"]
+		script := string(raw)
+		want := "dnat to " + testCPIP + ":6443"
+		if !strings.Contains(script, want) {
+			t.Errorf("worker nft script lacks %q: %q", want, script)
+		}
+		if strings.Contains(script, "10.96.0.0/12 dev lo") {
+			t.Errorf("worker nft script must not route the whole Service CIDR to lo (Cilium BPF LB conflict): %q", script)
+		}
 	})
 }
 
@@ -409,7 +446,7 @@ func TestBuildControlPlaneRejectsEmptyInputs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := confexttree.BuildControlPlane(
-				tt.cpIP, tt.nodeName, pk,
+				testCluster, tt.cpIP, tt.nodeName, pk,
 				kubeletCert, kubeletKey, testKubeletKubeconf,
 				testAdminKubeconfig, testCMKubeconfig, testSchedKubeconfig, testEncryptionCfg,
 			)
@@ -426,7 +463,7 @@ func TestBuildWorkerRejectsEmptyNodeName(t *testing.T) {
 	pk := mustPKI(t, testCPIP, testCPName)
 	kubeletCert, kubeletKey := mustKubeletCert(t, pk, testWorker)
 
-	if _, err := confexttree.BuildWorker("", pk, kubeletCert, kubeletKey, testKubeletKubeconf); err == nil {
+	if _, err := confexttree.BuildWorker(testCluster, "", "", pk, kubeletCert, kubeletKey, testKubeletKubeconf); err == nil {
 		t.Error("BuildWorker with an empty node name succeeded, want an error")
 	}
 }

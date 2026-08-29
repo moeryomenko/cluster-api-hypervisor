@@ -69,7 +69,7 @@ KUBE_ETCD_SERVERS=http://{{CP_IP}}:2379
 // cp.env, and extension-release files. An empty control-plane IP or node name
 // returns an error.
 func BuildControlPlane(
-	cpIP, nodeName string,
+	clusterName, cpIP, nodeName string,
 	pk pki.ClusterPKI,
 	kubeletCert, kubeletKey []byte,
 	kubeletKubeconfig []byte,
@@ -102,8 +102,9 @@ func BuildControlPlane(
 		"z-kubernetes-cp/etc/kubernetes/scheduler.kubeconfig":                       schedulerKubeconfig,
 		"z-kubernetes-cp/etc/kubernetes/encryption-config.yaml":                     encryptionConfig,
 		"z-kubernetes-cp/etc/extension-release.d/extension-release.z-kubernetes-cp": extensionRelease("z-kubernetes-cp"),
+		"z-kubernetes-cp/" + k8sServiceNftPath:                                      renderServiceNftScript("127.0.0.1:6443"),
 	}
-	maps.Copy(tree, kubeletTree(nodeName, pk, kubeletCert, kubeletKey, kubeletKubeconfig))
+	maps.Copy(tree, kubeletTree(clusterName, nodeName, pk, kubeletCert, kubeletKey, kubeletKubeconfig))
 
 	return tree, nil
 }
@@ -115,7 +116,7 @@ func BuildControlPlane(
 // are the passed bytes verbatim, except for the rendered extension-release
 // file. An empty node name returns an error.
 func BuildWorker(
-	nodeName string,
+	clusterName, cpIP, nodeName string,
 	pk pki.ClusterPKI,
 	kubeletCert, kubeletKey []byte,
 	kubeletKubeconfig []byte,
@@ -123,15 +124,23 @@ func BuildWorker(
 	if nodeName == "" {
 		return nil, fmt.Errorf("node name must not be empty")
 	}
+	if cpIP == "" {
+		return nil, fmt.Errorf("control-plane IP must not be empty")
+	}
+	if clusterName == "" {
+		return nil, fmt.Errorf("cluster name must not be empty")
+	}
 
-	return kubeletTree(nodeName, pk, kubeletCert, kubeletKey, kubeletKubeconfig), nil
+	tree := kubeletTree(clusterName, nodeName, pk, kubeletCert, kubeletKey, kubeletKubeconfig)
+	tree["z-kubelet-"+nodeName+"/"+k8sServiceNftPath] = renderServiceNftScript(cpIP + ":6443")
+	return tree, nil
 }
 
 // kubeletTree renders the z-kubelet-<node> tree: the node's kubelet kubeconfig
 // at kubelet.conf, the cluster CA certificate, the node's kubelet certificate
 // and key, and the extension-release metadata for the tree.
 func kubeletTree(
-	nodeName string,
+	clusterName, nodeName string,
 	pk pki.ClusterPKI,
 	kubeletCert, kubeletKey, kubeletKubeconfig []byte,
 ) map[string][]byte {
@@ -141,8 +150,49 @@ func kubeletTree(
 		treeName + "/etc/kubernetes/pki/ca.pem":                             pk.CA,
 		treeName + "/etc/kubernetes/pki/" + nodeName + ".pem":               kubeletCert,
 		treeName + "/etc/kubernetes/pki/" + nodeName + "-key.pem":           kubeletKey,
+		treeName + "/etc/kubernetes/provider-id.env":                        renderProviderIDEnv(clusterName, nodeName),
 		treeName + "/etc/extension-release.d/extension-release." + treeName: extensionRelease(treeName),
 	}
+}
+
+// renderProviderIDEnv renders the /etc/kubernetes/provider-id.env file that
+// the baked kubelet unit reads via EnvironmentFile and passes to
+// --provider-id. The Cluster API machine controller matches a Machine to its
+// Node by spec.providerID; without it the NodeHealthy condition never flips
+// and the Machine never becomes Ready. An env file (read at unit start)
+// avoids systemd drop-in caching that would otherwise leave the flag off on a
+// freshly-merged confext.
+func renderProviderIDEnv(clusterName, nodeName string) []byte {
+	return []byte(fmt.Sprintf("PROVIDER_ID=hypervisor://%s/%s\n", clusterName, nodeName))
+}
+
+// k8sServiceNftPath is the path (inside a confext tree) of the script that
+// installs the kubernetes Service-IP DNAT for the apiserver. The baked
+// k8slab-stack.service (which runs after cloud-final, once the confexts are
+// merged into /etc) executes it before starting the Kubernetes services.
+const k8sServiceNftPath = "etc/k8s-service-nft.sh"
+
+// renderServiceNftScript renders a POSIX script that DNATs the kubernetes
+// Service clusterIP apiserver endpoint (10.96.0.1:443) to the workload
+// apiserver. On the control plane target is 127.0.0.1:6443 (its own
+// apiserver); on a worker it is <cpIP>:6443. Cilium's config-init runs in the
+// host network namespace and dials the apiserver through the in-cluster
+// KUBERNETES_SERVICE_HOST (10.96.0.1) before its own datapath exists, so the
+// Service-IP route must be in place before kubelet schedules any pod. Unlike
+// the earlier /12 dev lo route (which conflicted with Cilium's BPF Service
+// load-balancer), this narrow rule DNATs only the apiserver endpoint and is
+// safe alongside Cilium's kube-proxy-replacement.
+func renderServiceNftScript(target string) []byte {
+	return []byte(fmt.Sprintf(`#!/bin/sh
+# Install the kubernetes Service-IP DNAT for the apiserver: route
+# 10.96.0.1:443 to the workload apiserver at %s. Runs from k8slab-stack
+# before the Kubernetes services start. Narrow: only the apiserver endpoint,
+# so Cilium's BPF Service load-balancer handles every other Service IP.
+set -e
+nft add table ip k8sfix 2>/dev/null || true
+nft add chain ip k8sfix output "{ type nat hook output priority 0; }" 2>/dev/null || true
+nft add rule ip k8sfix output ip daddr 10.96.0.1 tcp dport 443 dnat to %s 2>/dev/null || true
+`, target, target))
 }
 
 // renderEtcdConf renders the etcd configuration with the control-plane IP and
