@@ -48,7 +48,7 @@ const defaultNetQueues = minNetQueues
 // value are errors.
 func ParseNetConfig(netConfig string) (NetConfig, error) {
 	cfg := NetConfig{}
-	for _, field := range strings.Split(netConfig, ",") {
+	for field := range strings.SplitSeq(netConfig, ",") {
 		key, value, found := strings.Cut(field, "=")
 		if !found {
 			return NetConfig{}, fmt.Errorf("parse net config %q: field %q has no key=value separator", netConfig, field)

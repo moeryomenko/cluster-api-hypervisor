@@ -451,7 +451,7 @@ func readRecord(t *testing.T, path string) []fakeInvocation {
 		t.Fatalf("read fake invocation record %s: %v", path, err)
 	}
 	var invocations []fakeInvocation
-	for _, block := range strings.Split(string(data), "FAKE_INVOCATION\n") {
+	for block := range strings.SplitSeq(string(data), "FAKE_INVOCATION\n") {
 		block = strings.TrimSpace(block)
 		if block == "" {
 			continue

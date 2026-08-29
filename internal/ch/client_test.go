@@ -240,8 +240,7 @@ func TestClientInfo(t *testing.T) {
 				if tt.wantStatus != 0 {
 					assertStatusError(t, err, tt.wantStatus)
 				} else {
-					var statusErr *ch.StatusError
-					if errors.As(err, &statusErr) {
+					if statusErr, ok := errors.AsType[*ch.StatusError](err); ok {
 						t.Errorf("Info decode failure surfaced as %T with status %d, want a non-status error", statusErr, statusErr.StatusCode)
 					}
 				}
@@ -383,7 +382,7 @@ func assertJSONPath(t *testing.T, doc map[string]any, path string, want any) {
 	t.Helper()
 
 	cur := any(doc)
-	for _, seg := range strings.Split(path, ".") {
+	for seg := range strings.SplitSeq(path, ".") {
 		switch node := cur.(type) {
 		case map[string]any:
 			next, ok := node[seg]
@@ -422,12 +421,10 @@ func TestClientConnectionFailure(t *testing.T) {
 		t.Fatal("Boot succeeded against a nonexistent socket, want error")
 	}
 
-	var netErr net.Error
-	if !errors.As(err, &netErr) {
+	if _, ok := errors.AsType[net.Error](err); !ok {
 		t.Errorf("connection error %v does not wrap net.Error", err)
 	}
-	var statusErr *ch.StatusError
-	if errors.As(err, &statusErr) {
+	if statusErr, ok := errors.AsType[*ch.StatusError](err); ok {
 		t.Errorf("connection failure surfaced as %T with status %d, want a transport error", statusErr, statusErr.StatusCode)
 	}
 }
