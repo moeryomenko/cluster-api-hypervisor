@@ -26,6 +26,7 @@ package confexttree
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
@@ -102,9 +103,7 @@ func BuildControlPlane(
 		"z-kubernetes-cp/etc/kubernetes/encryption-config.yaml":                     encryptionConfig,
 		"z-kubernetes-cp/etc/extension-release.d/extension-release.z-kubernetes-cp": extensionRelease("z-kubernetes-cp"),
 	}
-	for key, value := range kubeletTree(nodeName, pk, kubeletCert, kubeletKey, kubeletKubeconfig) {
-		tree[key] = value
-	}
+	maps.Copy(tree, kubeletTree(nodeName, pk, kubeletCert, kubeletKey, kubeletKubeconfig))
 
 	return tree, nil
 }
