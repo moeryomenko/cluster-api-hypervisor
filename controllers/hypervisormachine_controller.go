@@ -536,7 +536,15 @@ func (r *HypervisorMachineReconciler) publishControlPlaneEndpoints(
 		}
 		hostPort, err := r.K8Netd.PublishPort(ctx, hm.Name, vmPort)
 		if err != nil {
-			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to publish vm_port %d for %q: %v", vmPort, hm.Name, err)
+			r.Recorder.Eventf(
+				hm,
+				corev1.EventTypeWarning,
+				"FailedProvision",
+				"failed to publish vm_port %d for %q: %v",
+				vmPort,
+				hm.Name,
+				err,
+			)
 			return fmt.Errorf("publish vm_port %d for %q: %w", vmPort, hm.Name, err)
 		}
 		hm.Status.PublishedPorts = upsertPublishedPort(hm.Status.PublishedPorts, infrastructurev1alpha1.MachinePublishedPort{
@@ -598,17 +606,6 @@ func (r *HypervisorMachineReconciler) recordAddresses(
 		return fmt.Errorf("update HypervisorMachine status: %w", err)
 	}
 	return nil
-}
-
-// machineInternalIPAddress returns the internal IP recorded in the status of
-// hm, or the empty string when none is recorded.
-func machineInternalIPAddress(hm *infrastructurev1alpha1.HypervisorMachine) string {
-	for _, addr := range hm.Status.Addresses {
-		if addr.Type == clusterv1.MachineInternalIP {
-			return addr.Address
-		}
-	}
-	return ""
 }
 
 // reconcileRootDisk ensures <vm-disks>/<name>-root.qcow2 exists at the spec
@@ -839,7 +836,14 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 	}
 
 	if err := r.buildCIDATADisk(ctx, hm, parts); err != nil {
-		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to build CIDATA disk for %q: %v", machine.Name, err)
+		r.Recorder.Eventf(
+			hm,
+			corev1.EventTypeWarning,
+			"FailedProvision",
+			"failed to build CIDATA disk for %q: %v",
+			machine.Name,
+			err,
+		)
 		return fmt.Errorf("build CIDATA disk for %q: %w", machine.Name, err)
 	}
 
@@ -924,7 +928,14 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 ) error {
 	netConfig, err := chclient.VhostUserNetConfig(chclient.VhostUserSocketPath(hm.Name), mac)
 	if err != nil {
-		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render vhost-user net config for %q: %v", hm.Name, err)
+		r.Recorder.Eventf(
+			hm,
+			corev1.EventTypeWarning,
+			"FailedProvision",
+			"failed to render vhost-user net config for %q: %v",
+			hm.Name,
+			err,
+		)
 		return fmt.Errorf("render vhost-user net config for %q: %w", hm.Name, err)
 	}
 	vm := r.vmClientFor(hm)
@@ -943,7 +954,14 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 	}
 	confextRaws, err := confextRawPaths(r.Config.VMDiskDir, hm.Name)
 	if err != nil {
-		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to list confext raws for %q: %v", hm.Name, err)
+		r.Recorder.Eventf(
+			hm,
+			corev1.EventTypeWarning,
+			"FailedProvision",
+			"failed to list confext raws for %q: %v",
+			hm.Name,
+			err,
+		)
 		return fmt.Errorf("list confext raws for %q: %w", hm.Name, err)
 	}
 	diskPaths = append(diskPaths, confextRaws...)

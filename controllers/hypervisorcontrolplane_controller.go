@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -159,10 +160,7 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{}, nil
 	}
 
-	replicas := cp.Spec.Replicas
-	if replicas < 1 {
-		replicas = 1
-	}
+	replicas := max(cp.Spec.Replicas, 1)
 
 	for i := int32(0); i < replicas; i++ {
 		machineName := fmt.Sprintf("%s-%d", cp.Name, i)
@@ -355,9 +353,7 @@ func (r *HypervisorControlPlaneReconciler) machineFor(
 		clusterv1.ClusterNameLabel:         cluster.Name,
 		clusterv1.MachineControlPlaneLabel: "",
 	}
-	for key, value := range cp.Spec.MachineTemplate.Metadata.Labels {
-		labels[key] = value
-	}
+	maps.Copy(labels, cp.Spec.MachineTemplate.Metadata.Labels)
 
 	machine := &clusterv1.Machine{
 		ObjectMeta: metav1.ObjectMeta{
@@ -415,16 +411,16 @@ func (r *HypervisorControlPlaneReconciler) ensureHypervisorMachine(
 	ref := cp.Spec.MachineTemplate.Spec.InfrastructureRef
 	tmpl := &infrastructurev1alpha1.HypervisorMachineTemplate{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: ref.Name}, tmpl); err != nil {
-		return fmt.Errorf("get HypervisorMachineTemplate %q: %w", client.ObjectKey{Namespace: cp.Namespace, Name: ref.Name}, err)
+		return fmt.Errorf(
+			"get HypervisorMachineTemplate %q: %w",
+			client.ObjectKey{Namespace: cp.Namespace, Name: ref.Name},
+			err,
+		)
 	}
 
 	labels := map[string]string{}
-	for k, v := range tmpl.Spec.Template.ObjectMeta.Labels {
-		labels[k] = v
-	}
-	for k, v := range machine.Labels {
-		labels[k] = v
-	}
+	maps.Copy(labels, tmpl.Spec.Template.ObjectMeta.Labels)
+	maps.Copy(labels, machine.Labels)
 	labels[clusterv1.ClusterNameLabel] = cluster.Name
 
 	groupKind := ref.Kind
@@ -689,7 +685,7 @@ func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 		return ctrl.Result{}, err
 	}
 
-	serverURL := fmt.Sprintf("https://%s:%d", "127.0.0.1", apiHostPort)
+	serverURL := fmt.Sprintf("https://%s:%d", "host.containers.internal", apiHostPort)
 
 	if !cp.Status.Ready {
 		if r.CheckAPIServerHealth == nil {
