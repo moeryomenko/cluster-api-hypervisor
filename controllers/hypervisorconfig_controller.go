@@ -98,9 +98,10 @@ type HypervisorConfigReconciler struct {
 	// BuildTree renders the role-split confext tree for one node: the
 	// kubeconfigs map holds the rendered documents keyed by role ("admin",
 	// "controller-manager", "scheduler", "kubelet") and encryptionConfig is
-	// the control-plane encryption configuration.
+	// the control-plane encryption configuration. clusterName is the owning
+	// Cluster's name, used to render the kubelet --provider-id drop-in.
 	BuildTree func(
-		role, cpIP, nodeName string,
+		clusterName, role, cpIP, nodeName string,
 		pk pki.ClusterPKI,
 		kubeletCert, kubeletKey []byte,
 		kubeconfigs map[string][]byte,
@@ -197,7 +198,17 @@ func (r *HypervisorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return r.recordFailureError(ctx, cfg, "KubeconfigRenderFailed", err)
 	}
 
-	tree, err := r.BuildTree(role, cpIP, nodeName, pk, kubeletCert, kubeletKey, kubeconfigs, []byte(encryptionConfig))
+	tree, err := r.BuildTree(
+		machine.Spec.ClusterName,
+		role,
+		cpIP,
+		nodeName,
+		pk,
+		kubeletCert,
+		kubeletKey,
+		kubeconfigs,
+		[]byte(encryptionConfig),
+	)
 	if err != nil {
 		return r.recordFailureError(ctx, cfg, "TreeBuildFailed", fmt.Errorf("build confext tree: %w", err))
 	}

@@ -93,6 +93,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
@@ -166,6 +167,7 @@ func fixturePKISecretData() map[string][]byte {
 
 // buildTreeCall captures one invocation of the tree builder seam.
 type buildTreeCall struct {
+	clusterName      string
 	role             string
 	cpIP             string
 	nodeName         string
@@ -187,7 +189,7 @@ type recordingBuildTree struct {
 
 // build implements the BuildTree seam.
 func (b *recordingBuildTree) build(
-	role, cpIP, nodeName string,
+	clusterName, role, cpIP, nodeName string,
 	pk pki.ClusterPKI,
 	kubeletCert, kubeletKey []byte,
 	kubeconfigs map[string][]byte,
@@ -196,6 +198,7 @@ func (b *recordingBuildTree) build(
 	b.calls = append(
 		b.calls,
 		buildTreeCall{
+			clusterName:      clusterName,
 			role:             role,
 			cpIP:             cpIP,
 			nodeName:         nodeName,
@@ -211,6 +214,7 @@ func (b *recordingBuildTree) build(
 	}
 	if role == testConfigRoleControlPlane {
 		return confexttree.BuildControlPlane(
+			clusterName,
 			cpIP,
 			nodeName,
 			pk,
@@ -223,7 +227,7 @@ func (b *recordingBuildTree) build(
 			encryptionConfig,
 		)
 	}
-	return confexttree.BuildWorker(nodeName, pk, kubeletCert, kubeletKey, kubeconfigs["kubelet"])
+	return confexttree.BuildWorker(clusterName, cpIP, nodeName, pk, kubeletCert, kubeletKey, kubeconfigs["kubelet"])
 }
 
 // genPKICall captures one invocation of the cluster PKI generator seam: the
@@ -458,6 +462,76 @@ func newLinkedConfig(
 	return &linkedConfig{namespace: lc.namespace, name: cfg.Name, machine: machine, cfg: cfg, hm: hm}
 }
 
+// ensureControlPlaneMachineIP creates a control-plane Machine plus its
+// HypervisorMachine carrying testCPIP as the internal IP, so worker config
+// reconciliation can resolve the apiserver address through
+// controlPlaneMachineInternalIP (the kubelet must dial the control-plane VM's
+// internal IP, not the loopback HypervisorCluster endpoint). Idempotent per
+// cluster; no-op when the machine already exists.
+func ensureControlPlaneMachineIP(t *testing.T, c client.Client, lc *linkedCluster) {
+	t.Helper()
+	ctx := t.Context()
+	machineName := lc.name + "-cp-0"
+
+	machine := &clusterv1.Machine{}
+	err := c.Get(ctx, client.ObjectKey{Namespace: lc.namespace, Name: machineName}, machine)
+	if err == nil {
+		return
+	}
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("get control-plane Machine %q: %v", machineName, err)
+	}
+
+	labels := map[string]string{
+		clusterv1.ClusterNameLabel:         lc.name,
+		clusterv1.MachineControlPlaneLabel: "",
+	}
+	machine = &clusterv1.Machine{
+		ObjectMeta: metav1.ObjectMeta{Name: machineName, Namespace: lc.namespace, Labels: labels},
+		Spec: clusterv1.MachineSpec{
+			ClusterName: lc.name,
+			Bootstrap: clusterv1.Bootstrap{
+				ConfigRef: clusterv1.ContractVersionedObjectReference{
+					APIGroup: bootstrapv1alpha1.GroupVersion.Group,
+					Kind:     "HypervisorConfig",
+					Name:     machineName + "-config",
+				},
+			},
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+				APIGroup: infrastructurev1alpha1.GroupVersion.Group,
+				Kind:     "HypervisorMachine",
+				Name:     machineName,
+			},
+		},
+	}
+	if err := c.Create(ctx, machine); err != nil {
+		t.Fatalf("create control-plane Machine %q: %v", machineName, err)
+	}
+
+	hm := &infrastructurev1alpha1.HypervisorMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      machineName,
+			Namespace: lc.namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: clusterv1.GroupVersion.String(),
+					Kind:       "Machine",
+					Name:       machine.Name,
+					UID:        machine.UID,
+				},
+			},
+		},
+		Spec: infrastructurev1alpha1.HypervisorMachineSpec{ClusterName: lc.name},
+	}
+	if err := c.Create(ctx, hm); err != nil {
+		t.Fatalf("create control-plane HypervisorMachine %q: %v", machineName, err)
+	}
+	hm.Status.Addresses = []clusterv1.MachineAddress{{Type: clusterv1.MachineInternalIP, Address: testCPIP}}
+	if err := c.Status().Update(ctx, hm); err != nil {
+		t.Fatalf("set control-plane HypervisorMachine addresses: %v", err)
+	}
+}
+
 // reconcileConfig runs one reconcile of the config and fails the test on any
 // error.
 func (fx *configFixture) reconcileConfig(t *testing.T, cfg *bootstrapv1alpha1.HypervisorConfig) {
@@ -611,7 +685,9 @@ func controlPlaneTreeKeys(nodeName string) []string {
 		"z-kubernetes-cp/etc/kubernetes/scheduler.kubeconfig",
 		"z-kubernetes-cp/etc/kubernetes/encryption-config.yaml",
 		"z-kubernetes-cp/etc/extension-release.d/extension-release.z-kubernetes-cp",
+		"z-kubernetes-cp/etc/k8s-service-nft.sh",
 		"z-kubelet-" + nodeName + "/etc/kubernetes/kubelet.conf",
+		"z-kubelet-" + nodeName + "/etc/kubernetes/provider-id.env",
 		"z-kubelet-" + nodeName + "/etc/kubernetes/pki/ca.pem",
 		"z-kubelet-" + nodeName + "/etc/kubernetes/pki/" + nodeName + ".pem",
 		"z-kubelet-" + nodeName + "/etc/kubernetes/pki/" + nodeName + "-key.pem",
@@ -624,10 +700,12 @@ func controlPlaneTreeKeys(nodeName string) []string {
 func workerTreeKeys(nodeName string) []string {
 	return []string{
 		"z-kubelet-" + nodeName + "/etc/kubernetes/kubelet.conf",
+		"z-kubelet-" + nodeName + "/etc/kubernetes/provider-id.env",
 		"z-kubelet-" + nodeName + "/etc/kubernetes/pki/ca.pem",
 		"z-kubelet-" + nodeName + "/etc/kubernetes/pki/" + nodeName + ".pem",
 		"z-kubelet-" + nodeName + "/etc/kubernetes/pki/" + nodeName + "-key.pem",
 		"z-kubelet-" + nodeName + "/etc/extension-release.d/extension-release.z-kubelet-" + nodeName,
+		"z-kubelet-" + nodeName + "/etc/k8s-service-nft.sh",
 	}
 }
 
@@ -704,7 +782,7 @@ func TestConfigRoleDetection(t *testing.T) {
 
 	t.Run("worker machine renders the kubelet-only tree", func(t *testing.T) {
 		fx := newConfigFixture(t, c)
-		setClusterEndpoint(t, c, lc, testCPIP, testCPPort)
+		ensureControlPlaneMachineIP(t, c, lc)
 		lcfg := newLinkedConfig(t, c, lc, lc.name, "worker-1", false, "", nil)
 		fx.reconcileConfig(t, lcfg.cfg)
 
@@ -853,7 +931,7 @@ func TestConfigReadyAndDataSecretAvailable(t *testing.T) {
 	c := mustReconcileClient(t)
 	fx := newConfigFixture(t, c)
 	lc := newLinkedCluster(t, c, "config-ready", "capi-cluster")
-	setClusterEndpoint(t, c, lc, testCPIP, testCPPort)
+	ensureControlPlaneMachineIP(t, c, lc)
 	lcfg := newLinkedConfig(t, c, lc, lc.name, "worker-1", false, "", nil)
 	fx.reconcileConfig(t, lcfg.cfg)
 
@@ -1110,9 +1188,9 @@ func TestConfigKubeconfigServerURL(t *testing.T) {
 			"admin", "system:kube-controller-manager", "system:kube-scheduler", "system:node:cp-1")
 	})
 
-	t.Run("worker kubelet.conf points at the cluster endpoint", func(t *testing.T) {
+	t.Run("worker kubelet.conf points at the control-plane machine IP", func(t *testing.T) {
 		fx := newConfigFixture(t, c)
-		setClusterEndpoint(t, c, lc, testCPIP, testCPPort)
+		ensureControlPlaneMachineIP(t, c, lc)
 		lcfg := newLinkedConfig(t, c, lc, lc.name, "worker-1", false, "", nil)
 		fx.reconcileConfig(t, lcfg.cfg)
 
