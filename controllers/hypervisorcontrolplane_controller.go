@@ -820,8 +820,14 @@ func (r *HypervisorControlPlaneReconciler) ensureKubeconfigSecret(
 	switch err := r.Get(ctx, key, secret); {
 	case apierrors.IsNotFound(err):
 		secret = &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
-			Data:       map[string][]byte{controlPlaneKubeconfigDataKey: data},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      key.Name,
+				Namespace: key.Namespace,
+				Labels: map[string]string{
+					clusterv1.ClusterNameLabel: cluster.Name,
+				},
+			},
+			Data: map[string][]byte{controlPlaneKubeconfigDataKey: data},
 		}
 		if err := r.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create kubeconfig Secret %q: %w", key, err)
@@ -831,7 +837,17 @@ func (r *HypervisorControlPlaneReconciler) ensureKubeconfigSecret(
 		return fmt.Errorf("get kubeconfig Secret %q: %w", key, err)
 	}
 
-	if bytes.Equal(secret.Data[controlPlaneKubeconfigDataKey], data) {
+	// Ensure the cluster-name label is present (handles secrets created
+	// before this fix). CAPI core's secret cache filters by this label.
+	if secret.Labels == nil {
+		secret.Labels = map[string]string{}
+	}
+	if _, exists := secret.Labels[clusterv1.ClusterNameLabel]; !exists {
+		secret.Labels[clusterv1.ClusterNameLabel] = cluster.Name
+	}
+
+	if bytes.Equal(secret.Data[controlPlaneKubeconfigDataKey], data) &&
+		secret.Labels[clusterv1.ClusterNameLabel] == cluster.Name {
 		return nil
 	}
 	if secret.Data == nil {

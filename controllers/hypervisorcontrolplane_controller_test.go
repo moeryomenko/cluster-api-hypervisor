@@ -1337,6 +1337,12 @@ func TestControlPlaneReadinessWritesKubeconfig(t *testing.T) {
 		t.Errorf("kubeconfig server = %+v, want %q", doc.Clusters, wantServer)
 	}
 
+	// CAPI core's secret cache filters by cluster-name label; the Secret
+	// must carry it so the ClusterCache can find the kubeconfig.
+	if got := secret.Labels[clusterv1.ClusterNameLabel]; got != lc.name {
+		t.Errorf("kubeconfig Secret label %s = %q, want %q", clusterv1.ClusterNameLabel, got, lc.name)
+	}
+
 	got := getControlPlane(t, c, lcp.cp)
 	wantCPStatus(t, got, true, true)
 	wantControlPlaneReadyCondition(t, got, metav1.ConditionTrue)
