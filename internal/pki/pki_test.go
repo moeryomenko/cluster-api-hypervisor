@@ -433,9 +433,10 @@ func TestGenerateKubeletCertificate(t *testing.T) {
 		}
 	})
 
-	t.Run("common name is the node name", func(t *testing.T) {
-		if cert.Subject.CommonName != nodeName {
-			t.Errorf("kubelet certificate CN = %q, want %q", cert.Subject.CommonName, nodeName)
+	t.Run("common name follows Kubernetes convention", func(t *testing.T) {
+		want := "system:node:" + nodeName
+		if cert.Subject.CommonName != want {
+			t.Errorf("kubelet certificate CN = %q, want %q", cert.Subject.CommonName, want)
 		}
 	})
 

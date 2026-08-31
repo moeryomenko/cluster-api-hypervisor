@@ -212,9 +212,11 @@ func GenerateClusterPKI(cpIP, cpName string) (ClusterPKI, error) {
 }
 
 // GenerateKubeletCert generates one node's kubelet certificate and key, signed
-// by the cluster CA. The certificate common name is exactly nodeName; nodeName
-// must be non-empty and the PKI must hold CA material. The returned key and
-// certificate belong to the same keypair.
+// by the cluster CA. The certificate common name follows the Kubernetes
+// convention: "system:node:<nodeName>". The organization is set to
+// "system:nodes" so the kubelet authenticates into the system:nodes group.
+// nodeName must be non-empty and the PKI must hold CA material. The returned
+// key and certificate belong to the same keypair.
 func GenerateKubeletCert(clusterPKI ClusterPKI, nodeName string) (certPEM, keyPEM []byte, err error) {
 	if nodeName == "" {
 		return nil, nil, fmt.Errorf("node name must not be empty")
@@ -232,8 +234,9 @@ func GenerateKubeletCert(clusterPKI ClusterPKI, nodeName string) (certPEM, keyPE
 		return nil, nil, err
 	}
 
+	cn := "system:node:" + nodeName
 	return newLeafKeyAndCert(
-		nodeName,
+		cn,
 		x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		nil, nil,
