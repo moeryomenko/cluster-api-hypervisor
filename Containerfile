@@ -41,7 +41,7 @@ FROM alpine:edge@sha256:266f29255458134745f2bf588cb23ed1ed1768b96ff2580a05d70a8a
 # available in the edge/testing repository; the remaining tools are in
 # edge/main. Each pin is the exact package version shipped by Alpine today.
 ARG CLOUD_HYPERVISOR_VERSION=48.0-r0
-ARG QEMU_IMG_VERSION=11.1.0-r0
+ARG QEMU_IMG_VERSION=11.1.1-r0
 ARG SQUASHFS_TOOLS_VERSION=4.7.5-r0
 ARG DOSFSTOOLS_VERSION=4.2-r2
 ARG MTOOLS_VERSION=4.0.49-r0
