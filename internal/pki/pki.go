@@ -131,10 +131,12 @@ func GenerateClusterPKI(cpIP, cpName string) (ClusterPKI, error) {
 	if ip == nil {
 		return ClusterPKI{}, fmt.Errorf("control-plane IP %q is not a valid IP literal", cpIP)
 	}
+
 	loopback := net.ParseIP("127.0.0.1")
 	if loopback == nil {
 		return ClusterPKI{}, fmt.Errorf("loopback IP is not a valid IP literal")
 	}
+
 	if cpName == "" {
 		return ClusterPKI{}, fmt.Errorf("control-plane name must not be empty")
 	}
@@ -143,14 +145,17 @@ func GenerateClusterPKI(cpIP, cpName string) (ClusterPKI, error) {
 	if err != nil {
 		return ClusterPKI{}, err
 	}
+
 	caCert, caPEM, err := newCACertificate("cluster-ca", caKey)
 	if err != nil {
 		return ClusterPKI{}, err
 	}
+
 	frontProxyCAKey, err := newKey()
 	if err != nil {
 		return ClusterPKI{}, err
 	}
+
 	frontProxyCACert, frontProxyCAPEM, err := newCACertificate("front-proxy-ca", frontProxyCAKey)
 	if err != nil {
 		return ClusterPKI{}, err
@@ -164,10 +169,16 @@ func GenerateClusterPKI(cpIP, cpName string) (ClusterPKI, error) {
 	// Without the Service IP SAN, those in-cluster clients fail TLS when the
 	// kubernetes Service DNATs to the apiserver.
 	serviceIP := net.ParseIP("10.96.0.1")
+
 	apiserverCert, apiserverKey, err := newLeafKeyAndCert(
 		"kube-apiserver",
 		x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment,
-		[]x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		// The same certificate is presented by the apiserver when it connects
+		// to kubelets (--kubelet-client-certificate), so the EKU must carry
+		// clientAuth in addition to serverAuth; a serverAuth-only chain makes
+		// the kubelet reject every pod-log/exec/node-proxy request with 401
+		// ("x509: certificate specifies an incompatible key usage").
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		[]string{cpName, "host.containers.internal"},
 		[]net.IP{ip, loopback, serviceIP},
 		nil,
@@ -176,6 +187,7 @@ func GenerateClusterPKI(cpIP, cpName string) (ClusterPKI, error) {
 	if err != nil {
 		return ClusterPKI{}, err
 	}
+
 	frontProxyCert, frontProxyKey, err := newLeafKeyAndCert(
 		"front-proxy-client",
 		x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment,
@@ -186,6 +198,7 @@ func GenerateClusterPKI(cpIP, cpName string) (ClusterPKI, error) {
 	if err != nil {
 		return ClusterPKI{}, err
 	}
+
 	serviceAccountCert, serviceAccountKey, err := newLeafKeyAndCert(
 		"service-account",
 		x509.KeyUsageDigitalSignature,
@@ -221,6 +234,7 @@ func GenerateKubeletCert(clusterPKI ClusterPKI, nodeName string) (certPEM, keyPE
 	if nodeName == "" {
 		return nil, nil, fmt.Errorf("node name must not be empty")
 	}
+
 	if len(clusterPKI.CA) == 0 || len(clusterPKI.CAKey) == 0 {
 		return nil, nil, fmt.Errorf("cluster PKI has no CA material")
 	}
@@ -229,12 +243,14 @@ func GenerateKubeletCert(clusterPKI ClusterPKI, nodeName string) (certPEM, keyPE
 	if err != nil {
 		return nil, nil, err
 	}
+
 	caKey, err := parseCAKey(clusterPKI.CAKey)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	cn := "system:node:" + nodeName
+
 	return newLeafKeyAndCert(
 		cn,
 		x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment,
@@ -254,17 +270,21 @@ func MintClientCert(clusterPKI ClusterPKI, cn string, org []string) (certPEM, ke
 	if cn == "" {
 		return nil, nil, fmt.Errorf("client cert CN must not be empty")
 	}
+
 	if len(clusterPKI.CA) == 0 || len(clusterPKI.CAKey) == 0 {
 		return nil, nil, fmt.Errorf("cluster PKI has no CA material")
 	}
+
 	caCert, err := parseCACertificate(clusterPKI.CA)
 	if err != nil {
 		return nil, nil, err
 	}
+
 	caKey, err := parseCAKey(clusterPKI.CAKey)
 	if err != nil {
 		return nil, nil, err
 	}
+
 	return newLeafKeyAndCert(
 		cn,
 		x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment,
@@ -285,6 +305,7 @@ func RenderKubeconfig(caPEM []byte, serverURL, user string, clientCert, clientKe
 	if serverURL == "" {
 		return nil, fmt.Errorf("server URL must not be empty")
 	}
+
 	if _, err := parseCACertificate(caPEM); err != nil {
 		return nil, err
 	}
@@ -320,6 +341,7 @@ func RenderKubeconfig(caPEM []byte, serverURL, user string, clientCert, clientKe
 	if err != nil {
 		return nil, fmt.Errorf("marshaling kubeconfig: %w", err)
 	}
+
 	return out, nil
 }
 
@@ -330,6 +352,7 @@ func newCACertificate(cn string, key *rsa.PrivateKey) (*x509.Certificate, []byte
 	if err != nil {
 		return nil, nil, err
 	}
+
 	notBefore, notAfter := validityWindow(caValidity)
 	template := &x509.Certificate{
 		SerialNumber:          serial,
@@ -340,14 +363,17 @@ func newCACertificate(cn string, key *rsa.PrivateKey) (*x509.Certificate, []byte
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
+
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating CA certificate: %w", err)
 	}
+
 	cert, err := x509.ParseCertificate(der)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parsing generated CA certificate: %w", err)
 	}
+
 	return cert, pemCert(der), nil
 }
 
@@ -367,14 +393,17 @@ func newLeafKeyAndCert(
 	if err != nil {
 		return nil, nil, err
 	}
+
 	template, err := newLeafTemplate(cn, keyUsage, extKeyUsage, dnsNames, ipAddresses, organization)
 	if err != nil {
 		return nil, nil, err
 	}
+
 	cert, err := signCert(template, caCert, &key.PublicKey, caKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("signing %s certificate: %w", cn, err)
 	}
+
 	return cert, pemKey(key), nil
 }
 
@@ -393,7 +422,9 @@ func newLeafTemplate(
 	if err != nil {
 		return nil, err
 	}
+
 	notBefore, notAfter := validityWindow(leafValidity)
+
 	return &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: cn, Organization: organization},
@@ -413,6 +444,7 @@ func newKey() (*rsa.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generating RSA key: %w", err)
 	}
+
 	return key, nil
 }
 
@@ -422,9 +454,11 @@ func newSerial() (*big.Int, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generating certificate serial number: %w", err)
 	}
+
 	if serial.Sign() == 0 {
 		serial.SetInt64(1)
 	}
+
 	return serial, nil
 }
 
@@ -434,10 +468,12 @@ func parseCACertificate(caPEM []byte) (*x509.Certificate, error) {
 	if block == nil || block.Type != "CERTIFICATE" {
 		return nil, fmt.Errorf("CA bytes are not a PEM certificate")
 	}
+
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
 		return nil, fmt.Errorf("parsing CA certificate: %w", err)
 	}
+
 	return cert, nil
 }
 
@@ -447,10 +483,12 @@ func parseCAKey(caKeyPEM []byte) (*rsa.PrivateKey, error) {
 	if block == nil {
 		return nil, fmt.Errorf("CA key bytes are not a PEM private key")
 	}
+
 	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
 		return nil, fmt.Errorf("parsing CA private key: %w", err)
 	}
+
 	return key, nil
 }
 
@@ -471,6 +509,7 @@ func signCert(template, parent *x509.Certificate, pub crypto.PublicKey, signer c
 	if err != nil {
 		return nil, fmt.Errorf("signing certificate: %w", err)
 	}
+
 	return pemCert(der), nil
 }
 
