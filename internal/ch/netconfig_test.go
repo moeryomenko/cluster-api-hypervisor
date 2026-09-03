@@ -108,14 +108,18 @@ func TestParseNetConfig(t *testing.T) {
 				if err == nil {
 					t.Fatalf("ParseNetConfig(%q) = %+v, want error", tt.give, got)
 				}
+
 				if !strings.Contains(err.Error(), tt.give) {
 					t.Errorf("error %v does not name the input", err)
 				}
+
 				return
 			}
+
 			if err != nil {
 				t.Fatalf("ParseNetConfig(%q) error = %v, want nil", tt.give, err)
 			}
+
 			if got != tt.want {
 				t.Errorf("ParseNetConfig(%q) = %+v, want %+v", tt.give, got, tt.want)
 			}

@@ -97,6 +97,7 @@ func TestManagerStartSpawnsWithAPISocketArg(t *testing.T) {
 	t.Setenv("FAKE_CH_RECORD", record)
 
 	socketDir := filepath.Join(t.TempDir(), "sockets")
+
 	mgr := ch.NewManager(ch.WithBinaryPath(fakePath(t)), ch.WithSocketDir(socketDir))
 	defer stopQuiet(t, mgr)
 
@@ -109,6 +110,7 @@ func TestManagerStartSpawnsWithAPISocketArg(t *testing.T) {
 	if socketPath != wantSocket {
 		t.Errorf("Start socket path = %q, want %q", socketPath, wantSocket)
 	}
+
 	if fi, err := os.Stat(socketDir); err != nil {
 		t.Errorf("socket dir %q not created: %v", socketDir, err)
 	} else if !fi.IsDir() {
@@ -119,12 +121,14 @@ func TestManagerStartSpawnsWithAPISocketArg(t *testing.T) {
 	if len(invocations) != 1 {
 		t.Fatalf("fake binary spawned %d times, want 1", len(invocations))
 	}
+
 	wantArgs := []string{"--api-socket", "path=" + wantSocket, "--seccomp", "false"}
 	if got := invocations[0].args; !slices.Equal(got, wantArgs) {
 		t.Errorf("fake binary argv = %v, want %v", got, wantArgs)
 	}
 
 	waitForFile(t, wantSocket, 2*time.Second)
+
 	if fi, err := os.Stat(wantSocket); err != nil {
 		t.Errorf("socket %q not created: %v", wantSocket, err)
 	} else if fi.Mode()&os.ModeSocket == 0 {
@@ -138,6 +142,7 @@ func TestManagerStartSpawnsWithAPISocketArg(t *testing.T) {
 // must stay safe.
 func TestManagerStartPrematureExitCapturesStderr(t *testing.T) {
 	const wantStderr = "fake-cloud-hypervisor: simulated startup failure"
+
 	t.Setenv("FAKE_CH_EXIT", "1")
 	t.Setenv("FAKE_CH_EXIT_MSG", wantStderr)
 
@@ -147,12 +152,15 @@ func TestManagerStartPrematureExitCapturesStderr(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Start succeeded (socket %q) for a binary that exits immediately, want error", socketPath)
 	}
+
 	if socketPath != "" {
 		t.Errorf("Start returned socket path %q together with an error, want empty", socketPath)
 	}
+
 	if !strings.Contains(err.Error(), wantStderr) {
 		t.Errorf("Start error %q does not include the captured stderr %q", err, wantStderr)
 	}
+
 	if err := mgr.Stop(t.Context()); err != nil {
 		t.Errorf("Stop after a failed Start: %v", err)
 	}
@@ -166,6 +174,7 @@ func TestManagerStartIsIdempotent(t *testing.T) {
 	t.Setenv("FAKE_CH_RECORD", record)
 
 	socketDir := filepath.Join(t.TempDir(), "sockets")
+
 	mgr := ch.NewManager(ch.WithBinaryPath(fakePath(t)), ch.WithSocketDir(socketDir))
 	defer stopQuiet(t, mgr)
 
@@ -173,13 +182,16 @@ func TestManagerStartIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Start: %v", err)
 	}
+
 	second, err := mgr.Start(t.Context())
 	if err != nil {
 		t.Fatalf("second Start: %v", err)
 	}
+
 	if second != first {
 		t.Errorf("second Start socket path = %q, want the first %q", second, first)
 	}
+
 	if got := len(readRecord(t, record)); got != 1 {
 		t.Errorf("fake binary spawned %d times after two Starts, want 1", got)
 	}
@@ -199,6 +211,7 @@ func TestManagerStartUnlinksStaleSocketFile(t *testing.T) {
 	if err := os.MkdirAll(socketDir, 0o755); err != nil {
 		t.Fatalf("create socket dir: %v", err)
 	}
+
 	stale := filepath.Join(socketDir, "api.sock")
 	if err := os.WriteFile(stale, []byte("stale socket left by an unclean kill"), 0o644); err != nil {
 		t.Fatalf("write stale socket file: %v", err)
@@ -211,15 +224,18 @@ func TestManagerStartUnlinksStaleSocketFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start with a stale socket file present: %v", err)
 	}
+
 	if socketPath != stale {
 		t.Errorf("Start socket path = %q, want %q", socketPath, stale)
 	}
 
 	waitForFile(t, stale, 2*time.Second)
+
 	fi, err := os.Stat(stale)
 	if err != nil {
 		t.Fatalf("socket %q not created: %v", stale, err)
 	}
+
 	if fi.Mode()&os.ModeSocket == 0 {
 		t.Errorf("path %q is not a unix socket after Start (mode %v): the stale file was not replaced", stale, fi.Mode())
 	}
@@ -230,12 +246,14 @@ func TestManagerStartUnlinksStaleSocketFile(t *testing.T) {
 func TestManagerWaitReady(t *testing.T) {
 	t.Run("socket appears after a delay", func(t *testing.T) {
 		t.Setenv("FAKE_CH_SOCKET_DELAY", "1")
+
 		mgr := ch.NewManager(ch.WithBinaryPath(fakePath(t)), ch.WithSocketDir(filepath.Join(t.TempDir(), "sockets")))
 		defer stopQuiet(t, mgr)
 
 		if _, err := mgr.Start(t.Context()); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
+
 		if err := mgr.WaitReady(t.Context(), 5*time.Second); err != nil {
 			t.Fatalf("WaitReady: %v", err)
 		}
@@ -243,19 +261,23 @@ func TestManagerWaitReady(t *testing.T) {
 
 	t.Run("process exits before the socket is ready", func(t *testing.T) {
 		const wantStderr = "fake-cloud-hypervisor: crashed before binding"
+
 		t.Setenv("FAKE_CH_EXIT", "1")
 		t.Setenv("FAKE_CH_EXIT_MSG", wantStderr)
 		t.Setenv("FAKE_CH_EXIT_DELAY", "1")
+
 		mgr := ch.NewManager(ch.WithBinaryPath(fakePath(t)), ch.WithSocketDir(filepath.Join(t.TempDir(), "sockets")))
 		defer stopQuiet(t, mgr)
 
 		if _, err := mgr.Start(t.Context()); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
+
 		err := mgr.WaitReady(t.Context(), 5*time.Second)
 		if err == nil {
 			t.Fatal("WaitReady succeeded although the process exited before binding the socket")
 		}
+
 		if !strings.Contains(err.Error(), wantStderr) {
 			t.Errorf("WaitReady error %q does not include the captured stderr %q", err, wantStderr)
 		}
@@ -263,12 +285,14 @@ func TestManagerWaitReady(t *testing.T) {
 
 	t.Run("process already exited before WaitReady", func(t *testing.T) {
 		t.Setenv("FAKE_CH_EXIT", "1")
+
 		mgr := ch.NewManager(ch.WithBinaryPath(fakePath(t)), ch.WithSocketDir(filepath.Join(t.TempDir(), "sockets")))
 		defer stopQuiet(t, mgr)
 
 		if _, err := mgr.Start(t.Context()); err == nil {
 			t.Fatal("Start succeeded although the binary exits immediately")
 		}
+
 		if err := mgr.WaitReady(t.Context(), 2*time.Second); err == nil {
 			t.Fatal("WaitReady succeeded although Start already failed")
 		}
@@ -276,12 +300,14 @@ func TestManagerWaitReady(t *testing.T) {
 
 	t.Run("times out while the process stays up without a socket", func(t *testing.T) {
 		t.Setenv("FAKE_CH_NO_SOCKET", "1")
+
 		mgr := ch.NewManager(ch.WithBinaryPath(fakePath(t)), ch.WithSocketDir(filepath.Join(t.TempDir(), "sockets")))
 		defer stopQuiet(t, mgr)
 
 		if _, err := mgr.Start(t.Context()); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
+
 		err := mgr.WaitReady(t.Context(), 300*time.Millisecond)
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("WaitReady error = %v, want context.DeadlineExceeded", err)
@@ -301,14 +327,18 @@ func TestManagerStop(t *testing.T) {
 		if _, err := mgr.Start(t.Context()); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
+
 		pid := mgr.PID()
 		if pid <= 0 {
 			t.Fatalf("PID = %d after Start, want > 0", pid)
 		}
+
 		if err := mgr.Stop(t.Context()); err != nil {
 			t.Fatalf("Stop: %v", err)
 		}
+
 		assertProcessGone(t, pid)
+
 		if got, err := os.ReadFile(signalFile); err != nil || !strings.Contains(string(got), "SIGTERM") {
 			t.Errorf("SIGTERM marker file %s = %q (read err %v), want it to record SIGTERM", signalFile, got, err)
 		}
@@ -323,11 +353,14 @@ func TestManagerStop(t *testing.T) {
 		if _, err := mgr.Start(t.Context()); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
+
 		pid := mgr.PID()
 		if err := mgr.Stop(t.Context()); err != nil {
 			t.Fatalf("Stop: %v", err)
 		}
+
 		assertProcessGone(t, pid)
+
 		if got, err := os.ReadFile(signalFile); err == nil && strings.Contains(string(got), "SIGTERM") {
 			t.Errorf("process recorded SIGTERM although it was configured to ignore it: %q", got)
 		}
@@ -339,9 +372,11 @@ func TestManagerStop(t *testing.T) {
 		if _, err := mgr.Start(t.Context()); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
+
 		if err := mgr.Stop(t.Context()); err != nil {
 			t.Fatalf("first Stop: %v", err)
 		}
+
 		if err := mgr.Stop(t.Context()); err != nil {
 			t.Errorf("second Stop: %v", err)
 		}
@@ -364,16 +399,20 @@ func TestManagerPID(t *testing.T) {
 	if got := mgr.PID(); got != 0 {
 		t.Errorf("PID before Start = %d, want 0", got)
 	}
+
 	if _, err := mgr.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+
 	pid := mgr.PID()
 	if pid <= 0 {
 		t.Fatalf("PID after Start = %d, want > 0", pid)
 	}
+
 	if err := syscall.Kill(pid, syscall.Signal(0)); err != nil {
 		t.Errorf("PID %d does not refer to a live process: %v", pid, err)
 	}
+
 	if err := mgr.Stop(t.Context()); err != nil {
 		t.Errorf("Stop: %v", err)
 	}
@@ -388,13 +427,16 @@ func TestManagerStopRemovesSocketDir(t *testing.T) {
 	if _, err := mgr.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+
 	socketPath := filepath.Join(socketDir, "api.sock")
 	if _, err := os.Stat(socketPath); err != nil {
 		t.Fatalf("socket %q not created: %v", socketPath, err)
 	}
+
 	if err := mgr.Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
+
 	if _, err := os.Stat(socketDir); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("socket dir %q still exists after Stop (stat err = %v), want os.ErrNotExist", socketDir, err)
 	}
@@ -411,9 +453,11 @@ func TestManagerStartWithMissingBinary(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Start with a missing binary succeeded (socket %q), want error", socketPath)
 	}
+
 	if socketPath != "" {
 		t.Errorf("Start returned socket path %q together with an error, want empty", socketPath)
 	}
+
 	if err := mgr.Stop(t.Context()); err != nil {
 		t.Errorf("Stop after a failed Start: %v", err)
 	}
@@ -429,9 +473,11 @@ func fakePath(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("resolve fake binary path: %v", err)
 	}
+
 	if err := os.Chmod(path, 0o755); err != nil {
 		t.Fatalf("make fake binary executable: %v", err)
 	}
+
 	return path
 }
 
@@ -450,14 +496,18 @@ func readRecord(t *testing.T, path string) []fakeInvocation {
 	if err != nil {
 		t.Fatalf("read fake invocation record %s: %v", path, err)
 	}
+
 	var invocations []fakeInvocation
+
 	for block := range strings.SplitSeq(string(data), "FAKE_INVOCATION\n") {
 		block = strings.TrimSpace(block)
 		if block == "" {
 			continue
 		}
+
 		invocations = append(invocations, fakeInvocation{args: strings.Split(block, "\n")})
 	}
+
 	return invocations
 }
 
@@ -466,13 +516,16 @@ func waitForFile(t *testing.T, path string, timeout time.Duration) {
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)
+
 	for {
 		if _, err := os.Stat(path); err == nil {
 			return
 		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("file %s never appeared within %v", path, timeout)
 		}
+
 		time.Sleep(20 * time.Millisecond)
 	}
 }

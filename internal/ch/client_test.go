@@ -120,6 +120,7 @@ func TestClientBoot(t *testing.T) {
 				if err == nil {
 					t.Fatal("Boot returned nil for a non-2xx response, want error")
 				}
+
 				assertStatusError(t, err, tt.wantStatus)
 			} else if err != nil {
 				t.Fatalf("Boot returned %v for a 2xx response, want nil", err)
@@ -129,9 +130,11 @@ func TestClientBoot(t *testing.T) {
 			if method != http.MethodPut {
 				t.Errorf("Boot method = %q, want %q", method, http.MethodPut)
 			}
+
 			if path != "/api/v1/vm.boot" {
 				t.Errorf("Boot path = %q, want %q", path, "/api/v1/vm.boot")
 			}
+
 			if len(body) != 0 {
 				t.Errorf("Boot sent a %d-byte request body, want none", len(body))
 			}
@@ -177,6 +180,7 @@ func TestClientShutdown(t *testing.T) {
 				if err == nil {
 					t.Fatal("Shutdown returned nil for a non-2xx response, want error")
 				}
+
 				assertStatusError(t, err, tt.wantStatus)
 			} else if err != nil {
 				t.Fatalf("Shutdown returned %v for a 2xx response, want nil", err)
@@ -186,9 +190,11 @@ func TestClientShutdown(t *testing.T) {
 			if method != http.MethodPut {
 				t.Errorf("Shutdown method = %q, want %q", method, http.MethodPut)
 			}
+
 			if path != "/api/v1/vm.shutdown" {
 				t.Errorf("Shutdown path = %q, want %q", path, "/api/v1/vm.shutdown")
 			}
+
 			if len(body) != 0 {
 				t.Errorf("Shutdown sent a %d-byte request body, want none", len(body))
 			}
@@ -237,6 +243,7 @@ func TestClientInfo(t *testing.T) {
 				if err == nil {
 					t.Fatal("Info returned nil error, want error")
 				}
+
 				if tt.wantStatus != 0 {
 					assertStatusError(t, err, tt.wantStatus)
 				} else {
@@ -244,11 +251,14 @@ func TestClientInfo(t *testing.T) {
 						t.Errorf("Info decode failure surfaced as %T with status %d, want a non-status error", statusErr, statusErr.StatusCode)
 					}
 				}
+
 				return
 			}
+
 			if err != nil {
 				t.Fatalf("Info returned %v, want nil", err)
 			}
+
 			if string(state) != tt.wantState {
 				t.Errorf("Info state = %q, want %q", string(state), tt.wantState)
 			}
@@ -257,6 +267,7 @@ func TestClientInfo(t *testing.T) {
 			if method != http.MethodGet {
 				t.Errorf("Info method = %q, want %q", method, http.MethodGet)
 			}
+
 			if path != "/api/v1/vm.info" {
 				t.Errorf("Info path = %q, want %q", path, "/api/v1/vm.info")
 			}
@@ -313,11 +324,13 @@ func TestClientCreate(t *testing.T) {
 					{VhostUser: true, VhostSocket: "/run/user/1000/k8snet/node-1.sock", MAC: "c6:e5:50:1c:ec:ab", NumQueues: 2},
 				},
 			}
+
 			err := client.Create(t.Context(), cfg)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("Create returned nil for a non-2xx response, want error")
 				}
+
 				assertStatusError(t, err, tt.wantStatus)
 			} else if err != nil {
 				t.Fatalf("Create returned %v for a 2xx response, want nil", err)
@@ -327,6 +340,7 @@ func TestClientCreate(t *testing.T) {
 			if method != http.MethodPut {
 				t.Errorf("Create method = %q, want %q", method, http.MethodPut)
 			}
+
 			if path != "/api/v1/vm.create" {
 				t.Errorf("Create path = %q, want %q", path, "/api/v1/vm.create")
 			}
@@ -335,6 +349,7 @@ func TestClientCreate(t *testing.T) {
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatalf("Create body is not valid JSON: %v (body %q)", err, body)
 			}
+
 			assertJSONPath(t, got, "payload.firmware", cfg.Payload.Firmware)
 			assertJSONPath(t, got, "cpus.boot_vcpus", float64(cfg.Cpus.BootVCPUs))
 			assertJSONPath(t, got, "cpus.max_vcpus", float64(cfg.Cpus.MaxVCPUs))
@@ -366,10 +381,12 @@ func TestClientCreateOmitsCpusWhenNil(t *testing.T) {
 	}
 
 	_, _, body := rec.snapshot()
+
 	var got map[string]any
 	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatalf("Create body is not valid JSON: %v (body %q)", err, body)
 	}
+
 	if _, ok := got["cpus"]; ok {
 		t.Errorf("Create body carries a cpus section %v, want none for a nil Cpus config", got["cpus"])
 	}
@@ -389,15 +406,18 @@ func assertJSONPath(t *testing.T, doc map[string]any, path string, want any) {
 			if !ok {
 				t.Fatalf("JSON path %q: key %q missing in %v", path, seg, node)
 			}
+
 			cur = next
 		case []any:
 			idx, err := strconv.Atoi(seg)
 			if err != nil {
 				t.Fatalf("JSON path %q: segment %q is not an index", path, seg)
 			}
+
 			if idx >= len(node) {
 				t.Fatalf("JSON path %q: index %d out of range (%d entries)", path, idx, len(node))
 			}
+
 			cur = node[idx]
 		default:
 			t.Fatalf("JSON path %q: segment %q traverses non-container %T", path, seg, cur)
@@ -424,6 +444,7 @@ func TestClientConnectionFailure(t *testing.T) {
 	if _, ok := errors.AsType[net.Error](err); !ok {
 		t.Errorf("connection error %v does not wrap net.Error", err)
 	}
+
 	if statusErr, ok := errors.AsType[*ch.StatusError](err); ok {
 		t.Errorf("connection failure surfaced as %T with status %d, want a transport error", statusErr, statusErr.StatusCode)
 	}
@@ -444,6 +465,7 @@ func TestClientContextCancellation(t *testing.T) {
 	if err == nil {
 		t.Fatal("Boot with a cancelled context returned nil, want error")
 	}
+
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Boot error = %v, want context.Canceled", err)
 	}
@@ -472,6 +494,7 @@ func TestClientContextCancellationInFlight(t *testing.T) {
 		if err == nil {
 			t.Fatal("Boot after in-flight cancellation returned nil, want error")
 		}
+
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("Boot error = %v, want context.Canceled", err)
 		}
@@ -496,6 +519,7 @@ func TestClientContextDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatal("Boot with an expiring context returned nil, want error")
 	}
+
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("Boot error = %v, want context.DeadlineExceeded", err)
 	}
@@ -531,6 +555,7 @@ func TestClientStatusErrorMessage(t *testing.T) {
 
 			err := client.Boot(t.Context())
 			assertStatusError(t, err, tt.status)
+
 			if err.Error() != tt.want {
 				t.Errorf("Boot error = %q, want %q", err, tt.want)
 			}
@@ -547,6 +572,7 @@ func mustNewClient(t *testing.T, socketPath string) *ch.Client {
 	if client == nil {
 		t.Fatal("NewClient returned nil")
 	}
+
 	return client
 }
 
@@ -558,6 +584,7 @@ func assertStatusError(t *testing.T, err error, wantStatus int) {
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("error %v does not wrap *StatusError", err)
 	}
+
 	if statusErr.StatusCode != wantStatus {
 		t.Errorf("StatusError.StatusCode = %d, want %d", statusErr.StatusCode, wantStatus)
 	}
@@ -589,6 +616,7 @@ func (r *requestRecorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.body, _ = io.ReadAll(req.Body)
 
 	w.WriteHeader(r.status)
+
 	if r.payload != "" {
 		_, _ = fmt.Fprint(w, r.payload)
 	}
@@ -598,6 +626,7 @@ func (r *requestRecorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 func (r *requestRecorder) snapshot() (method, path string, body []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	return r.method, r.path, append([]byte(nil), r.body...)
 }
 
@@ -613,10 +642,12 @@ func newSocketServer(t *testing.T, handler http.Handler) string {
 	}
 
 	socketPath := filepath.Join(t.TempDir(), "api.sock")
+
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen on unix socket %s: %v", socketPath, err)
 	}
+
 	srv.Listener = listener
 	srv.Start()
 	t.Cleanup(srv.Close)

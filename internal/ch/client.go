@@ -52,6 +52,7 @@ func (e *StatusError) Error() string {
 	if body := strings.TrimSpace(e.Body); body != "" {
 		msg += fmt.Sprintf(": %s", body)
 	}
+
 	return msg
 }
 
@@ -172,7 +173,9 @@ func (c *Client) Create(ctx context.Context, cfg VmConfig) error {
 	if err != nil {
 		return fmt.Errorf("marshal vm.create config: %w", err)
 	}
+
 	_, err = c.do(ctx, http.MethodPut, vmCreatePath, body)
+
 	return err
 }
 
@@ -190,6 +193,7 @@ func (c *Client) Info(ctx context.Context) (VMState, error) {
 	if err := json.Unmarshal(body, &info); err != nil {
 		return "", err
 	}
+
 	return info.State, nil
 }
 
@@ -220,9 +224,11 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 	if err != nil {
 		return nil, err
 	}
+
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -231,16 +237,20 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 	if err != nil {
 		return nil, err
 	}
+
 	if resp.StatusCode < http.StatusOK || resp.StatusCode > 299 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, statusErrorBodyLimit))
 		_ = resp.Body.Close()
+
 		return nil, &StatusError{StatusCode: resp.StatusCode, Body: string(errBody)}
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
+
 	if err != nil {
 		return nil, err
 	}
+
 	return respBody, nil
 }

@@ -48,6 +48,7 @@ const defaultNetQueues = minNetQueues
 // value are errors.
 func ParseNetConfig(netConfig string) (NetConfig, error) {
 	cfg := NetConfig{}
+
 	for field := range strings.SplitSeq(netConfig, ",") {
 		key, value, found := strings.Cut(field, "=")
 		if !found {
@@ -60,6 +61,7 @@ func ParseNetConfig(netConfig string) (NetConfig, error) {
 			if err != nil {
 				return NetConfig{}, fmt.Errorf("parse net config %q: invalid vhost_user %q: %w", netConfig, value, err)
 			}
+
 			cfg.VhostUser = b
 		case "socket":
 			cfg.VhostSocket = value
@@ -70,9 +72,11 @@ func ParseNetConfig(netConfig string) (NetConfig, error) {
 			if err != nil {
 				return NetConfig{}, fmt.Errorf("parse net config %q: invalid num_queues %q: %w", netConfig, value, err)
 			}
+
 			if n < minNetQueues {
 				n = defaultNetQueues
 			}
+
 			cfg.NumQueues = n
 		default:
 			return NetConfig{}, fmt.Errorf("parse net config %q: unknown key %q", netConfig, key)
@@ -82,5 +86,6 @@ func ParseNetConfig(netConfig string) (NetConfig, error) {
 	if cfg.NumQueues == 0 {
 		cfg.NumQueues = defaultNetQueues
 	}
+
 	return cfg, nil
 }

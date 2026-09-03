@@ -78,6 +78,7 @@ type lockedBuffer struct {
 func (b *lockedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
 	return b.b.Write(p)
 }
 
@@ -85,6 +86,7 @@ func (b *lockedBuffer) Write(p []byte) (int, error) {
 func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
 	return b.b.String()
 }
 
@@ -111,6 +113,7 @@ func NewManager(opts ...ManagerOption) *Manager {
 	for _, opt := range opts {
 		opt(m)
 	}
+
 	return m
 }
 
@@ -148,9 +151,11 @@ func (m *Manager) Start(ctx context.Context) (string, error) {
 		m.mu.Unlock()
 		return "", errors.New("process manager: Start called after Stop")
 	}
+
 	if m.started {
 		socket := m.socketPath()
 		m.mu.Unlock()
+
 		return socket, nil
 	}
 	m.mu.Unlock()
@@ -161,11 +166,13 @@ func (m *Manager) Start(ctx context.Context) (string, error) {
 	}
 
 	m.mu.Lock()
+
 	dir, err := m.ensureSocketDir()
 	if err != nil {
 		m.mu.Unlock()
 		return "", err
 	}
+
 	m.socketDir = dir
 	socket := m.socketPath()
 	// A stale socket pathname from a previous unclean kill must go before
@@ -175,6 +182,7 @@ func (m *Manager) Start(ctx context.Context) (string, error) {
 		m.mu.Unlock()
 		return "", fmt.Errorf("remove stale API socket %q: %w", socket, err)
 	}
+
 	m.stderr = new(lockedBuffer)
 	args := []string{"--api-socket", "path=" + socket}
 	// cloud-hypervisor v48's built-in seccomp allowlist is missing rt_sigaction
@@ -185,20 +193,24 @@ func (m *Manager) Start(ctx context.Context) (string, error) {
 	// deploy/cluster-api-hypervisor.container).
 	args = append(args, "--seccomp", "false")
 	cmd := exec.Command(binary, args...)
+
 	cmd.Stderr = m.stderr
 	if err := cmd.Start(); err != nil {
 		m.mu.Unlock()
 		return "", fmt.Errorf("start cloud-hypervisor binary %q: %w", binary, err)
 	}
+
 	m.cmd = cmd
 	m.pid = cmd.Process.Pid
 	m.done = make(chan struct{})
+
 	m.exitErr = nil
 	go m.wait()
 	m.mu.Unlock()
 
 	timer := time.NewTimer(startupWindow)
 	defer timer.Stop()
+
 	select {
 	case <-m.done:
 		return "", m.processExitedError()
@@ -209,12 +221,14 @@ func (m *Manager) Start(ctx context.Context) (string, error) {
 		m.stopped = true
 		m.mu.Unlock()
 		m.removeSocketDir()
+
 		return "", ctx.Err()
 	case <-timer.C:
 		m.mu.Lock()
 		m.started = true
 		socket := m.socketPath()
 		m.mu.Unlock()
+
 		return socket, nil
 	}
 }
@@ -231,6 +245,7 @@ func (m *Manager) WaitReady(ctx context.Context, timeout time.Duration) error {
 		m.mu.Unlock()
 		return errors.New("process manager: WaitReady requires a successful Start")
 	}
+
 	done := m.done
 	socket := m.socketPath()
 	m.mu.Unlock()
@@ -245,6 +260,7 @@ func (m *Manager) WaitReady(ctx context.Context, timeout time.Duration) error {
 			_ = conn.Close()
 			return nil
 		}
+
 		select {
 		case <-done:
 			return m.processExitedError()
@@ -252,6 +268,7 @@ func (m *Manager) WaitReady(ctx context.Context, timeout time.Duration) error {
 			return ctx.Err()
 		case <-time.After(delay):
 		}
+
 		delay *= 2
 		if delay > readyMaxDelay {
 			delay = readyMaxDelay
@@ -269,6 +286,7 @@ func (m *Manager) Stop(_ context.Context) error {
 		m.mu.Unlock()
 		return nil
 	}
+
 	cmd := m.cmd
 	done := m.done
 	m.mu.Unlock()
@@ -279,10 +297,12 @@ func (m *Manager) Stop(_ context.Context) error {
 			// The process already exited; nothing to signal.
 		default:
 			_ = cmd.Process.Signal(syscall.SIGTERM)
+
 			select {
 			case <-done:
 			case <-time.After(stopGracePeriod):
 				_ = cmd.Process.Kill()
+
 				<-done
 			}
 		}
@@ -293,6 +313,7 @@ func (m *Manager) Stop(_ context.Context) error {
 	m.mu.Lock()
 	m.stopped = true
 	m.mu.Unlock()
+
 	return nil
 }
 
@@ -301,6 +322,7 @@ func (m *Manager) Stop(_ context.Context) error {
 func (m *Manager) PID() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	return m.pid
 }
 
@@ -310,6 +332,7 @@ func (m *Manager) socketPath() string {
 	if m.socketDir == "" {
 		return ""
 	}
+
 	return filepath.Join(m.socketDir, "api.sock")
 }
 
@@ -319,13 +342,16 @@ func (m *Manager) resolveBinary() (string, error) {
 	m.mu.Lock()
 	path := m.binaryPath
 	m.mu.Unlock()
+
 	if path != "" {
 		return path, nil
 	}
+
 	resolved, err := exec.LookPath("cloud-hypervisor")
 	if err != nil {
 		return "", fmt.Errorf("resolve cloud-hypervisor binary from PATH: %w", err)
 	}
+
 	return resolved, nil
 }
 
@@ -338,14 +364,19 @@ func (m *Manager) ensureSocketDir() (string, error) {
 		if err := os.MkdirAll(m.socketDir, 0o755); err != nil {
 			return "", fmt.Errorf("create socket directory %q: %w", m.socketDir, err)
 		}
+
 		m.socketDirCreated = true
+
 		return m.socketDir, nil
 	}
+
 	dir, err := os.MkdirTemp(os.TempDir(), "ch-capi-*")
 	if err != nil {
 		return "", fmt.Errorf("create default socket directory: %w", err)
 	}
+
 	m.socketDirCreated = true
+
 	return dir, nil
 }
 
@@ -366,6 +397,7 @@ func (m *Manager) killProcess() {
 	m.mu.Lock()
 	cmd := m.cmd
 	m.mu.Unlock()
+
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
@@ -378,6 +410,7 @@ func (m *Manager) removeSocketDir() {
 	dir := m.socketDir
 	created := m.socketDirCreated
 	m.mu.Unlock()
+
 	if created && dir != "" {
 		_ = os.RemoveAll(dir)
 	}
@@ -392,8 +425,10 @@ func (m *Manager) processExitedError() error {
 	if m.exitErr != nil {
 		msg += fmt.Sprintf(": %v", m.exitErr)
 	}
+
 	if stderr := strings.TrimSpace(m.stderr.String()); stderr != "" {
 		msg += fmt.Sprintf(": %s", stderr)
 	}
+
 	return errors.New(msg)
 }
