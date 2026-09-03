@@ -62,6 +62,7 @@ func NewPackager(opts ...Option) *Packager {
 	for _, opt := range opts {
 		opt(p)
 	}
+
 	return p
 }
 
@@ -89,6 +90,7 @@ func (p *Packager) WriteTree(tree map[string][]byte, stagingDir string) error {
 		if !strings.Contains(key, "/") {
 			return fmt.Errorf("confext: tree key %q has no path separator", key)
 		}
+
 		if strings.HasPrefix(key, "/") {
 			return fmt.Errorf("confext: tree key %q begins with a separator", key)
 		}
@@ -97,6 +99,7 @@ func (p *Packager) WriteTree(tree map[string][]byte, stagingDir string) error {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return fmt.Errorf("confext: create tree directory for %q: %w", key, err)
 		}
+
 		if err := os.WriteFile(path, content, 0o644); err != nil {
 			return fmt.Errorf("confext: write tree file %q: %w", path, err)
 		}
@@ -120,11 +123,13 @@ func (p *Packager) BuildRaws(ctx context.Context, stagingDir, outDir string) ([]
 	}
 
 	var names []string
+
 	for _, entry := range entries {
 		if entry.IsDir() {
 			names = append(names, entry.Name())
 		}
 	}
+
 	if len(names) == 0 {
 		return nil, fmt.Errorf("confext: no confext trees found under %q", stagingDir)
 	}
@@ -136,10 +141,12 @@ func (p *Packager) BuildRaws(ctx context.Context, stagingDir, outDir string) ([]
 	paths := make([]string, 0, len(names))
 	for _, name := range names {
 		src := filepath.Join(stagingDir, name)
+
 		dst := filepath.Join(outDir, name+".raw")
 		if _, err := p.runner.Run(ctx, "mksquashfs", src, dst, "-noappend", "-all-root"); err != nil {
 			return nil, fmt.Errorf("confext: mksquashfs %s -> %s: %w", src, dst, err)
 		}
+
 		paths = append(paths, dst)
 	}
 

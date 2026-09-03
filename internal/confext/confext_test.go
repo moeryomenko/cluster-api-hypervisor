@@ -99,6 +99,7 @@ type fakeRunner struct {
 func (f *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	argsCopy := make([]string, len(args))
 	copy(argsCopy, args)
+
 	f.calls = append(f.calls, recordedCall{name: name, args: argsCopy})
 	if f.failOn > 0 && len(f.calls) == f.failOn {
 		return nil, f.err
@@ -132,6 +133,7 @@ func makeStagingTree(t *testing.T, names ...string) string {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("MkdirAll(%q) error: %v", dir, err)
 		}
+
 		if err := os.WriteFile(filepath.Join(dir, "marker"), []byte(name), 0o644); err != nil {
 			t.Fatalf("WriteFile marker error: %v", err)
 		}
@@ -153,11 +155,13 @@ func TestWriteTreeMaterializesFiles(t *testing.T) {
 
 	for key, want := range sampleTree {
 		path := filepath.Join(staging, filepath.FromSlash(key))
+
 		got, err := os.ReadFile(path)
 		if err != nil {
 			t.Errorf("ReadFile(%q) error: %v", path, err)
 			continue
 		}
+
 		if !bytes.Equal(got, want) {
 			t.Errorf("content of %q = %q, want %q", path, got, want)
 		}
@@ -241,6 +245,7 @@ func TestBuildRawsInvokesMksquashfsPerConfext(t *testing.T) {
 	// keyed by the source tree path.
 	sort.Slice(runner.calls, func(i, j int) bool { return runner.calls[i].args[0] < runner.calls[j].args[0] })
 	sort.Slice(want, func(i, j int) bool { return want[i].args[0] < want[j].args[0] })
+
 	if !reflect.DeepEqual(runner.calls, want) {
 		t.Errorf("mksquashfs invocations = %+v, want %+v", runner.calls, want)
 	}
@@ -266,6 +271,7 @@ func TestBuildRawsReturnsRawPaths(t *testing.T) {
 	// The path list order is not part of the contract; compare as multisets.
 	sort.Strings(got)
 	sort.Strings(want)
+
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("BuildRaws paths = %v, want %v", got, want)
 	}
@@ -299,9 +305,11 @@ func TestBuildRawsPropagatesExecError(t *testing.T) {
 	if err == nil {
 		t.Fatal("BuildRaws succeeded, want an error")
 	}
+
 	if !errors.Is(err, boom) {
 		t.Errorf("BuildRaws error %v does not wrap the runner error %v", err, boom)
 	}
+
 	if paths != nil {
 		t.Errorf("BuildRaws returned paths %v on error, want nil", paths)
 	}
@@ -321,12 +329,15 @@ func TestBuildRawsStopsAtFirstFailureNoPartialPaths(t *testing.T) {
 	if err == nil {
 		t.Fatal("BuildRaws succeeded, want an error")
 	}
+
 	if !errors.Is(err, boom) {
 		t.Errorf("BuildRaws error %v does not wrap the runner error %v", err, boom)
 	}
+
 	if paths != nil {
 		t.Errorf("BuildRaws returned partial paths %v on failure, want nil", paths)
 	}
+
 	if len(runner.calls) != 2 {
 		t.Errorf("mksquashfs called %d times, want 2 (stop at the first failure)", len(runner.calls))
 	}
@@ -343,9 +354,11 @@ func TestBuildRawsNoConfextsReturnsError(t *testing.T) {
 		if err == nil {
 			t.Error("BuildRaws with an empty staging dir succeeded, want an error")
 		}
+
 		if paths != nil {
 			t.Errorf("BuildRaws returned paths %v, want nil", paths)
 		}
+
 		if len(runner.calls) != 0 {
 			t.Errorf("mksquashfs called %d times with no confexts, want 0", len(runner.calls))
 		}
@@ -356,6 +369,7 @@ func TestBuildRawsNoConfextsReturnsError(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(staging, "not-a-tree"), []byte("x"), 0o644); err != nil {
 			t.Fatalf("WriteFile stray entry error: %v", err)
 		}
+
 		p := confext.NewPackager(confext.WithRunner(&fakeRunner{}))
 
 		if _, err := p.BuildRaws(t.Context(), staging, t.TempDir()); err == nil {

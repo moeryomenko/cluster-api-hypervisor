@@ -79,6 +79,7 @@ func BuildControlPlane(
 	if cpIP == "" {
 		return nil, fmt.Errorf("control-plane IP must not be empty")
 	}
+
 	if nodeName == "" {
 		return nil, fmt.Errorf("node name must not be empty")
 	}
@@ -124,15 +125,18 @@ func BuildWorker(
 	if nodeName == "" {
 		return nil, fmt.Errorf("node name must not be empty")
 	}
+
 	if cpIP == "" {
 		return nil, fmt.Errorf("control-plane IP must not be empty")
 	}
+
 	if clusterName == "" {
 		return nil, fmt.Errorf("cluster name must not be empty")
 	}
 
 	tree := kubeletTree(clusterName, nodeName, pk, kubeletCert, kubeletKey, kubeletKubeconfig)
 	tree["z-kubelet-"+nodeName+"/"+k8sServiceNftPath] = renderServiceNftScript(cpIP + ":6443")
+
 	return tree, nil
 }
 
@@ -145,6 +149,7 @@ func kubeletTree(
 	kubeletCert, kubeletKey, kubeletKubeconfig []byte,
 ) map[string][]byte {
 	treeName := "z-kubelet-" + nodeName
+
 	return map[string][]byte{
 		treeName + "/etc/kubernetes/kubelet.conf":                           kubeletKubeconfig,
 		treeName + "/etc/kubernetes/pki/ca.pem":                             pk.CA,

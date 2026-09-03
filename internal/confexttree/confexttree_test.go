@@ -145,6 +145,7 @@ func assertExactKeySet(t *testing.T, tree map[string][]byte, want ...string) {
 	if len(tree) != len(want) {
 		t.Fatalf("tree has %d keys, want %d (tree keys: %v)", len(tree), len(want), keysOf(tree))
 	}
+
 	for _, key := range want {
 		if _, ok := tree[key]; !ok {
 			t.Errorf("tree is missing key %q (tree keys: %v)", key, keysOf(tree))
@@ -310,6 +311,7 @@ func TestExtensionReleaseMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildControlPlane error: %v", err)
 	}
+
 	workerTree, err := confexttree.BuildWorker(
 		testCluster,
 		testCPIP,
@@ -419,10 +421,12 @@ func TestBuildWorkerKeySetAndValues(t *testing.T) {
 	t.Run("apiserver nft DNAT targets the control-plane IP", func(t *testing.T) {
 		raw := tree["z-kubelet-worker1/etc/k8s-service-nft.sh"]
 		script := string(raw)
+
 		want := "dnat to " + testCPIP + ":6443"
 		if !strings.Contains(script, want) {
 			t.Errorf("worker nft script lacks %q: %q", want, script)
 		}
+
 		if strings.Contains(script, "10.96.0.0/12 dev lo") {
 			t.Errorf("worker nft script must not route the whole Service CIDR to lo (Cilium BPF LB conflict): %q", script)
 		}
