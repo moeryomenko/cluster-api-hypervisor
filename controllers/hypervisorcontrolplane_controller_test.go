@@ -165,6 +165,7 @@ func (s *recordingCreateMachine) create(ctx context.Context, machine *clusterv1.
 	if s.err != nil {
 		return nil, s.err
 	}
+
 	if err := s.c.Create(ctx, machine); err != nil {
 		return nil, err
 	}
@@ -231,10 +232,12 @@ func newControlPlaneFixtureWithPKI(t *testing.T, c client.Client, pk pki.Cluster
 	health := &recordingHealthCheck{}
 
 	sock := filepath.Join(t.TempDir(), "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New %q: %v", sock, err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 	srv.SetResult("AllocateIP", testReservedCPIP)
 
@@ -336,6 +339,7 @@ func newLinkedControlPlane(
 // test on any error.
 func (fx *controlPlaneFixture) reconcileControlPlane(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane) {
 	t.Helper()
+
 	if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
@@ -351,6 +355,7 @@ func machineConfigName(machineName string) string {
 // manages: the cluster-name label plus the control-plane role label.
 func listControlPlaneMachines(t *testing.T, c client.Client, namespace, clusterName string) []clusterv1.Machine {
 	t.Helper()
+
 	list := &clusterv1.MachineList{}
 	if err := c.List(t.Context(), list, client.InNamespace(namespace), client.MatchingLabels(map[string]string{
 		clusterv1.ClusterNameLabel:         clusterName,
@@ -378,10 +383,12 @@ func sameStringSet(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
+
 	seen := make(map[string]int, len(a))
 	for _, s := range a {
 		seen[s]++
 	}
+
 	for _, s := range b {
 		seen[s]--
 		if seen[s] < 0 {
@@ -397,12 +404,15 @@ func sameStringSet(a, b []string) bool {
 // and every label from the template metadata.
 func wantMachineLabels(t *testing.T, machine *clusterv1.Machine, clusterName string, templateLabels map[string]string) {
 	t.Helper()
+
 	if got := machine.Labels[clusterv1.ClusterNameLabel]; got != clusterName {
 		t.Errorf("Machine %s cluster-name label = %q, want %q", machine.Name, got, clusterName)
 	}
+
 	if got, ok := machine.Labels[clusterv1.MachineControlPlaneLabel]; !ok || got != "" {
 		t.Errorf("Machine %s control-plane label = %q (present %v), want the conventional empty value", machine.Name, got, ok)
 	}
+
 	for key, want := range templateLabels {
 		if got := machine.Labels[key]; got != want {
 			t.Errorf("Machine %s label %q = %q, want %q", machine.Name, key, got, want)
@@ -414,11 +424,13 @@ func wantMachineLabels(t *testing.T, machine *clusterv1.Machine, clusterName str
 // controller owner reference to the HypervisorControlPlane.
 func wantControlPlaneOwner(t *testing.T, machine *clusterv1.Machine, cp *controlplanev1alpha1.HypervisorControlPlane) {
 	t.Helper()
+
 	for _, ref := range machine.OwnerReferences {
 		if ref.Kind == "HypervisorControlPlane" && ref.Name == cp.Name && ref.Controller != nil && *ref.Controller {
 			return
 		}
 	}
+
 	t.Errorf("Machine %s has no controller owner reference to HypervisorControlPlane %s (owner references %+v)",
 		machine.Name, cp.Name, machine.OwnerReferences)
 }
@@ -427,11 +439,13 @@ func wantControlPlaneOwner(t *testing.T, machine *clusterv1.Machine, cp *control
 // owner reference to the given Machine.
 func wantMachineOwner(t *testing.T, obj client.Object, machine *clusterv1.Machine) {
 	t.Helper()
+
 	for _, ref := range obj.GetOwnerReferences() {
 		if ref.Kind == "Machine" && ref.Name == machine.Name && ref.Controller != nil && *ref.Controller {
 			return
 		}
 	}
+
 	t.Errorf("%s %s has no controller owner reference to Machine %s (owner references %+v)",
 		obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName(), machine.Name, obj.GetOwnerReferences())
 }
@@ -455,14 +469,18 @@ func TestControlPlaneMachineCreatedPerReplica(t *testing.T) {
 		if len(machines) != 1 {
 			t.Fatalf("created %d Machines, want 1 (names %v)", len(machines), machineNamesOf(machines))
 		}
+
 		m := machines[0]
 		if m.Name != lcp.name+"-0" {
 			t.Errorf("Machine name = %q, want %q", m.Name, lcp.name+"-0")
 		}
+
 		wantMachineLabels(t, &m, lc.name, nil)
+
 		if m.Spec.ClusterName != lc.name {
 			t.Errorf("spec.clusterName = %q, want %q", m.Spec.ClusterName, lc.name)
 		}
+
 		wantRef := clusterv1.ContractVersionedObjectReference{
 			APIGroup: infrastructurev1alpha1.GroupVersion.Group,
 			Kind:     "HypervisorMachine",
@@ -472,19 +490,24 @@ func TestControlPlaneMachineCreatedPerReplica(t *testing.T) {
 			t.Errorf("spec.infrastructureRef = %+v, want the concrete HypervisorMachine reference %+v",
 				m.Spec.InfrastructureRef, wantRef)
 		}
+
 		hm := &infrastructurev1alpha1.HypervisorMachine{}
 		if err := c.Get(t.Context(), client.ObjectKey{Namespace: lc.namespace, Name: m.Name}, hm); err != nil {
 			t.Fatalf("Get HypervisorMachine %q: %v", m.Name, err)
 		}
+
 		wantSpec := lcp.template.Spec.Template.Spec
 		if hm.Spec != wantSpec {
 			t.Errorf("HypervisorMachine spec = %+v, want the template spec.template.spec %+v", hm.Spec, wantSpec)
 		}
+
 		if got := hm.Labels[clusterv1.ClusterNameLabel]; got != lc.name {
 			t.Errorf("HypervisorMachine %s cluster-name label = %q, want %q", hm.Name, got, lc.name)
 		}
+
 		wantMachineOwner(t, hm, &m)
 		wantControlPlaneOwner(t, &m, lcp.cp)
+
 		if !m.Spec.Bootstrap.ConfigRef.IsDefined() {
 			t.Fatal("spec.bootstrap.configRef is unset after reconcile")
 		}
@@ -496,9 +519,11 @@ func TestControlPlaneMachineCreatedPerReplica(t *testing.T) {
 		// A second reconcile converges: the Machine already exists, so the
 		// creation seam is not invoked again and no duplicate appears.
 		fx.reconcileControlPlane(t, lcp.cp)
+
 		if len(fx.createMachine.calls) != 1 {
 			t.Errorf("CreateMachine called %d times across two reconciles, want 1", len(fx.createMachine.calls))
 		}
+
 		if got := listControlPlaneMachines(t, c, lc.namespace, lc.name); len(got) != 1 {
 			t.Errorf("reconcile duplicated Machines: %d after second reconcile, want 1", len(got))
 		}
@@ -527,9 +552,11 @@ func TestControlPlaneMachineCreatedPerReplica(t *testing.T) {
 		if len(machines) != 2 {
 			t.Fatalf("created %d Machines, want 2 (names %v)", len(machines), machineNamesOf(machines))
 		}
+
 		if len(fx.createMachine.calls) != 2 {
 			t.Errorf("CreateMachine called %d times, want 2", len(fx.createMachine.calls))
 		}
+
 		for i := range machines {
 			wantMachineLabels(t, &machines[i], lc.name, nil)
 		}
@@ -586,6 +613,7 @@ func TestControlPlaneMachineInfraResolvedThroughMachineTemplateSpec(t *testing.T
 	if len(machines) != 1 {
 		t.Fatalf("created %d Machines, want 1 (names %v)", len(machines), machineNamesOf(machines))
 	}
+
 	m := machines[0]
 
 	wantRef := clusterv1.ContractVersionedObjectReference{
@@ -605,6 +633,7 @@ func TestControlPlaneMachineInfraResolvedThroughMachineTemplateSpec(t *testing.T
 	if err := c.Get(t.Context(), client.ObjectKey{Namespace: lc.namespace, Name: m.Name}, hm); err != nil {
 		t.Fatalf("Get HypervisorMachine %q: %v", m.Name, err)
 	}
+
 	wantSpec := referenced.Spec.Template.Spec
 	if hm.Spec != wantSpec {
 		t.Errorf(
@@ -613,6 +642,7 @@ func TestControlPlaneMachineInfraResolvedThroughMachineTemplateSpec(t *testing.T
 			wantSpec,
 		)
 	}
+
 	if got := hm.Annotations[clusterv1.TemplateClonedFromNameAnnotation]; got != referenced.Name {
 		t.Errorf(
 			"HypervisorMachine %s cloned-from annotation = %q, want the referenced template %q",
@@ -621,10 +651,12 @@ func TestControlPlaneMachineInfraResolvedThroughMachineTemplateSpec(t *testing.T
 			referenced.Name,
 		)
 	}
+
 	wantGroupKind := "HypervisorMachineTemplate." + infrastructurev1alpha1.GroupVersion.Group
 	if got := hm.Annotations[clusterv1.TemplateClonedFromGroupKindAnnotation]; got != wantGroupKind {
 		t.Errorf("HypervisorMachine %s cloned-from-groupkind annotation = %q, want %q", hm.Name, got, wantGroupKind)
 	}
+
 	wantMachineOwner(t, hm, &m)
 }
 
@@ -647,18 +679,22 @@ func TestControlPlaneMachineBootstrapRef(t *testing.T) {
 	if len(machines) != 1 {
 		t.Fatalf("created %d Machines, want 1 (names %v)", len(machines), machineNamesOf(machines))
 	}
+
 	m := machines[0]
 
 	ref := m.Spec.Bootstrap.ConfigRef
 	if !ref.IsDefined() {
 		t.Fatal("spec.bootstrap.configRef is unset after reconcile")
 	}
+
 	if ref.APIGroup != bootstrapv1alpha1.GroupVersion.Group {
 		t.Errorf("configRef apiGroup = %q, want %q", ref.APIGroup, bootstrapv1alpha1.GroupVersion.Group)
 	}
+
 	if ref.Kind != "HypervisorConfig" {
 		t.Errorf("configRef kind = %q, want HypervisorConfig", ref.Kind)
 	}
+
 	wantConfigName := machineConfigName(m.Name)
 	if ref.Name != wantConfigName {
 		t.Errorf("configRef name = %q, want %q", ref.Name, wantConfigName)
@@ -668,12 +704,15 @@ func TestControlPlaneMachineBootstrapRef(t *testing.T) {
 	if err := c.Get(t.Context(), client.ObjectKey{Namespace: lc.namespace, Name: wantConfigName}, cfg); err != nil {
 		t.Fatalf("Get generated HypervisorConfig %q: %v", wantConfigName, err)
 	}
+
 	if cfg.Spec.ClusterName != lc.name {
 		t.Errorf("generated config spec.clusterName = %q, want %q", cfg.Spec.ClusterName, lc.name)
 	}
+
 	if cfg.Spec.Role != testConfigRoleControlPlane {
 		t.Errorf("generated config spec.role = %q, want %q", cfg.Spec.Role, testConfigRoleControlPlane)
 	}
+
 	if cfg.Spec.NodeName != m.Name {
 		t.Errorf("generated config spec.nodeName = %q, want %q", cfg.Spec.NodeName, m.Name)
 	}
@@ -681,6 +720,7 @@ func TestControlPlaneMachineBootstrapRef(t *testing.T) {
 	if len(fx.newConfig.calls) != 1 {
 		t.Fatalf("NewConfig called %d times, want 1", len(fx.newConfig.calls))
 	}
+
 	if call := fx.newConfig.calls[0]; call.machineName != lcp.name+"-0" {
 		t.Errorf("NewConfig called with machine name %q, want %q", call.machineName, lcp.name+"-0")
 	}
@@ -707,14 +747,17 @@ func TestControlPlanePKISecretCreated(t *testing.T) {
 		}
 
 		pkiKey := client.ObjectKey{Namespace: lc.namespace, Name: lc.name + "-pki"}
+
 		secret := &corev1.Secret{}
 		if err := c.Get(t.Context(), pkiKey, secret); err != nil {
 			t.Fatalf("Get cluster PKI Secret %s: %v", pkiKey, err)
 		}
+
 		wantData := fixturePKISecretData()
 		if len(secret.Data) != len(wantData) {
 			t.Errorf("cluster PKI Secret has %d keys, want %d: %v", len(secret.Data), len(wantData), secret.Data)
 		}
+
 		for key, want := range wantData {
 			if got, ok := secret.Data[key]; !ok || !bytes.Equal(got, want) {
 				t.Errorf("cluster PKI Secret data[%q] = %q (present %v), want %q", key, got, ok, want)
@@ -723,9 +766,11 @@ func TestControlPlanePKISecretCreated(t *testing.T) {
 
 		// A second reconcile does not regenerate or duplicate the Secret.
 		fx.reconcileControlPlane(t, lcp.cp)
+
 		if len(fx.genPKI.calls) != 1 {
 			t.Errorf("GeneratePKI called %d times across two reconciles, want 1", len(fx.genPKI.calls))
 		}
+
 		if got := countSecretsNamed(t, c, lc.namespace, lc.name+"-pki"); got != 1 {
 			t.Errorf("cluster PKI Secrets = %d, want exactly 1", got)
 		}
@@ -741,6 +786,7 @@ func TestControlPlanePKISecretCreated(t *testing.T) {
 		if len(fx.genPKI.calls) != 1 {
 			t.Errorf("GeneratePKI called %d times for two replicas, want 1", len(fx.genPKI.calls))
 		}
+
 		if got := countSecretsNamed(t, c, lc.namespace, lc.name+"-pki"); got != 1 {
 			t.Errorf("cluster PKI Secrets = %d, want exactly 1", got)
 		}
@@ -758,16 +804,22 @@ func TestControlPlanePKISANInputIsReservedIP(t *testing.T) {
 	c := mustReconcileClient(t)
 
 	sock := filepath.Join(t.TempDir(), "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New %q: %v", sock, err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
+
 	var allocNetwork, allocMAC string
+
 	srv.Handle("AllocateIP", func(params json.RawMessage) (any, *fake.RPCError) {
 		var p map[string]string
+
 		_ = json.Unmarshal(params, &p)
 		allocNetwork, allocMAC = p["network"], p["mac"]
+
 		return testReservedCPIP, nil
 	})
 
@@ -783,35 +835,43 @@ func TestControlPlanePKISANInputIsReservedIP(t *testing.T) {
 	if len(fx.genPKI.calls) != 1 || fx.genPKI.calls[0] != testReservedCPIP {
 		t.Fatalf("GeneratePKI inputs = %v, want exactly [%q] (the k8netd reservation)", fx.genPKI.calls, testReservedCPIP)
 	}
+
 	if allocNetwork != lc.name {
 		t.Errorf("AllocateIP network = %q, want the HypervisorCluster name %q", allocNetwork, lc.name)
 	}
+
 	if wantMAC := mac.Derive(lc.name, lcp.name+"-0"); allocMAC != wantMAC {
 		t.Errorf("AllocateIP mac = %q, want the cp-0 derivation %q", allocMAC, wantMAC)
 	}
 
 	// The stored apiserver certificate SANs carry the reserved IP and loopback.
 	secret := &corev1.Secret{}
+
 	pkiKey := client.ObjectKey{Namespace: lc.namespace, Name: lc.name + "-pki"}
 	if err := c.Get(t.Context(), pkiKey, secret); err != nil {
 		t.Fatalf("Get cluster PKI Secret %s: %v", pkiKey, err)
 	}
+
 	got, err := decodeClusterPKI(secret.Data)
 	if err != nil {
 		t.Fatalf("decode stored cluster PKI: %v", err)
 	}
+
 	block, _ := pem.Decode(got.APIServer)
 	if block == nil {
 		t.Fatal("stored apiserver certificate is not PEM")
 	}
+
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
 		t.Fatalf("parse stored apiserver certificate: %v", err)
 	}
+
 	sans := make(map[string]bool, len(cert.IPAddresses))
 	for _, ip := range cert.IPAddresses {
 		sans[ip.String()] = true
 	}
+
 	if !sans[testReservedCPIP] || !sans["127.0.0.1"] {
 		t.Errorf("apiserver certificate IP SANs = %v, want {%q 127.0.0.1}", sans, testReservedCPIP)
 	}
@@ -833,6 +893,7 @@ func TestControlPlaneMachineLabels(t *testing.T) {
 	if len(machines) != 1 {
 		t.Fatalf("created %d Machines, want 1 (names %v)", len(machines), machineNamesOf(machines))
 	}
+
 	wantMachineLabels(t, &machines[0], lc.name, templateLabels)
 }
 
@@ -852,6 +913,7 @@ func TestControlPlaneMachineNamePattern(t *testing.T) {
 	if len(machines) != 2 {
 		t.Fatalf("created %d Machines, want 2 (names %v)", len(machines), machineNamesOf(machines))
 	}
+
 	want := []string{lcp.name + "-0", lcp.name + "-1"}
 	if !sameStringSet(machineNamesOf(machines), want) {
 		t.Errorf("Machine names = %v, want %v", machineNamesOf(machines), want)
@@ -870,9 +932,11 @@ func TestControlPlaneMachineMissingLinkedCluster(t *testing.T) {
 	if err := c.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
 		t.Fatalf("create namespace %q: %v", namespace, err)
 	}
+
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
 		_ = c.Delete(cleanupCtx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})
 	})
 
@@ -916,6 +980,7 @@ func TestControlPlaneMachineMissingLinkedCluster(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
+
 	if res != (ctrl.Result{}) {
 		t.Errorf("Reconcile result = %+v, want empty", res)
 	}
@@ -924,16 +989,20 @@ func TestControlPlaneMachineMissingLinkedCluster(t *testing.T) {
 		t.Errorf("missing-cluster reconcile touched the seams: NewConfig %d, CreateMachine %d, GeneratePKI %d",
 			len(fx.newConfig.calls), len(fx.createMachine.calls), len(fx.genPKI.calls))
 	}
+
 	if machines := listControlPlaneMachines(t, c, namespace, "ghost-cluster"); len(machines) != 0 {
 		t.Errorf("missing-cluster reconcile created %d Machines, want 0", len(machines))
 	}
+
 	configs := &bootstrapv1alpha1.HypervisorConfigList{}
 	if err := c.List(t.Context(), configs, client.InNamespace(namespace)); err != nil {
 		t.Fatalf("List HypervisorConfigs: %v", err)
 	}
+
 	if len(configs.Items) != 0 {
 		t.Errorf("missing-cluster reconcile created %d HypervisorConfigs, want 0", len(configs.Items))
 	}
+
 	if got := countSecrets(t, c, namespace); got != 0 {
 		t.Errorf("missing-cluster reconcile created %d Secrets, want 0", got)
 	}
@@ -957,12 +1026,15 @@ func TestControlPlaneMachineCreationFailure(t *testing.T) {
 		if err == nil {
 			t.Fatal("Reconcile succeeded with a failing Machine creation, want an error")
 		}
+
 		if !errors.Is(err, errCreate) {
 			t.Errorf("Reconcile error %v does not wrap %v", err, errCreate)
 		}
+
 		if len(fx.createMachine.calls) != 1 {
 			t.Errorf("CreateMachine called %d times, want 1", len(fx.createMachine.calls))
 		}
+
 		if machines := listControlPlaneMachines(t, c, lc.namespace, lc.name); len(machines) != 0 {
 			t.Errorf("failed reconcile persisted %d Machines, want 0", len(machines))
 		}
@@ -979,9 +1051,11 @@ func TestControlPlaneMachineCreationFailure(t *testing.T) {
 		if err == nil {
 			t.Fatal("Reconcile succeeded with a failing PKI generator, want an error")
 		}
+
 		if !errors.Is(err, errPKI) {
 			t.Errorf("Reconcile error %v does not wrap %v", err, errPKI)
 		}
+
 		if got := countSecretsNamed(t, c, lc.namespace, lc.name+"-pki"); got != 0 {
 			t.Errorf("failed reconcile created %d cluster PKI Secrets, want 0", got)
 		}
@@ -1076,6 +1150,7 @@ func (s *recordingHealthCheck) check(
 		s.calls,
 		healthCheckCall{host: host, port: port, clientCert: clientCert, clientKey: clientKey, caCert: caCert},
 	)
+
 	return s.result
 }
 
@@ -1085,10 +1160,12 @@ func (s *recordingHealthCheck) check(
 // renders must round-trip its CA.
 func mustGenerateClusterPKI(t *testing.T, cpIP, cpName string) pki.ClusterPKI {
 	t.Helper()
+
 	pk, err := pki.GenerateClusterPKI(cpIP, cpName)
 	if err != nil {
 		t.Fatalf("GenerateClusterPKI(%q, %q): %v", cpIP, cpName, err)
 	}
+
 	return pk
 }
 
@@ -1100,10 +1177,12 @@ func getControlPlane(
 	cp *controlplanev1alpha1.HypervisorControlPlane,
 ) *controlplanev1alpha1.HypervisorControlPlane {
 	t.Helper()
+
 	got := &controlplanev1alpha1.HypervisorControlPlane{}
 	if err := c.Get(t.Context(), client.ObjectKeyFromObject(cp), got); err != nil {
 		t.Fatalf("Get HypervisorControlPlane: %v", err)
 	}
+
 	return got
 }
 
@@ -1111,9 +1190,11 @@ func getControlPlane(
 // expected initialized and ready flags.
 func wantCPStatus(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane, initialized, ready bool) {
 	t.Helper()
+
 	if cp.Status.Initialized != initialized {
 		t.Errorf("status.initialized = %v, want %v", cp.Status.Initialized, initialized)
 	}
+
 	if cp.Status.Ready != ready {
 		t.Errorf("status.ready = %v, want %v", cp.Status.Ready, ready)
 	}
@@ -1127,15 +1208,19 @@ func wantControlPlaneReadyCondition(
 	status metav1.ConditionStatus,
 ) {
 	t.Helper()
+
 	for _, cond := range cp.Status.Conditions {
 		if cond.Type != controlPlaneReadyCondition {
 			continue
 		}
+
 		if cond.Status != status {
 			t.Errorf("ControlPlaneReady condition status = %q, want %q", cond.Status, status)
 		}
+
 		return
 	}
+
 	t.Errorf("control plane has no %s condition (conditions %+v)", controlPlaneReadyCondition, cp.Status.Conditions)
 }
 
@@ -1143,6 +1228,7 @@ func wantControlPlaneReadyCondition(
 // ControlPlaneReady condition reporting True.
 func wantControlPlaneReadyNotTrue(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane) {
 	t.Helper()
+
 	for _, cond := range cp.Status.Conditions {
 		if cond.Type == controlPlaneReadyCondition && cond.Status == metav1.ConditionTrue {
 			t.Errorf(
@@ -1150,6 +1236,7 @@ func wantControlPlaneReadyNotTrue(t *testing.T, cp *controlplanev1alpha1.Hypervi
 				controlPlaneReadyCondition,
 				cp.Status.Conditions,
 			)
+
 			return
 		}
 	}
@@ -1165,10 +1252,12 @@ func kubeconfigSecretKey(clusterName, namespace string) client.ObjectKey {
 // Secret exists and returns it.
 func wantKubeconfigSecret(t *testing.T, c client.Client, key client.ObjectKey) *corev1.Secret {
 	t.Helper()
+
 	secret := &corev1.Secret{}
 	if err := c.Get(t.Context(), key, secret); err != nil {
 		t.Fatalf("Get kubeconfig Secret %s: %v", key, err)
 	}
+
 	return secret
 }
 
@@ -1176,6 +1265,7 @@ func wantKubeconfigSecret(t *testing.T, c client.Client, key client.ObjectKey) *
 // Secret exists.
 func wantNoKubeconfigSecret(t *testing.T, c client.Client, key client.ObjectKey) {
 	t.Helper()
+
 	if err := c.Get(t.Context(), key, &corev1.Secret{}); err == nil {
 		t.Errorf("kubeconfig Secret %s exists, want none", key)
 	} else if !apierrors.IsNotFound(err) {
@@ -1200,10 +1290,12 @@ type kubeconfigYAML struct {
 // parseKubeconfig decodes a rendered kubeconfig document.
 func parseKubeconfig(t *testing.T, data []byte) kubeconfigYAML {
 	t.Helper()
+
 	doc := kubeconfigYAML{}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("decode kubeconfig document: %v", err)
 	}
+
 	return doc
 }
 
@@ -1229,6 +1321,7 @@ func newControlPlaneInfraMachine(
 	}
 
 	hm := &infrastructurev1alpha1.HypervisorMachine{}
+
 	err := c.Get(ctx, client.ObjectKey{Namespace: lcp.namespace, Name: machineName}, hm)
 	switch {
 	case apierrors.IsNotFound(err):
@@ -1253,19 +1346,23 @@ func newControlPlaneInfraMachine(
 	case err != nil:
 		t.Fatalf("get HypervisorMachine %q: %v", machineName, err)
 	}
+
 	if ip == "" {
 		return hm
 	}
+
 	hm.Status.Addresses = []clusterv1.MachineAddress{{Type: clusterv1.MachineInternalIP, Address: ip}}
 	if err := c.Status().Update(ctx, hm); err != nil {
 		t.Fatalf("set HypervisorMachine addresses: %v", err)
 	}
+
 	return hm
 }
 
 // wantRequeue fails the test unless the reconcile result requests a retry.
 func wantRequeue(t *testing.T, res ctrl.Result) {
 	t.Helper()
+
 	if res.RequeueAfter <= 0 {
 		t.Errorf("Reconcile result %+v does not requeue, want a requeue", res)
 	}
@@ -1315,23 +1412,29 @@ func TestControlPlaneReadinessWritesKubeconfig(t *testing.T) {
 	if len(fx.health.calls) == 0 {
 		t.Fatal("apiserver healthz seam never called")
 	}
+
 	call := fx.health.calls[0]
 	if call.host != "127.0.0.1" || call.port != 26443 {
 		t.Errorf("healthz polled endpoint %s:%d, want 127.0.0.1:26443 (the recorded allocation)", call.host, call.port)
 	}
+
 	if !bytes.Equal(call.caCert, pk.CA) {
 		t.Errorf("healthz CA does not match the cluster PKI CA")
 	}
+
 	if len(call.clientCert) == 0 || len(call.clientKey) == 0 {
 		t.Errorf("healthz client material empty (cert %d bytes, key %d bytes)", len(call.clientCert), len(call.clientKey))
 	}
 
 	secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+
 	data, ok := secret.Data[kubeconfigSecretDataKey]
 	if !ok {
 		t.Fatalf("kubeconfig Secret has no %q data key (keys %v)", kubeconfigSecretDataKey, secret.Data)
 	}
+
 	doc := parseKubeconfig(t, data)
+
 	wantServer := "https://host.containers.internal:26443"
 	if len(doc.Clusters) != 1 || doc.Clusters[0].Cluster.Server != wantServer {
 		t.Errorf("kubeconfig server = %+v, want %q", doc.Clusters, wantServer)
@@ -1350,9 +1453,11 @@ func TestControlPlaneReadinessWritesKubeconfig(t *testing.T) {
 	// A second reconcile converges: the Secret is not duplicated and the
 	// status stays ready.
 	fx.reconcileControlPlane(t, lcp.cp)
+
 	if count := countSecretsNamed(t, c, lc.namespace, lc.name+"-kubeconfig"); count != 1 {
 		t.Errorf("kubeconfig Secrets = %d after second reconcile, want 1", count)
 	}
+
 	got = getControlPlane(t, c, lcp.cp)
 	wantCPStatus(t, got, true, true)
 }
@@ -1374,6 +1479,7 @@ func TestControlPlaneReadinessRespectsTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
+
 	wantRequeue(t, res)
 
 	if len(fx.health.calls) == 0 {
@@ -1406,6 +1512,7 @@ func TestControlPlaneReadinessFailureLeavesKubeconfigAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
+
 	wantRequeue(t, res)
 
 	if len(fx.health.calls) == 0 {
@@ -1433,6 +1540,7 @@ func TestControlPlaneReadinessWaitsForMachineAddresses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
+
 	wantRequeue(t, res)
 
 	if len(fx.health.calls) != 0 {
@@ -1458,21 +1566,26 @@ func TestControlPlaneReadinessKubeconfigContent(t *testing.T) {
 	fx.reconcileControlPlane(t, lcp.cp)
 
 	secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+
 	data, ok := secret.Data[kubeconfigSecretDataKey]
 	if !ok {
 		t.Fatalf("kubeconfig Secret has no %q data key (keys %v)", kubeconfigSecretDataKey, secret.Data)
 	}
+
 	doc := parseKubeconfig(t, data)
 	if doc.APIVersion != "v1" || doc.Kind != "Config" {
 		t.Errorf("kubeconfig apiVersion/kind = %q/%q, want v1/Config", doc.APIVersion, doc.Kind)
 	}
+
 	if len(doc.Clusters) != 1 {
 		t.Fatalf("kubeconfig has %d cluster entries, want 1", len(doc.Clusters))
 	}
+
 	wantServer := "https://host.containers.internal:26443"
 	if got := doc.Clusters[0].Cluster.Server; got != wantServer {
 		t.Errorf("kubeconfig server = %q, want %q", got, wantServer)
 	}
+
 	wantCA := base64.StdEncoding.EncodeToString(pk.CA)
 	if got := doc.Clusters[0].Cluster.CertificateAuthorityData; got != wantCA {
 		t.Errorf("kubeconfig certificate-authority-data does not match the cluster PKI CA")
@@ -1526,6 +1639,7 @@ func updateControlPlaneSpec(
 	t.Helper()
 	got := getControlPlane(t, c, cp)
 	mutate(got)
+
 	if err := c.Update(t.Context(), got); err != nil {
 		t.Fatalf("update HypervisorControlPlane %s: %v", client.ObjectKeyFromObject(cp), err)
 	}
@@ -1537,6 +1651,7 @@ func updateControlPlaneSpec(
 // in the namespace.
 func wantMachineGone(t *testing.T, c client.Client, namespace, name string) {
 	t.Helper()
+
 	if err := c.Get(t.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &clusterv1.Machine{}); err == nil {
 		t.Errorf("Machine %s/%s exists, want it deleted", namespace, name)
 	} else if !apierrors.IsNotFound(err) {
@@ -1548,6 +1663,7 @@ func wantMachineGone(t *testing.T, c client.Client, namespace, name string) {
 // the given name exists in the namespace.
 func wantBootstrapConfigExists(t *testing.T, c client.Client, namespace, name string) {
 	t.Helper()
+
 	if err := c.Get(t.Context(), client.ObjectKey{Namespace: namespace, Name: name}, &bootstrapv1alpha1.HypervisorConfig{}); err != nil {
 		t.Errorf("HypervisorConfig %s/%s missing: %v", namespace, name, err)
 	}
@@ -1560,15 +1676,19 @@ func wantBootstrapConfigExists(t *testing.T, c client.Client, namespace, name st
 // status.unavailableReplicas equals created - ready.
 func wantControlPlaneScaleStatus(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane, created, ready int32) {
 	t.Helper()
+
 	if cp.Status.Replicas != created {
 		t.Errorf("status.replicas = %d, want %d", cp.Status.Replicas, created)
 	}
+
 	if cp.Status.UpdatedReplicas != created {
 		t.Errorf("status.updatedReplicas = %d, want %d", cp.Status.UpdatedReplicas, created)
 	}
+
 	if cp.Status.ReadyReplicas != ready {
 		t.Errorf("status.readyReplicas = %d, want %d", cp.Status.ReadyReplicas, ready)
 	}
+
 	if want := created - ready; cp.Status.UnavailableReplicas != want {
 		t.Errorf("status.unavailableReplicas = %d, want %d", cp.Status.UnavailableReplicas, want)
 	}
@@ -1578,10 +1698,12 @@ func wantControlPlaneScaleStatus(t *testing.T, cp *controlplanev1alpha1.Hypervis
 // given status.version value.
 func wantControlPlaneVersion(t *testing.T, cp *controlplanev1alpha1.HypervisorControlPlane, want string) {
 	t.Helper()
+
 	if cp.Status.Version == nil {
 		t.Errorf("status.version is nil, want %q", want)
 		return
 	}
+
 	if *cp.Status.Version != want {
 		t.Errorf("status.version = %q, want %q", *cp.Status.Version, want)
 	}
@@ -1612,31 +1734,40 @@ func TestControlPlaneScaleUp(t *testing.T) {
 	if len(machines) != 2 {
 		t.Fatalf("created %d Machines after scale-up, want 2 (names %v)", len(machines), machineNamesOf(machines))
 	}
+
 	want := []string{lcp.name + "-0", lcp.name + "-1"}
 	if !sameStringSet(machineNamesOf(machines), want) {
 		t.Errorf("Machine names after scale-up = %v, want %v", machineNamesOf(machines), want)
 	}
 
 	var second *clusterv1.Machine
+
 	for i := range machines {
 		m := &machines[i]
 		wantMachineLabels(t, m, lc.name, nil)
+
 		if m.Name != lcp.name+"-1" {
 			continue
 		}
+
 		second = m
 	}
+
 	if second == nil {
 		t.Fatal("scale-up did not create Machine " + lcp.name + "-1")
 	}
+
 	if second.Spec.Bootstrap.ConfigRef == (clusterv1.ContractVersionedObjectReference{}) {
 		t.Fatal("scale-up Machine spec.bootstrap.configRef is unset")
 	}
+
 	ref := second.Spec.Bootstrap.ConfigRef
+
 	wantConfigName := machineConfigName(second.Name)
 	if ref.Name != wantConfigName || ref.Kind != "HypervisorConfig" {
 		t.Errorf("scale-up Machine configRef = %+v, want HypervisorConfig %q", ref, wantConfigName)
 	}
+
 	wantBootstrapConfigExists(t, c, lc.namespace, wantConfigName)
 
 	if len(fx.createMachine.calls) != 2 {
@@ -1645,9 +1776,11 @@ func TestControlPlaneScaleUp(t *testing.T) {
 
 	// A further reconcile converges: no duplicate Machine, no extra creation.
 	fx.reconcileControlPlane(t, lcp.cp)
+
 	if got := listControlPlaneMachines(t, c, lc.namespace, lc.name); len(got) != 2 {
 		t.Errorf("reconcile after scale-up produced %d Machines, want 2 (names %v)", len(got), machineNamesOf(got))
 	}
+
 	if len(fx.createMachine.calls) != 2 {
 		t.Errorf("CreateMachine called %d times across three reconciles, want 2", len(fx.createMachine.calls))
 	}
@@ -1681,13 +1814,16 @@ func TestControlPlaneScaleDown(t *testing.T) {
 	if len(machines) != 1 {
 		t.Fatalf("%d Machines after scale-down, want 1 (names %v)", len(machines), machineNamesOf(machines))
 	}
+
 	retained := machines[0]
 	if retained.Name != lcp.name+"-0" {
 		t.Errorf("retained Machine = %q, want %q", retained.Name, lcp.name+"-0")
 	}
+
 	if retained.Spec.Bootstrap.ConfigRef == (clusterv1.ContractVersionedObjectReference{}) {
 		t.Fatal("retained Machine spec.bootstrap.configRef is unset after scale-down")
 	}
+
 	ref := retained.Spec.Bootstrap.ConfigRef
 	if ref.Name != machineConfigName(retained.Name) || ref.Kind != "HypervisorConfig" {
 		t.Errorf(
@@ -1696,6 +1832,7 @@ func TestControlPlaneScaleDown(t *testing.T) {
 			machineConfigName(retained.Name),
 		)
 	}
+
 	wantBootstrapConfigExists(t, c, lc.namespace, machineConfigName(retained.Name))
 
 	// The scale-down reconcile creates nothing: the retained Machine already
@@ -1776,8 +1913,11 @@ func TestControlPlaneScaleVersion(t *testing.T) {
 func TestControlPlaneKubeconfigServerIsLoopback(t *testing.T) {
 	c := mustReconcileClient(t)
 	// Use a non-default reserved IP to prove not hardcoded .20.
-	const reservedIP = "192.168.124.77"
-	const wantServer = "https://host.containers.internal:26443"
+	const (
+		reservedIP = "192.168.124.77"
+		wantServer = "https://host.containers.internal:26443"
+	)
+
 	lc := newLinkedCluster(t, c, "cp-kubeconfig-loopback", "capi-cluster")
 	machineName := lc.name + "-cp-0"
 	pk := mustGenerateClusterPKI(t, reservedIP, machineName)
@@ -1805,10 +1945,12 @@ func TestControlPlaneKubeconfigServerIsLoopback(t *testing.T) {
 	}
 
 	secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+
 	data, ok := secret.Data[kubeconfigSecretDataKey]
 	if !ok {
 		t.Fatalf("kubeconfig Secret missing %q key", kubeconfigSecretDataKey)
 	}
+
 	doc := parseKubeconfig(t, data)
 	if len(doc.Clusters) != 1 || doc.Clusters[0].Cluster.Server != wantServer {
 		t.Errorf(
@@ -1825,10 +1967,12 @@ func TestControlPlaneKubeconfigServerIsLoopback(t *testing.T) {
 	fx.reconcileControlPlane(t, lcp.cp)
 	secret = wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
 	data = secret.Data[kubeconfigSecretDataKey]
+
 	doc = parseKubeconfig(t, data)
 	if doc.Clusters[0].Cluster.Server != wantServer {
 		t.Errorf("after second reconcile kubeconfig server = %q, want %q", doc.Clusters[0].Cluster.Server, wantServer)
 	}
+
 	if count := countSecretsNamed(t, c, lc.namespace, lc.name+"-kubeconfig"); count != 1 {
 		t.Errorf("kubeconfig Secrets = %d after second reconcile, want 1", count)
 	}
@@ -1851,6 +1995,7 @@ func TestControlPlaneKubeconfigLoopbackWithDifferentReservedIPs(t *testing.T) {
 			setHMPublishedPorts(t, c, hm, infrastructurev1alpha1.MachinePublishedPort{VMPort: 6443, HostPort: 26443})
 			fx.reconcileControlPlane(t, lcp.cp)
 			secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+
 			doc := parseKubeconfig(t, secret.Data[kubeconfigSecretDataKey])
 			if doc.Clusters[0].Cluster.Server != "https://host.containers.internal:26443" {
 				t.Errorf(

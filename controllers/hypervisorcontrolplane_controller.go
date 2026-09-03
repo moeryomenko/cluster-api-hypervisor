@@ -21,6 +21,8 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,6 +46,7 @@ import (
 	bootstrapv1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/bootstrap/v1alpha1"
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
 	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
@@ -68,15 +71,24 @@ const (
 	// controlPlaneReadinessPollInterval is the delay before the next apiserver
 	// healthz poll while the apiserver is not yet healthy.
 	controlPlaneReadinessPollInterval = 30 * time.Second
+
+	// replacementPollInterval is the delay before the next reconcile while a
+	// version-driven replacement waits for the old Machine, its bootstrap
+	// config, and its HypervisorMachine to be reclaimed.
+	replacementPollInterval = 5 * time.Second
+
+	// snapshotsDirName is the directory name under the provider state dir the
+	// etcd snapshots captured during control plane replacements live in.
+	snapshotsDirName = "snapshots"
 )
 
 // +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=hypervisorcontrolplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=hypervisorcontrolplanes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines,verbs=get;list;watch;create;delete
-// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachines,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachines,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachinetemplates,verbs=get;list;watch
-// +kubebuilder:rbac:groups=bootstrap.cluster.x-k8s.io,resources=hypervisorconfigs,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=bootstrap.cluster.x-k8s.io,resources=hypervisorconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
 
 // HypervisorControlPlaneReconciler reconciles a HypervisorControlPlane
@@ -127,6 +139,18 @@ type HypervisorControlPlaneReconciler struct {
 	// control-plane IP so Cilium talks to the apiserver directly. nil leaves
 	// the cluster un-seeded (used by tests).
 	SeedClusterAdmin func(ctx context.Context, serverURL, cpIP string, pk pki.ClusterPKI) error
+
+	// Config is the provider configuration. The state dir is where the etcd
+	// snapshots captured before a version-driven Machine replacement are
+	// written (<state-dir>/<cluster>/snapshots/).
+	Config config.Config
+
+	// CaptureEtcdSnapshot captures one consistent etcd snapshot from the
+	// control-plane VM and returns the snapshot bytes. host/port are the
+	// published loopback endpoint of the VM's etcd client port recorded on
+	// the machine's HypervisorMachine status. Production wiring uses
+	// etcdsnap.Capture; tests override it.
+	CaptureEtcdSnapshot func(ctx context.Context, host string, port int32) ([]byte, error)
 }
 
 // Reconcile moves the current state of the control-plane Machine set towards
@@ -160,6 +184,7 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
+
 		return ctrl.Result{}, fmt.Errorf("get HypervisorControlPlane %q: %w", req.NamespacedName, err)
 	}
 
@@ -167,6 +192,7 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
 	if cluster == nil {
 		log.Info("linked Cluster not found, waiting for the Cluster controlPlaneRef")
 		return ctrl.Result{}, nil
@@ -174,15 +200,40 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 
 	replicas := max(cp.Spec.Replicas, 1)
 
+	// Version-driven replacement runs before the creation loop: a drifted
+	// Machine must be snapshotted and deleted (and its HypervisorMachine
+	// reclaimed) before the deterministic creation loop may recreate it.
+	res, err := r.reconcileVersionDrift(ctx, cp, cluster, replicas)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if res.RequeueAfter > 0 {
+		return res, nil
+	}
+
 	for i := range replicas {
 		machineName := fmt.Sprintf("%s-%d", cp.Name, i)
 
 		machine := &clusterv1.Machine{}
+
 		err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: machineName}, machine)
 		if err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("get Machine %q: %w", machineName, err)
 		}
+
 		if apierrors.IsNotFound(err) {
+			// A leftover HypervisorMachine means the teardown of a replaced
+			// Machine is still reclaiming (VM stop, disk removal); creating
+			// the replacement now would leave the stale VM in place.
+			leftover := &infrastructurev1alpha1.HypervisorMachine{}
+			if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: machineName}, leftover); err == nil {
+				log.Info("HypervisorMachine of the replaced Machine is still being reclaimed, waiting", "machine", machineName)
+				return ctrl.Result{RequeueAfter: replacementPollInterval}, nil
+			} else if !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("get HypervisorMachine %q: %w", machineName, err)
+			}
+
 			if err := r.ensureClusterPKISecret(ctx, cp, cluster); err != nil {
 				r.Recorder.Eventf(cp, corev1.EventTypeWarning, "FailedClusterPKI", "failed to ensure cluster PKI Secret: %v", err)
 				return ctrl.Result{}, err
@@ -192,8 +243,16 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 			if cfg.Namespace == "" {
 				cfg.Namespace = cp.Namespace
 			}
+
 			cfg.Spec.ClusterName = cluster.Name
 			cfg.Spec.NodeName = machineName
+			// A replacement Machine restores the etcd snapshot captured
+			// before its predecessor was deleted.
+			if rep := cp.Status.Replacement; rep != nil && rep.MachineName == machineName &&
+				rep.TargetVersion == cp.Spec.Version {
+				cfg.Spec.EtcdSnapshotHostPath = rep.SnapshotPath
+			}
+
 			if err := r.Create(ctx, cfg); err != nil && !apierrors.IsAlreadyExists(err) {
 				return ctrl.Result{}, fmt.Errorf("create HypervisorConfig %q: %w", client.ObjectKeyFromObject(cfg), err)
 			}
@@ -202,6 +261,7 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 			if err != nil {
 				return ctrl.Result{}, err
 			}
+
 			if _, err := r.CreateMachine(ctx, machine); err != nil {
 				r.Recorder.Eventf(
 					cp,
@@ -211,6 +271,7 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 					machineName,
 					err,
 				)
+
 				return ctrl.Result{}, fmt.Errorf("create Machine %q: %w", machineName, err)
 			}
 		}
@@ -241,10 +302,11 @@ func (r *HypervisorControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 	// consumers within one reconcile. A VM with no address yet, a missing
 	// recorded allocation, or an apiserver that is not yet healthy is not an
 	// error: the reconcile requeues and keeps polling.
-	res, err := r.reconcileReadiness(ctx, cp, cluster)
+	res, err = r.reconcileReadiness(ctx, cp, cluster)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
 	if res.RequeueAfter > 0 {
 		return res, nil
 	}
@@ -264,17 +326,22 @@ func (r *HypervisorControlPlaneReconciler) linkedCluster(
 	if err := r.List(ctx, clusters, client.InNamespace(cp.Namespace)); err != nil {
 		return nil, fmt.Errorf("list Clusters in %q: %w", cp.Namespace, err)
 	}
+
 	for i := range clusters.Items {
 		cluster := &clusters.Items[i]
+
 		ref := cluster.Spec.ControlPlaneRef
 		if !ref.IsDefined() || ref.Name != cp.Name {
 			continue
 		}
+
 		if ref.Kind != "" && ref.Kind != "HypervisorControlPlane" {
 			continue
 		}
+
 		return cluster, nil
 	}
+
 	return nil, nil
 }
 
@@ -290,6 +357,7 @@ func (r *HypervisorControlPlaneReconciler) ensureClusterPKISecret(
 	cluster *clusterv1.Cluster,
 ) error {
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: cluster.Name + "-pki"}
+
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, key, secret); err == nil {
 		return nil
@@ -301,10 +369,12 @@ func (r *HypervisorControlPlaneReconciler) ensureClusterPKISecret(
 	if err != nil {
 		return err
 	}
+
 	pk, err := r.GeneratePKI(cpIP)
 	if err != nil {
 		return fmt.Errorf("generate cluster PKI: %w", err)
 	}
+
 	secret = &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 		Data:       clusterPKISecretData(pk),
@@ -335,11 +405,13 @@ func (r *HypervisorControlPlaneReconciler) reserveControlPlaneIP(
 	if err != nil {
 		return "", err
 	}
+
 	if hc == nil {
 		return "", fmt.Errorf("reserve control-plane IP: HypervisorCluster for Cluster %q not found", cluster.Name)
 	}
 
 	cp0MAC := mac.Derive(cluster.Name, fmt.Sprintf("%s-%d", cp.Name, 0))
+
 	ip, err := r.K8Netd.AllocateIP(ctx, hc.Name, cp0MAC)
 	if err != nil {
 		return "", fmt.Errorf("reserve control-plane IP for MAC %q on network %q: %w", cp0MAC, hc.Name, err)
@@ -375,6 +447,10 @@ func (r *HypervisorControlPlaneReconciler) machineFor(
 		},
 		Spec: clusterv1.MachineSpec{
 			ClusterName: cluster.Name,
+			// The version stamps both the infra image resolution (the machine
+			// controller resolves the boot image from it) and the upgrade
+			// drift detection.
+			Version: cp.Spec.Version,
 			Bootstrap: clusterv1.Bootstrap{
 				ConfigRef: clusterv1.ContractVersionedObjectReference{
 					APIGroup: bootstrapv1alpha1.GroupVersion.Group,
@@ -413,6 +489,7 @@ func (r *HypervisorControlPlaneReconciler) ensureHypervisorMachine(
 	machine *clusterv1.Machine,
 ) error {
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: machine.Name}
+
 	existing := &infrastructurev1alpha1.HypervisorMachine{}
 	if err := r.Get(ctx, key, existing); err == nil {
 		return nil
@@ -421,6 +498,7 @@ func (r *HypervisorControlPlaneReconciler) ensureHypervisorMachine(
 	}
 
 	ref := cp.Spec.MachineTemplate.Spec.InfrastructureRef
+
 	tmpl := &infrastructurev1alpha1.HypervisorMachineTemplate{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: ref.Name}, tmpl); err != nil {
 		return fmt.Errorf(
@@ -457,6 +535,7 @@ func (r *HypervisorControlPlaneReconciler) ensureHypervisorMachine(
 	if err := controllerutil.SetControllerReference(machine, hm, r.Scheme); err != nil {
 		return fmt.Errorf("set controller owner reference on HypervisorMachine %q: %w", machine.Name, err)
 	}
+
 	if err := r.Create(ctx, hm); err != nil && !apierrors.IsAlreadyExists(err) {
 		r.Recorder.Eventf(
 			cp,
@@ -466,6 +545,7 @@ func (r *HypervisorControlPlaneReconciler) ensureHypervisorMachine(
 			machine.Name,
 			err,
 		)
+
 		return fmt.Errorf("create HypervisorMachine %q: %w", machine.Name, err)
 	}
 
@@ -499,6 +579,7 @@ func controlPlaneMachineIndex(machineName, cpName string) (int32, bool) {
 	if !strings.HasPrefix(machineName, prefix) {
 		return 0, false
 	}
+
 	index, err := strconv.ParseInt(strings.TrimPrefix(machineName, prefix), 10, 32)
 	if err != nil {
 		return 0, false
@@ -521,19 +602,249 @@ func (r *HypervisorControlPlaneReconciler) scaleDownMachines(
 	if err != nil {
 		return err
 	}
+
 	for i := range machines {
 		machine := &machines[i]
+
 		index, ok := controlPlaneMachineIndex(machine.Name, cp.Name)
 		if !ok || index < replicas {
 			continue
 		}
+
 		if err := r.Delete(ctx, machine); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("delete surplus Machine %q: %w", machine.Name, err)
 		}
+
 		r.Recorder.Eventf(cp, corev1.EventTypeNormal, "DeletedMachine", "deleted surplus Machine %q", machine.Name)
 	}
 
 	return nil
+}
+
+// reconcileVersionDrift drives the version-driven replace-in-place rolling of
+// the control plane Machines: a Machine whose spec.version differs from the
+// control plane's desired version is replaced one at a time, highest index
+// first. Replacement captures a consistent etcd snapshot through the
+// machine's published etcd client port, persists it under the provider state
+// dir, records the operation on the control plane status, then deletes the
+// Machine, its bootstrap config, and its HypervisorMachine; the deterministic
+// creation loop recreates the Machine at the new version with a bootstrap
+// config that restores the snapshot before etcd starts. Machines created
+// before this contract carried no version and are never treated as drifted,
+// so enabling version-driven rolling never mass-replaces a pre-existing
+// control plane. The state machine returns a requeue result while a
+// replacement is in flight (deletion in progress, snapshot captured) and a
+// zero result once no drift remains.
+func (r *HypervisorControlPlaneReconciler) reconcileVersionDrift(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	cluster *clusterv1.Cluster,
+	replicas int32,
+) (ctrl.Result, error) {
+	if cp.Spec.Version == "" {
+		return ctrl.Result{}, nil
+	}
+
+	machines, err := r.controlPlaneMachines(ctx, cp, cluster)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Replace the highest-index drifted Machine first so the lowest-index
+	// (etcd/bootstrap-carrying) Machine is replaced last.
+	var (
+		drifted    *clusterv1.Machine
+		driftIndex int32
+	)
+
+	for i := range machines {
+		machine := &machines[i]
+		if !machineDrifted(machine, cp.Spec.Version) {
+			continue
+		}
+
+		index, ok := controlPlaneMachineIndex(machine.Name, cp.Name)
+		if !ok || index >= replicas {
+			continue
+		}
+
+		if drifted == nil || index > driftIndex {
+			drifted = machine
+			driftIndex = index
+		}
+	}
+
+	if drifted != nil {
+		rep := cp.Status.Replacement
+		if rep == nil || rep.MachineName != drifted.Name || rep.TargetVersion != cp.Spec.Version {
+			return r.captureReplacementSnapshot(ctx, cp, cluster, drifted)
+		}
+
+		return r.deleteReplacedMachine(ctx, cp, drifted)
+	}
+
+	// No drift remains. A recorded replacement whose Machine is back at the
+	// desired version is finished; one whose Machine is still missing waits
+	// for the creation loop to recreate it.
+	if rep := cp.Status.Replacement; rep != nil {
+		machine := &clusterv1.Machine{}
+
+		err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: rep.MachineName}, machine)
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{RequeueAfter: replacementPollInterval}, nil
+		}
+
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("get replaced Machine %q: %w", rep.MachineName, err)
+		}
+
+		if machineDrifted(machine, cp.Spec.Version) {
+			return ctrl.Result{}, nil
+		}
+
+		cp.Status.Replacement = nil
+		if err := r.Status().Update(ctx, cp); err != nil {
+			return ctrl.Result{}, fmt.Errorf("clear HypervisorControlPlane replacement status: %w", err)
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// machineDrifted reports whether a Machine's version differs from the desired
+// version. A Machine without a version (created before version stamping
+// existed) is never drifted.
+func machineDrifted(machine *clusterv1.Machine, desiredVersion string) bool {
+	return machine.Spec.Version != "" && machine.Spec.Version != desiredVersion
+}
+
+// captureReplacementSnapshot captures the etcd snapshot of the control-plane
+// Machine about to be replaced: it resolves the machine's published etcd
+// client host port, captures the snapshot through the seam, persists it under
+// <state-dir>/<cluster>/snapshots/<machine>-<version>.db, records the
+// operation on the control plane status, and requeues so the next reconcile
+// performs the deletion.
+func (r *HypervisorControlPlaneReconciler) captureReplacementSnapshot(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	cluster *clusterv1.Cluster,
+	machine *clusterv1.Machine,
+) (ctrl.Result, error) {
+	if r.CaptureEtcdSnapshot == nil {
+		return ctrl.Result{}, fmt.Errorf(
+			"control plane Machine %q must be replaced to version %q but the etcd snapshot seam is not wired",
+			machine.Name, cp.Spec.Version,
+		)
+	}
+
+	hm := &infrastructurev1alpha1.HypervisorMachine{}
+
+	key := client.ObjectKey{Namespace: cp.Namespace, Name: machine.Name}
+	if err := r.Get(ctx, key, hm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{RequeueAfter: replacementPollInterval}, nil
+		}
+
+		return ctrl.Result{}, fmt.Errorf("get HypervisorMachine %q: %w", machine.Name, err)
+	}
+
+	hostPort, ok := publishedHostPort(hm.Status.PublishedPorts, controlPlaneEtcdClientPort)
+	if !ok {
+		return ctrl.Result{RequeueAfter: replacementPollInterval}, nil
+	}
+
+	snapshot, err := r.CaptureEtcdSnapshot(ctx, "127.0.0.1", hostPort)
+	if err != nil {
+		r.Recorder.Eventf(
+			cp,
+			corev1.EventTypeWarning,
+			"FailedEtcdSnapshot",
+			"failed to capture etcd snapshot for %q: %v",
+			machine.Name,
+			err,
+		)
+
+		return ctrl.Result{}, fmt.Errorf("capture etcd snapshot for %q: %w", machine.Name, err)
+	}
+
+	snapshotPath, err := writeEtcdSnapshot(r.Config.StateDir, cluster.Name, machine.Name, cp.Spec.Version, snapshot)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	cp.Status.Replacement = &controlplanev1alpha1.ControlPlaneReplacementStatus{
+		MachineName:   machine.Name,
+		TargetVersion: cp.Spec.Version,
+		SnapshotPath:  snapshotPath,
+	}
+	if err := r.Status().Update(ctx, cp); err != nil {
+		return ctrl.Result{}, fmt.Errorf("record HypervisorControlPlane replacement status: %w", err)
+	}
+
+	r.Recorder.Eventf(cp, corev1.EventTypeNormal, "EtcdSnapshotCaptured",
+		"captured etcd snapshot for Machine %q at %q", machine.Name, snapshotPath)
+
+	return ctrl.Result{RequeueAfter: replacementPollInterval}, nil
+}
+
+// deleteReplacedMachine deletes the Machine being replaced together with its
+// bootstrap config and HypervisorMachine. The three deletes are idempotent:
+// NotFound is tolerated, and the deletion reconcile of the HypervisorMachine
+// stops the VM and removes its disks before dropping the finalizer. The
+// reconcile requeues until the Machine (and its HypervisorMachine) are gone,
+// at which point the creation loop recreates the Machine at the desired
+// version with a bootstrap config that restores the recorded snapshot.
+func (r *HypervisorControlPlaneReconciler) deleteReplacedMachine(
+	ctx context.Context,
+	cp *controlplanev1alpha1.HypervisorControlPlane,
+	machine *clusterv1.Machine,
+) (ctrl.Result, error) {
+	cfgName := machine.Name + "-config"
+
+	if err := r.Delete(ctx, machine); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("delete replaced Machine %q: %w", machine.Name, err)
+	}
+
+	cfg := &bootstrapv1alpha1.HypervisorConfig{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: cfgName}, cfg); err == nil {
+		if err := r.Delete(ctx, cfg); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("delete bootstrap config %q: %w", cfgName, err)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("get bootstrap config %q: %w", cfgName, err)
+	}
+
+	hm := &infrastructurev1alpha1.HypervisorMachine{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: machine.Name}, hm); err == nil {
+		if err := r.Delete(ctx, hm); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("delete HypervisorMachine %q: %w", machine.Name, err)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("get HypervisorMachine %q: %w", machine.Name, err)
+	}
+
+	return ctrl.Result{RequeueAfter: replacementPollInterval}, nil
+}
+
+// writeEtcdSnapshot persists snapshot bytes under
+// <state-dir>/<cluster>/snapshots/<machine>-<version>.db, creating the
+// directories as needed, and returns the path. An empty state dir is an
+// error: the snapshot is the only copy of the workload cluster's state.
+func writeEtcdSnapshot(stateDir, clusterName, machineName, version string, snapshot []byte) (string, error) {
+	if stateDir == "" {
+		return "", fmt.Errorf("provider state dir is empty; cannot persist the etcd snapshot for %q", machineName)
+	}
+
+	path := filepath.Join(stateDir, clusterName, snapshotsDirName, fmt.Sprintf("%s-%s.db", machineName, version))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("create snapshot dir for %q: %w", machineName, err)
+	}
+
+	if err := os.WriteFile(path, snapshot, 0o600); err != nil {
+		return "", fmt.Errorf("write etcd snapshot %q: %w", path, err)
+	}
+
+	return path, nil
 }
 
 // machineReplicaCounts counts the created control-plane Machines and how many
@@ -548,6 +859,7 @@ func (r *HypervisorControlPlaneReconciler) machineReplicaCounts(
 	if err != nil {
 		return 0, 0, err
 	}
+
 	created = int32(len(machines))
 	for i := range machines {
 		hm := &infrastructurev1alpha1.HypervisorMachine{}
@@ -555,8 +867,10 @@ func (r *HypervisorControlPlaneReconciler) machineReplicaCounts(
 			if apierrors.IsNotFound(err) {
 				continue
 			}
+
 			return 0, 0, fmt.Errorf("get HypervisorMachine %q: %w", machines[i].Name, err)
 		}
+
 		if hm.Status.Ready {
 			ready++
 		}
@@ -666,6 +980,7 @@ func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
 	if machine == nil {
 		log.Info("control-plane Machine not created yet, waiting", "controlPlane", cp.Name)
 		return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
@@ -677,6 +992,7 @@ func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 			log.Info("linked HypervisorMachine not found, waiting for the VM", "machine", machine.Name)
 			return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
 		}
+
 		return ctrl.Result{}, fmt.Errorf("get HypervisorMachine %q: %w", machine.Name, err)
 	}
 
@@ -704,6 +1020,7 @@ func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 			log.Info("apiserver healthz seam not wired, waiting", "controlPlane", cp.Name)
 			return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
 		}
+
 		if err := r.CheckAPIServerHealth(ctx, "127.0.0.1", apiHostPort, pk.CA, pk.CAKey, pk.CA); err != nil {
 			log.Info("workload apiserver not healthy yet, waiting", "endpoint", serverURL, "error", err)
 			return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
@@ -735,9 +1052,11 @@ func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 		cp.Status.Initialization.ControlPlaneInitialized = &controlPlaneInitialized
 		cp.Status.Ready = true
 		markControlPlaneReady(cp, metav1.ConditionTrue, "ControlPlaneReady", "control plane apiserver is healthy")
+
 		if err := r.Status().Update(ctx, cp); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update HypervisorControlPlane readiness status: %w", err)
 		}
+
 		log.Info("control plane initialized and ready", "controlPlane", cp.Name, "server", serverURL)
 	}
 
@@ -756,9 +1075,11 @@ func (r *HypervisorControlPlaneReconciler) firstControlPlaneMachine(
 	if err != nil {
 		return nil, err
 	}
+
 	if len(machines) == 0 {
 		return nil, nil
 	}
+
 	sort.Slice(machines, func(i, j int) bool {
 		return machines[i].Name < machines[j].Name
 	})
@@ -774,6 +1095,7 @@ func internalIPAddress(addresses []clusterv1.MachineAddress) string {
 			return addr.Address
 		}
 	}
+
 	return ""
 }
 
@@ -785,10 +1107,12 @@ func (r *HypervisorControlPlaneReconciler) clusterPKI(
 	cluster *clusterv1.Cluster,
 ) (pki.ClusterPKI, error) {
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: cluster.Name + "-pki"}
+
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, key, secret); err != nil {
 		return pki.ClusterPKI{}, fmt.Errorf("get cluster PKI Secret %q: %w", key, err)
 	}
+
 	pk, err := decodeClusterPKI(secret.Data)
 	if err != nil {
 		return pki.ClusterPKI{}, fmt.Errorf("read stored cluster PKI Secret %q: %w", key, err)
@@ -811,6 +1135,7 @@ func (r *HypervisorControlPlaneReconciler) ensureKubeconfigSecret(
 	pk pki.ClusterPKI,
 ) error {
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: cluster.Name + "-kubeconfig"}
+
 	data, err := pki.RenderKubeconfig(pk.CA, serverURL, controlPlaneKubeconfigUser, pk.CA, pk.CAKey)
 	if err != nil {
 		return fmt.Errorf("render admin kubeconfig: %w", err)
@@ -832,6 +1157,7 @@ func (r *HypervisorControlPlaneReconciler) ensureKubeconfigSecret(
 		if err := r.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create kubeconfig Secret %q: %w", key, err)
 		}
+
 		return nil
 	case err != nil:
 		return fmt.Errorf("get kubeconfig Secret %q: %w", key, err)
@@ -842,6 +1168,7 @@ func (r *HypervisorControlPlaneReconciler) ensureKubeconfigSecret(
 	if secret.Labels == nil {
 		secret.Labels = map[string]string{}
 	}
+
 	if _, exists := secret.Labels[clusterv1.ClusterNameLabel]; !exists {
 		secret.Labels[clusterv1.ClusterNameLabel] = cluster.Name
 	}
@@ -850,9 +1177,11 @@ func (r *HypervisorControlPlaneReconciler) ensureKubeconfigSecret(
 		secret.Labels[clusterv1.ClusterNameLabel] == cluster.Name {
 		return nil
 	}
+
 	if secret.Data == nil {
 		secret.Data = map[string][]byte{}
 	}
+
 	secret.Data[controlPlaneKubeconfigDataKey] = data
 	if err := r.Update(ctx, secret); err != nil {
 		return fmt.Errorf("update kubeconfig Secret %q: %w", key, err)
