@@ -170,6 +170,11 @@ spec:
                 description: FailureReason is a machine-readable reason for the last
                   failure.
                 type: string
+              image:
+                description: |-
+                  Image is the host path of the base image the VM's root disk was
+                  converted from.
+                type: string
               initialization:
                 description: |-
                   Initialization provides observations of the HypervisorMachine
@@ -220,6 +225,11 @@ spec:
               ready:
                 description: Ready indicates the VM process is running.
                 type: boolean
+              version:
+                description: |-
+                  Version is the Kubernetes version the VM boots, resolved from the
+                  owning Machine's spec.version. Empty for Machines without a version.
+                type: string
             required:
             - ready
             type: object

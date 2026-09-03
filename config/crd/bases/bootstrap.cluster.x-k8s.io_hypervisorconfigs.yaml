@@ -43,6 +43,15 @@ spec:
                 description: ClusterName is the name of the Cluster this object belongs
                   to.
                 type: string
+              etcdSnapshotHostPath:
+                description: |-
+                  EtcdSnapshotHostPath is the host path of an etcd snapshot the machine
+                  controller packages into the node's z-etcd-restore confext, so a
+                  systemd drop-in restores it into /var/lib/etcd before etcd starts.
+                  The control-plane controller sets it only for replacement control
+                  plane Machines during a version-driven upgrade; it stays empty for
+                  normal Machines.
+                type: string
               nodeName:
                 description: |-
                   NodeName is the name of the node the bootstrap data is rendered for.

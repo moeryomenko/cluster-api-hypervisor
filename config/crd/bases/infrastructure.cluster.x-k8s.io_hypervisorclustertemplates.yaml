@@ -62,6 +62,65 @@ spec:
                         description: ClusterName is the name of the Cluster this object
                           belongs to.
                         type: string
+                      controlPlaneEndpoint:
+                        description: |-
+                          ControlPlaneEndpoint is the workload cluster's API server endpoint.
+                          This field is part of the Cluster API infrastructure-cluster contract:
+                          the CAPI cluster controller reads spec.controlPlaneEndpoint from this
+                          object and copies it to the Cluster's spec.controlPlaneEndpoint, which
+                          drives the cluster phase transition to Provisioned. The host is
+                          127.0.0.1 (the management plane reaches the VM through the host-side
+                          passt forwarding) and the port is the k8netd-published host port for
+                          the API server.
+                        minProperties: 1
+                        properties:
+                          host:
+                            description: host is the hostname on which the API server
+                              is serving.
+                            maxLength: 512
+                            minLength: 1
+                            type: string
+                          port:
+                            description: port is the port on which the API server
+                              is serving.
+                            format: int32
+                            maximum: 65535
+                            minimum: 1
+                            type: integer
+                        type: object
+                      images:
+                        description: |-
+                          Images maps Kubernetes versions to the host paths of the base images
+                          the VMs of those versions boot from. The machine controller resolves
+                          the image for a Machine through the Machine's spec.version: a version
+                          without an entry fails machine provisioning closed (an upgrade can
+                          never silently boot the wrong image), while a Machine without a
+                          version keeps booting the provider's default base image. Upgrades
+                          declared through a HypervisorUpgradePlan require every planned version
+                          to have an entry here.
+                        items:
+                          description: |-
+                            ImageRef maps one Kubernetes version to the host path of the base image
+                            the VMs of that version boot from.
+                          properties:
+                            path:
+                              description: |-
+                                Path is the host path of the base image (qcow2) for Version. The
+                                machine controller passes it to qemu-img convert when the machine's
+                                root disk is first created.
+                              minLength: 1
+                              type: string
+                            version:
+                              description: |-
+                                Version is the Kubernetes version the image carries, v-prefixed
+                                semver (e.g. "v1.38.0").
+                              minLength: 1
+                              type: string
+                          required:
+                          - path
+                          - version
+                          type: object
+                        type: array
                       network:
                         description: |-
                           Network defines the cluster's host-side network stack: the bridge, the

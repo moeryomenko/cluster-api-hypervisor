@@ -37,6 +37,15 @@ type HypervisorConfigSpec struct {
 	// SSHPublicKey is an optional SSH public key added to the node's
 	// authorized_keys. When empty the cluster-level key is used.
 	SSHPublicKey string `json:"sshPublicKey,omitempty"`
+
+	// EtcdSnapshotHostPath is the host path of an etcd snapshot the machine
+	// controller packages into the node's z-etcd-restore confext, so a
+	// systemd drop-in restores it into /var/lib/etcd before etcd starts.
+	// The control-plane controller sets it only for replacement control
+	// plane Machines during a version-driven upgrade; it stays empty for
+	// normal Machines.
+	// +optional
+	EtcdSnapshotHostPath string `json:"etcdSnapshotHostPath,omitempty"`
 }
 
 // HypervisorConfigStatus defines the observed state of HypervisorConfig.

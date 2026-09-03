@@ -29,6 +29,45 @@ type HypervisorClusterSpec struct {
 	// Network defines the cluster's host-side network stack: the bridge, the
 	// NAT table, and the static IP pool the Machine controllers allocate from.
 	Network HypervisorClusterNetworkSpec `json:"network,omitempty"`
+
+	// ControlPlaneEndpoint is the workload cluster's API server endpoint.
+	// This field is part of the Cluster API infrastructure-cluster contract:
+	// the CAPI cluster controller reads spec.controlPlaneEndpoint from this
+	// object and copies it to the Cluster's spec.controlPlaneEndpoint, which
+	// drives the cluster phase transition to Provisioned. The host is
+	// 127.0.0.1 (the management plane reaches the VM through the host-side
+	// passt forwarding) and the port is the k8netd-published host port for
+	// the API server.
+	// +optional
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty,omitzero"`
+
+	// Images maps Kubernetes versions to the host paths of the base images
+	// the VMs of those versions boot from. The machine controller resolves
+	// the image for a Machine through the Machine's spec.version: a version
+	// without an entry fails machine provisioning closed (an upgrade can
+	// never silently boot the wrong image), while a Machine without a
+	// version keeps booting the provider's default base image. Upgrades
+	// declared through a HypervisorUpgradePlan require every planned version
+	// to have an entry here.
+	// +optional
+	Images []ImageRef `json:"images,omitempty"`
+}
+
+// ImageRef maps one Kubernetes version to the host path of the base image
+// the VMs of that version boot from.
+type ImageRef struct {
+	// Version is the Kubernetes version the image carries, v-prefixed
+	// semver (e.g. "v1.38.0").
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Version string `json:"version"`
+
+	// Path is the host path of the base image (qcow2) for Version. The
+	// machine controller passes it to qemu-img convert when the machine's
+	// root disk is first created.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Path string `json:"path"`
 }
 
 // HypervisorClusterNetworkSpec defines the host network configuration the

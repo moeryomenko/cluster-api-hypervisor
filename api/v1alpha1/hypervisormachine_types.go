@@ -86,6 +86,16 @@ type HypervisorMachineStatus struct {
 	// Ready indicates the VM process is running.
 	Ready bool `json:"ready"`
 
+	// Version is the Kubernetes version the VM boots, resolved from the
+	// owning Machine's spec.version. Empty for Machines without a version.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// Image is the host path of the base image the VM's root disk was
+	// converted from.
+	// +optional
+	Image string `json:"image,omitempty"`
+
 	// Initialization provides observations of the HypervisorMachine
 	// initialization process.
 	// NOTE: this field is part of the Cluster API contract and it is used to
