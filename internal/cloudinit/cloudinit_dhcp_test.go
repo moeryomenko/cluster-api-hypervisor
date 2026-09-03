@@ -61,12 +61,14 @@ func dhcpValidData() cloudinit.Data {
 			f.SetString("")
 		}
 	}
+
 	return d
 }
 
 // TestCloudInit_DataStructHasNoStaticFields asserts IP/Gateway/DNS are gone.
 func TestCloudInit_DataStructHasNoStaticFields(t *testing.T) {
 	t.Parallel()
+
 	rt := reflect.TypeFor[cloudinit.Data]()
 	for _, name := range []string{"IP", "Gateway", "DNS"} {
 		if _, ok := rt.FieldByName(name); ok {
@@ -78,6 +80,7 @@ func TestCloudInit_DataStructHasNoStaticFields(t *testing.T) {
 // TestCloudInit_RenderSucceedsWithoutStaticNetworking asserts Render succeeds when IP/Gateway/DNS are empty.
 func TestCloudInit_RenderSucceedsWithoutStaticNetworking(t *testing.T) {
 	d := dhcpValidData()
+
 	parts, err := cloudinit.Render(d)
 	if err != nil {
 		t.Fatalf(
@@ -85,9 +88,11 @@ func TestCloudInit_RenderSucceedsWithoutStaticNetworking(t *testing.T) {
 			err,
 		)
 	}
+
 	if parts == nil {
 		t.Fatal("cloudinit.Render returned nil parts with DHCP-mode data")
 	}
+
 	if len(parts) != 3 {
 		t.Errorf("parts count = %d, want 3 (user-data, meta-data, network-config)", len(parts))
 	}
@@ -99,14 +104,17 @@ func TestCloudInit_NetworkConfigRendersDHCP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
+
 	nc := string(parts["network-config"])
 	if nc == "" {
 		t.Fatal("network-config empty")
 	}
+
 	lower := strings.ToLower(nc)
 	if !strings.Contains(lower, "dhcp4") {
 		t.Fatalf("network-config missing dhcp4 key; got:\n%s\nwant dhcp4:true", nc)
 	}
+
 	if !strings.Contains(lower, "true") {
 		t.Errorf("network-config has dhcp4 but not true; got:\n%s", nc)
 	}
@@ -135,6 +143,7 @@ func TestCloudInit_NetworkConfigParsesAsDHCPStruct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
+
 	var doc map[string]any
 	if err := yaml.Unmarshal(parts["network-config"], &doc); err != nil {
 		t.Fatalf("network-config not valid YAML: %v\n%s", err, string(parts["network-config"]))
@@ -143,10 +152,12 @@ func TestCloudInit_NetworkConfigParsesAsDHCPStruct(t *testing.T) {
 	if doc["version"] != 2 && doc["version"] != float64(2) && doc["version"] != "2" {
 		t.Errorf("network-config version = %v, want 2; doc=%v", doc["version"], doc)
 	}
+
 	eths, ok := doc["ethernets"].(map[string]any)
 	if !ok {
 		t.Fatalf("network-config ethernets missing or not a map: %v", doc["ethernets"])
 	}
+
 	id0, ok := eths["id0"].(map[string]any)
 	if !ok {
 		t.Fatalf("ethernets.id0 missing: %v", eths)
@@ -161,6 +172,7 @@ func TestCloudInit_NetworkConfigParsesAsDHCPStruct(t *testing.T) {
 	if _, ok := id0["addresses"]; ok {
 		t.Errorf("ethernets.id0.addresses present in DHCP mode, want absent; id0=%v", id0)
 	}
+
 	if _, ok := id0["gateway4"]; ok {
 		t.Errorf("ethernets.id0.gateway4 present in DHCP mode, want absent; id0=%v", id0)
 	}
@@ -169,6 +181,7 @@ func TestCloudInit_NetworkConfigParsesAsDHCPStruct(t *testing.T) {
 	if !ok {
 		t.Fatalf("ethernets.id0.match missing: %v", id0)
 	}
+
 	if m["driver"] != "virtio_net" {
 		t.Errorf("ethernets.id0.match.driver = %v, want virtio_net", m["driver"])
 	}
@@ -180,16 +193,21 @@ func TestCloudInit_NetworkConfigRendersDHCPNoGatewayOrNameservers(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
+
 	nc := string(parts["network-config"])
+
 	var doc map[string]any
 	if err := yaml.Unmarshal([]byte(nc), &doc); err != nil {
 		t.Fatalf("yaml unmarshal: %v", err)
 	}
+
 	eths := doc["ethernets"].(map[string]any)
+
 	id0 := eths["id0"].(map[string]any)
 	if _, ok := id0["gateway4"]; ok {
 		t.Errorf("gateway4 should be absent in DHCP mode")
 	}
+
 	if _, ok := id0["nameservers"]; ok {
 		t.Errorf("nameservers should be absent in DHCP mode (DHCP provides DNS)")
 	}
@@ -198,21 +216,26 @@ func TestCloudInit_NetworkConfigRendersDHCPNoGatewayOrNameservers(t *testing.T) 
 // TestCloudInit_UserDataAndMetaDataUnchanged ensures other parts still render correctly with DHCP data.
 func TestCloudInit_UserDataAndMetaDataUnchanged(t *testing.T) {
 	d := dhcpValidData()
+
 	parts, err := cloudinit.Render(d)
 	if err != nil {
 		t.Fatalf("Render error: %v", err)
 	}
+
 	ud := string(parts["user-data"])
 	if !strings.HasPrefix(ud, "#cloud-config") {
 		t.Errorf("user-data missing #cloud-config header; got:\n%s", ud)
 	}
+
 	if !strings.Contains(ud, d.SSHPublicKey) {
 		t.Errorf("user-data missing ssh public key; got:\n%s", ud)
 	}
+
 	md := string(parts["meta-data"])
 	if !strings.Contains(md, d.InstanceID) {
 		t.Errorf("meta-data missing instance-id %q; got %q", d.InstanceID, md)
 	}
+
 	if !strings.Contains(md, d.Hostname) {
 		t.Errorf("meta-data missing hostname %q; got %q", d.Hostname, md)
 	}
@@ -221,6 +244,7 @@ func TestCloudInit_UserDataAndMetaDataUnchanged(t *testing.T) {
 // TestCloudInit_RenderStillRejectsEmptyIdentity asserts empty identity fields still error even in DHCP mode.
 func TestCloudInit_RenderStillRejectsEmptyIdentity(t *testing.T) {
 	base := dhcpValidData()
+
 	tests := []struct {
 		name string
 		mut  func(*cloudinit.Data)
@@ -233,10 +257,12 @@ func TestCloudInit_RenderStillRejectsEmptyIdentity(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			d := base
 			tt.mut(&d)
+
 			parts, err := cloudinit.Render(d)
 			if err == nil {
 				t.Fatalf("Render with %s succeeded, want error; parts=%v", tt.name, parts)
 			}
+
 			if parts != nil {
 				t.Errorf("Render returned non-nil parts on error: %v", parts)
 			}
@@ -252,20 +278,25 @@ func TestCloudInit_RenderWithStaticIPIgnored(t *testing.T) {
 	if f := rv.FieldByName("IP"); f.IsValid() && f.CanSet() {
 		f.SetString("192.168.124.99")
 	}
+
 	if f := rv.FieldByName("Gateway"); f.IsValid() && f.CanSet() {
 		f.SetString("192.168.124.1")
 	}
+
 	if f := rv.FieldByName("DNS"); f.IsValid() && f.CanSet() {
 		f.SetString("192.168.124.1")
 	}
+
 	parts, err := cloudinit.Render(d)
 	if err != nil {
 		t.Fatalf("Render error with stray static fields: %v", err)
 	}
+
 	nc := string(parts["network-config"])
 	if strings.Contains(nc, "192.168.124.99") || strings.Contains(nc, "addresses:") || strings.Contains(nc, "gateway4") {
 		t.Errorf("network-config leaked static IP despite DHCP mode; got:\n%s", nc)
 	}
+
 	if !strings.Contains(strings.ToLower(nc), "dhcp4") {
 		t.Errorf("network-config missing dhcp4 after static fields ignored; got:\n%s", nc)
 	}

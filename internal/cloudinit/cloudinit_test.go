@@ -40,6 +40,7 @@ func keysOf(parts map[string][]byte) []string {
 	for key := range parts {
 		keys = append(keys, key)
 	}
+
 	sort.Strings(keys)
 
 	return keys
@@ -55,6 +56,7 @@ func TestRenderProducesCompleteCIDATA(t *testing.T) {
 	if got := keysOf(parts); !equalStrings(got, wantKeys) {
 		t.Fatalf("Render produced parts %v, want exactly %v", got, wantKeys)
 	}
+
 	for _, key := range wantKeys {
 		if len(parts[key]) == 0 {
 			t.Errorf("part %q rendered empty", key)
@@ -84,11 +86,13 @@ func TestRenderUserDataInjectsSSHKeyIntoRootUser(t *testing.T) {
 	if !ok {
 		t.Fatalf("user-data has no users list: %#v", doc["users"])
 	}
+
 	for _, entry := range users {
 		user, ok := entry.(map[string]any)
 		if !ok {
 			continue // the convenience "default" entry renders as a scalar
 		}
+
 		if user["name"] != "root" {
 			continue
 		}
@@ -97,13 +101,16 @@ func TestRenderUserDataInjectsSSHKeyIntoRootUser(t *testing.T) {
 		if !ok {
 			t.Fatalf("root user has no ssh_authorized_keys list: %#v", user)
 		}
+
 		for _, key := range keys {
 			if key == data.SSHPublicKey {
 				return
 			}
 		}
+
 		t.Errorf("root user ssh_authorized_keys does not contain the public key: %#v", keys)
 	}
+
 	t.Fatal("user-data defines no root user with ssh_authorized_keys")
 }
 
@@ -125,6 +132,7 @@ func joinedRuncmd(t *testing.T, userData []byte) string {
 	}
 
 	var joined strings.Builder
+
 	for _, entry := range runcmd {
 		switch value := entry.(type) {
 		case string:
@@ -134,6 +142,7 @@ func joinedRuncmd(t *testing.T, userData []byte) string {
 		default:
 			t.Errorf("unexpected runcmd entry type %T: %#v", entry, entry)
 		}
+
 		joined.WriteByte('\n')
 	}
 
@@ -168,6 +177,7 @@ func TestRenderUserDataFirstBootRuncmd(t *testing.T) {
 	if strings.Contains(commands, "/dev/vdb") {
 		t.Errorf("runcmd hardcodes /dev/vdb; it must iterate all confext disks (vdc, vdd, ...):\n%s", commands)
 	}
+
 	if !strings.Contains(commands, "/dev/vd") {
 		t.Errorf("runcmd does not iterate the virtio block devices (/dev/vd*); runcmd:\n%s", commands)
 	}
@@ -185,9 +195,11 @@ func TestRenderUserDataFirstBootRuncmd(t *testing.T) {
 	if !strings.Contains(commands, "extension-release") {
 		t.Errorf("runcmd does not derive the confext name from extension-release; runcmd:\n%s", commands)
 	}
+
 	if !strings.Contains(commands, "/var/lib/confexts") {
 		t.Errorf("runcmd does not target /var/lib/confexts; runcmd:\n%s", commands)
 	}
+
 	if !strings.Contains(commands, "systemd-confext refresh") {
 		t.Errorf("runcmd does not run systemd-confext refresh; runcmd:\n%s", commands)
 	}
@@ -220,12 +232,15 @@ func TestRenderUserDataRuncmdActivatesAllConfextDisks(t *testing.T) {
 	if strings.Contains(commands, "/dev/vdb") {
 		t.Errorf("runcmd hardcodes /dev/vdb; it must iterate all confext disks:\n%s", commands)
 	}
+
 	if !strings.Contains(commands, "for d in") {
 		t.Errorf("runcmd has no loop over the confext disks; runcmd:\n%s", commands)
 	}
+
 	if !strings.Contains(commands, "/dev/vd") {
 		t.Errorf("runcmd does not walk /dev/vd*; runcmd:\n%s", commands)
 	}
+
 	if !strings.Contains(commands, "CIDATA") {
 		t.Errorf("runcmd does not exclude the CIDATA disk (label CIDATA); runcmd:\n%s", commands)
 	}
@@ -252,10 +267,12 @@ type confextDevice struct {
 // check, or a glob-match guard.
 func simulateConfextRuncmd(commands string, devices []confextDevice) map[string]string {
 	copied := make(map[string]string)
+
 	for _, dev := range devices {
 		if confextRuncmdSkips(commands, dev) {
 			continue
 		}
+
 		name := dev.releaseName
 		if name == "" {
 			// The extension-release glob does not match; bash (without
@@ -263,6 +280,7 @@ func simulateConfextRuncmd(commands string, devices []confextDevice) map[string]
 			// degrades to "*".
 			name = "*"
 		}
+
 		copied[dev.path] = "/var/lib/confexts/" + name + ".raw"
 	}
 
@@ -359,6 +377,7 @@ func TestRenderUserDataRuncmdSkipsRootDisk(t *testing.T) {
 			)
 		}
 	}
+
 	if dest, ok := copied["/dev/vdb"]; ok {
 		t.Errorf(
 			"runcmd copies the CIDATA disk /dev/vdb to %q; the CIDATA disk must be skipped by label:\n%s",
@@ -366,6 +385,7 @@ func TestRenderUserDataRuncmdSkipsRootDisk(t *testing.T) {
 			commands,
 		)
 	}
+
 	if got := copied["/dev/vdc"]; got != "/var/lib/confexts/z-kubelet-node1.raw" {
 		t.Errorf(
 			"runcmd copies the confext disk /dev/vdc to %q, want /var/lib/confexts/z-kubelet-node1.raw:\n%s",
@@ -404,6 +424,7 @@ func TestRenderUserDataRuncmdSkipsDiskWithoutExtensionRelease(t *testing.T) {
 			commands,
 		)
 	}
+
 	if got := copied["/dev/vdc"]; got != "/var/lib/confexts/z-etcd.raw" {
 		t.Errorf("runcmd copies the confext disk /dev/vdc to %q, want /var/lib/confexts/z-etcd.raw:\n%s", got, commands)
 	}
@@ -460,6 +481,7 @@ func TestRenderUserDataRuncmdValidWithNoConfextDisks(t *testing.T) {
 	if err := yaml.Unmarshal(parts["user-data"], &doc); err != nil {
 		t.Fatalf("user-data is not valid YAML: %v", err)
 	}
+
 	commands := joinedRuncmd(t, parts["user-data"])
 	if !strings.Contains(commands, "for d in") || !strings.Contains(commands, "/dev/vd") {
 		t.Errorf("runcmd does not carry the confext-activation loop; runcmd:\n%s", commands)
@@ -518,6 +540,7 @@ func TestRenderedPartsParseAsYAML(t *testing.T) {
 			if err := yaml.Unmarshal(body, &doc); err != nil {
 				t.Fatalf("%s is not valid YAML: %v", name, err)
 			}
+
 			if doc == nil {
 				t.Fatalf("%s parsed to a nil document", name)
 			}
@@ -543,6 +566,7 @@ func TestRenderRejectsEmptyInputs(t *testing.T) {
 			if err == nil {
 				t.Fatal("Render accepted data with an empty field")
 			}
+
 			if parts != nil {
 				t.Errorf("Render returned partial parts on error: %v", parts)
 			}
@@ -554,6 +578,7 @@ func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
+
 	for i := range a {
 		if a[i] != b[i] {
 			return false
