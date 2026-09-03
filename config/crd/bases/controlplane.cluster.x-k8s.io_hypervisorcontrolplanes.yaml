@@ -247,6 +247,32 @@ spec:
                   plane machines.
                 format: int32
                 type: integer
+              replacement:
+                description: |-
+                  Replacement carries the observations of the version-driven control
+                  plane machine replacement in flight, if any. It is set when the
+                  controller captures the etcd snapshot before deleting a drifted
+                  Machine and cleared once the replacement Machine is ready at the
+                  target version.
+                properties:
+                  machineName:
+                    description: MachineName is the name of the Machine being replaced.
+                    type: string
+                  snapshotPath:
+                    description: |-
+                      SnapshotPath is the host path of the etcd snapshot captured before
+                      the previous Machine was deleted. The replacement Machine's bootstrap
+                      data restores it before etcd starts.
+                    type: string
+                  targetVersion:
+                    description: TargetVersion is the Kubernetes version the replacement
+                      Machine boots.
+                    type: string
+                required:
+                - machineName
+                - snapshotPath
+                - targetVersion
+                type: object
               replicas:
                 description: |-
                   Replicas is the total number of non-terminated machines targeted by

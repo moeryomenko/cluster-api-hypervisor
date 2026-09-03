@@ -148,9 +148,35 @@ type HypervisorControlPlaneStatus struct {
 	// +optional
 	FailureMessage string `json:"failureMessage,omitempty"`
 
+	// Replacement carries the observations of the version-driven control
+	// plane machine replacement in flight, if any. It is set when the
+	// controller captures the etcd snapshot before deleting a drifted
+	// Machine and cleared once the replacement Machine is ready at the
+	// target version.
+	// +optional
+	Replacement *ControlPlaneReplacementStatus `json:"replacement,omitempty,omitzero"`
+
 	// Conditions defines current service state of the HypervisorControlPlane.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ControlPlaneReplacementStatus reports one in-flight version-driven
+// replacement of a control plane Machine.
+type ControlPlaneReplacementStatus struct {
+	// MachineName is the name of the Machine being replaced.
+	// +required
+	MachineName string `json:"machineName"`
+
+	// TargetVersion is the Kubernetes version the replacement Machine boots.
+	// +required
+	TargetVersion string `json:"targetVersion"`
+
+	// SnapshotPath is the host path of the etcd snapshot captured before
+	// the previous Machine was deleted. The replacement Machine's bootstrap
+	// data restores it before etcd starts.
+	// +required
+	SnapshotPath string `json:"snapshotPath"`
 }
 
 // +kubebuilder:object:root=true
