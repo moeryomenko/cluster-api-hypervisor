@@ -63,6 +63,7 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confexttree"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/etcdsnap"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
@@ -119,6 +120,7 @@ var (
 	hypervisorMachineConcurrency      int
 	hypervisorConfigConcurrency       int
 	hypervisorControlPlaneConcurrency int
+	upgradePlanConcurrency            int
 )
 
 // init registers the scheme: the client-go core types, the CAPI core types
@@ -189,6 +191,12 @@ func initFlags(fs *pflag.FlagSet) {
 		"hypervisorcontrolplane-concurrency",
 		1,
 		"Number of HypervisorControlPlanes to process simultaneously",
+	)
+	fs.IntVar(
+		&upgradePlanConcurrency,
+		"upgradeplan-concurrency",
+		1,
+		"Number of HypervisorUpgradePlans to process simultaneously",
 	)
 }
 
@@ -286,10 +294,12 @@ func managerRestConfig() (*rest.Config, error) {
 	if kubeconfig == "" {
 		return ctrl.GetConfigOrDie(), nil
 	}
+
 	restConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("load kubeconfig %q: %w", kubeconfig, err)
 	}
+
 	return restConfig, nil
 }
 
@@ -299,18 +309,27 @@ func setupWebhooks(mgr ctrl.Manager) error {
 	if err := (&providerwebhook.HypervisorClusterWebhook{}).SetupWebhookWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to set up HypervisorCluster webhook: %w", err)
 	}
+
 	if err := (&providerwebhook.HypervisorMachineWebhook{}).SetupWebhookWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to set up HypervisorMachine webhook: %w", err)
 	}
+
 	if err := (&providerwebhook.HypervisorMachineTemplateWebhook{}).SetupWebhookWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to set up HypervisorMachineTemplate webhook: %w", err)
 	}
+
 	if err := (&providerwebhook.HypervisorConfigWebhook{}).SetupWebhookWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to set up HypervisorConfig webhook: %w", err)
 	}
+
 	if err := (&providerwebhook.HypervisorControlPlaneWebhook{}).SetupWebhookWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to set up HypervisorControlPlane webhook: %w", err)
 	}
+
+	if err := (&providerwebhook.HypervisorUpgradePlanWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to set up HypervisorUpgradePlan webhook: %w", err)
+	}
+
 	return nil
 }
 
@@ -320,9 +339,11 @@ func addHealthChecks(mgr ctrl.Manager) error {
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return fmt.Errorf("unable to add healthz check: %w", err)
 	}
+
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		return fmt.Errorf("unable to add readyz check: %w", err)
 	}
+
 	return nil
 }
 
@@ -392,6 +413,7 @@ func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
 			if err := mgr.GetClient().Create(ctx, machine); err != nil {
 				return nil, err
 			}
+
 			return machine, nil
 		},
 		GeneratePKI: func(cpIP string) (pki.ClusterPKI, error) {
@@ -400,8 +422,18 @@ func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
 		CheckAPIServerHealth: checkAPIServerHealth,
 		SeedClusterAdmin:     seedClusterAdmin,
 		K8Netd:               k8netd.NewClient(cfg.K8NetdSocket),
+		Config:               cfg,
+		CaptureEtcdSnapshot:  etcdsnap.Capture,
 	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: hypervisorControlPlaneConcurrency}); err != nil {
 		return fmt.Errorf("unable to set up HypervisorControlPlane controller: %w", err)
+	}
+
+	if err := (&controllers.HypervisorUpgradePlanReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("hypervisorupgradeplan-controller"),
+	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: upgradePlanConcurrency}); err != nil {
+		return fmt.Errorf("unable to set up HypervisorUpgradePlan controller: %w", err)
 	}
 
 	return nil
@@ -430,6 +462,7 @@ func buildConfextTree(
 			encryptionConfig,
 		)
 	}
+
 	return confexttree.BuildWorker(clusterName, cpIP, nodeName, pk, kubeletCert, kubeletKey, kubeconfigs["kubelet"])
 }
 
@@ -466,6 +499,7 @@ func seedClusterAdmin(ctx context.Context, serverURL, cpIP string, pk pki.Cluste
 	if err != nil {
 		return fmt.Errorf("parse workload apiserver endpoint %q: %w", serverURL, err)
 	}
+
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(hostPort)))
 
 	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
@@ -490,12 +524,15 @@ func seedClusterAdmin(ctx context.Context, serverURL, cpIP string, pk pki.Cluste
 	if err := seedClusterAdminBinding(ctx, clientset); err != nil {
 		return err
 	}
+
 	if err := seedKubeDNSService(ctx, clientset); err != nil {
 		return err
 	}
+
 	if err := seedCiliumConfig(ctx, clientset, cpIP); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -503,10 +540,12 @@ func seedClusterAdmin(ctx context.Context, serverURL, cpIP string, pk pki.Cluste
 // on the workload cluster. Idempotent: a pre-existing binding is a no-op.
 func seedClusterAdminBinding(ctx context.Context, clientset kubernetes.Interface) error {
 	bindingName := "cluster-ca-admin"
+
 	existing, err := clientset.RbacV1().ClusterRoleBindings().Get(ctx, bindingName, metav1.GetOptions{})
 	if err == nil && existing != nil {
 		return nil // idempotent
 	}
+
 	if !apierrors.IsNotFound(err) {
 		return fmt.Errorf("get workload ClusterRoleBinding %q: %w", bindingName, err)
 	}
@@ -526,6 +565,7 @@ func seedClusterAdminBinding(ctx context.Context, clientset kubernetes.Interface
 		!apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create workload ClusterRoleBinding %q: %w", bindingName, err)
 	}
+
 	return nil
 }
 
@@ -540,6 +580,7 @@ func seedKubeDNSService(ctx context.Context, clientset kubernetes.Interface) err
 	if err == nil && existing != nil {
 		return nil // idempotent
 	}
+
 	if !apierrors.IsNotFound(err) {
 		return fmt.Errorf("get workload kube-dns Service: %w", err)
 	}
@@ -568,6 +609,7 @@ func seedKubeDNSService(ctx context.Context, clientset kubernetes.Interface) err
 		!apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create workload kube-dns Service: %w", err)
 	}
+
 	return nil
 }
 
@@ -582,24 +624,31 @@ func seedCiliumConfig(ctx context.Context, clientset kubernetes.Interface, cpIP 
 	if cpIP == "" {
 		return nil // nothing to point Cilium at until the CP has an IP
 	}
+
 	cm, err := clientset.CoreV1().ConfigMaps("kube-system").Get(ctx, "cilium-config", metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil // CRS not applied yet; retried on the next reconcile
 		}
+
 		return fmt.Errorf("get workload cilium-config: %w", err)
 	}
+
 	if cm.Data == nil {
 		cm.Data = map[string]string{}
 	}
+
 	if cm.Data["k8sServiceHost"] == cpIP && cm.Data["k8sServicePort"] == strconv.Itoa(controlPlaneAPIServerPort) {
 		return nil // idempotent
 	}
+
 	cm.Data["k8sServiceHost"] = cpIP
+
 	cm.Data["k8sServicePort"] = strconv.Itoa(controlPlaneAPIServerPort)
 	if _, err := clientset.CoreV1().ConfigMaps("kube-system").Update(ctx, cm, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("update workload cilium-config with k8sServiceHost: %w", err)
 	}
+
 	return nil
 }
 
@@ -609,10 +658,12 @@ func urlHostPort(raw string) (int32, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	p, err := strconv.Atoi(u.Port())
 	if err != nil {
 		return 0, fmt.Errorf("port %q is not numeric", u.Port())
 	}
+
 	return int32(p), nil
 }
 
@@ -621,6 +672,7 @@ func checkAPIServerHealth(ctx context.Context, host string, port int32, clientCe
 	if !caPool.AppendCertsFromPEM(caCert) {
 		return fmt.Errorf("cluster CA bytes are not a PEM certificate")
 	}
+
 	cert, err := tls.X509KeyPair(clientCert, clientKey)
 	if err != nil {
 		return fmt.Errorf("build apiserver health client certificate: %w", err)
@@ -638,17 +690,21 @@ func checkAPIServerHealth(ctx context.Context, host string, port int32, clientCe
 	}
 
 	url := "https://" + net.JoinHostPort(host, strconv.Itoa(int(port))) + "/healthz"
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("build apiserver healthz request for %q: %w", url, err)
 	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
+
 	defer func() {
 		_ = resp.Body.Close()
 	}()
+
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("apiserver healthz answered %s", resp.Status)
 	}
