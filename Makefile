@@ -46,7 +46,7 @@ cover: test ## Open coverage report in browser
 
 .PHONY: lint
 lint: ## Run linter
-	@go tool golangci-lint run -v
+	@go tool golangci-lint run -v --fix
 
 .PHONY: fmt
 fmt: ## Format Go source files
