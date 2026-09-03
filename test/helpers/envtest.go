@@ -69,12 +69,15 @@ func StartEnvTest(t *testing.T) (*EnvTest, error) {
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("register client-go scheme: %w", err)
 	}
+
 	if err := infrastructurev1alpha1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("register infrastructure v1alpha1 scheme: %w", err)
 	}
+
 	if err := bootstrapv1alpha1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("register bootstrap v1alpha1 scheme: %w", err)
 	}
+
 	if err := controlplanev1alpha1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("register controlplane v1alpha1 scheme: %w", err)
 	}
@@ -116,6 +119,7 @@ func binaryAssetsDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve envtest binaries (set KUBEBUILDER_ASSETS or run make envtest): %w", err)
 	}
+
 	return strings.TrimSpace(string(out)), nil
 }
 
