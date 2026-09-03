@@ -135,7 +135,8 @@ func TestDeriveSetStability(t *testing.T) {
 	)
 
 	byMachine := make(map[string]string, machines) // machine -> address
-	byAddr := make(map[string]string, machines)    // address -> machine
+
+	byAddr := make(map[string]string, machines) // address -> machine
 	for i := range machines {
 		machineName := fmt.Sprintf("worker-%02d", i)
 		addr := mac.Derive(clusterName, machineName)
@@ -143,9 +144,11 @@ func TestDeriveSetStability(t *testing.T) {
 		if !macFamily.MatchString(addr) {
 			t.Errorf("Derive(%q, %q) = %q, want the family format %s", clusterName, machineName, addr, macFamily)
 		}
+
 		if other, dup := byAddr[addr]; dup {
 			t.Errorf("Derive(%q, %q) = %q, already assigned to %q", clusterName, machineName, addr, other)
 		}
+
 		byAddr[addr] = machineName
 		byMachine[machineName] = addr
 	}
