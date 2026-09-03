@@ -137,11 +137,13 @@ func TestHypervisorMachineDefaulting(t *testing.T) {
 		},
 	}
 	wh := &webhook.HypervisorMachineWebhook{}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := wh.Default(t.Context(), tt.give); err != nil {
 				t.Fatalf("Default: %v", err)
 			}
+
 			if got := tt.give.Spec; !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("spec after Default = %#v, want %#v", got, tt.want)
 			}
@@ -186,6 +188,7 @@ func TestHypervisorMachineValidateCreate(t *testing.T) {
 		{name: "nil object", give: nil, wantErr: true},
 	}
 	wh := &webhook.HypervisorMachineWebhook{}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			warnings, err := wh.ValidateCreate(t.Context(), tt.give)
@@ -193,11 +196,14 @@ func TestHypervisorMachineValidateCreate(t *testing.T) {
 				if err == nil {
 					t.Error("ValidateCreate: want error, got nil")
 				}
+
 				return
 			}
+
 			if err != nil {
 				t.Fatalf("ValidateCreate: unexpected error: %v", err)
 			}
+
 			if len(warnings) != 0 {
 				t.Errorf("ValidateCreate: unexpected warnings: %v", warnings)
 			}
@@ -236,6 +242,7 @@ func TestHypervisorMachineValidateUpdate(t *testing.T) {
 		{name: "wrong old object type", oldObj: &v1alpha1.HypervisorMachineList{}, newObj: validMachine(), wantErr: true},
 	}
 	wh := &webhook.HypervisorMachineWebhook{}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			warnings, err := wh.ValidateUpdate(t.Context(), tt.oldObj, tt.newObj)
@@ -243,11 +250,14 @@ func TestHypervisorMachineValidateUpdate(t *testing.T) {
 				if err == nil {
 					t.Error("ValidateUpdate: want error, got nil")
 				}
+
 				return
 			}
+
 			if err != nil {
 				t.Fatalf("ValidateUpdate: unexpected error: %v", err)
 			}
+
 			if len(warnings) != 0 {
 				t.Errorf("ValidateUpdate: unexpected warnings: %v", warnings)
 			}
@@ -266,12 +276,14 @@ func TestHypervisorMachineValidateDelete(t *testing.T) {
 		{name: "invalid content still deletable", give: withMAC(validMachine(), "not-a-mac")},
 	}
 	wh := &webhook.HypervisorMachineWebhook{}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			warnings, err := wh.ValidateDelete(t.Context(), tt.give)
 			if err != nil {
 				t.Fatalf("ValidateDelete: unexpected error: %v", err)
 			}
+
 			if len(warnings) != 0 {
 				t.Errorf("ValidateDelete: unexpected warnings: %v", warnings)
 			}

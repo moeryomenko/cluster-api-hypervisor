@@ -76,9 +76,11 @@ func (w *HypervisorConfigWebhook) Default(_ context.Context, obj runtime.Object)
 	if !ok {
 		return apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorConfig but got a %T", obj))
 	}
+
 	if config.Spec.NodeName == "" {
 		config.Spec.NodeName = config.Name
 	}
+
 	return nil
 }
 
@@ -90,6 +92,7 @@ func (w *HypervisorConfigWebhook) ValidateCreate(_ context.Context, obj runtime.
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorConfig but got a %T", obj))
 	}
+
 	return nil, validateHypervisorConfig(config)
 }
 
@@ -103,10 +106,12 @@ func (w *HypervisorConfigWebhook) ValidateUpdate(
 	if _, ok := oldObj.(*bootstrapv1alpha1.HypervisorConfig); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorConfig but got a %T", oldObj))
 	}
+
 	config, ok := newObj.(*bootstrapv1alpha1.HypervisorConfig)
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorConfig but got a %T", newObj))
 	}
+
 	return nil, validateHypervisorConfig(config)
 }
 
@@ -116,6 +121,7 @@ func (w *HypervisorConfigWebhook) ValidateDelete(_ context.Context, obj runtime.
 	if _, ok := obj.(*bootstrapv1alpha1.HypervisorConfig); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorConfig but got a %T", obj))
 	}
+
 	return nil, nil
 }
 
@@ -132,21 +138,25 @@ func validateHypervisorConfig(config *bootstrapv1alpha1.HypervisorConfig) error 
 			field.NotSupported(fldPath.Child("role"), config.Spec.Role, []string{"control-plane", "worker"}),
 		)
 	}
+
 	if config.Spec.NodeName == "" {
 		allErrs = append(
 			allErrs,
 			field.Required(fldPath.Child("nodeName"), "must not be empty"),
 		)
 	}
+
 	if config.Spec.ClusterName == "" {
 		allErrs = append(
 			allErrs,
 			field.Required(fldPath.Child("clusterName"), "must not be empty"),
 		)
 	}
+
 	if len(allErrs) == 0 {
 		return nil
 	}
+
 	return apierrors.NewInvalid(config.GroupVersionKind().GroupKind(), config.Name, allErrs)
 }
 

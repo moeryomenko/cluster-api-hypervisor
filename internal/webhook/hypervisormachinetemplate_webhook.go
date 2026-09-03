@@ -74,6 +74,7 @@ func (w *HypervisorMachineTemplateWebhook) Default(_ context.Context, obj runtim
 	if _, ok := obj.(*infrav1.HypervisorMachineTemplate); !ok {
 		return apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorMachineTemplate but got a %T", obj))
 	}
+
 	return nil
 }
 
@@ -87,6 +88,7 @@ func (w *HypervisorMachineTemplateWebhook) ValidateCreate(
 	if _, ok := obj.(*infrav1.HypervisorMachineTemplate); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorMachineTemplate but got a %T", obj))
 	}
+
 	return nil, nil
 }
 
@@ -103,10 +105,12 @@ func (w *HypervisorMachineTemplateWebhook) ValidateUpdate(
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorMachineTemplate but got a %T", oldObj))
 	}
+
 	newTemplate, ok := newObj.(*infrav1.HypervisorMachineTemplate)
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorMachineTemplate but got a %T", newObj))
 	}
+
 	if !reflect.DeepEqual(oldTemplate.Spec.Template.Spec, newTemplate.Spec.Template.Spec) {
 		allErrs := field.ErrorList{
 			field.Invalid(
@@ -115,12 +119,14 @@ func (w *HypervisorMachineTemplateWebhook) ValidateUpdate(
 				"field is immutable",
 			),
 		}
+
 		return nil, apierrors.NewInvalid(
 			newTemplate.GroupVersionKind().GroupKind(),
 			newTemplate.Name,
 			allErrs,
 		)
 	}
+
 	return nil, nil
 }
 
@@ -134,6 +140,7 @@ func (w *HypervisorMachineTemplateWebhook) ValidateDelete(
 	if _, ok := obj.(*infrav1.HypervisorMachineTemplate); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorMachineTemplate but got a %T", obj))
 	}
+
 	return nil, nil
 }
 

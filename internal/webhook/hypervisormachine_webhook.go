@@ -80,6 +80,7 @@ func (w *HypervisorMachineWebhook) Default(_ context.Context, obj runtime.Object
 	if _, ok := obj.(*infrav1.HypervisorMachine); !ok {
 		return apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorMachine but got a %T", obj))
 	}
+
 	return nil
 }
 
@@ -91,6 +92,7 @@ func (w *HypervisorMachineWebhook) ValidateCreate(_ context.Context, obj runtime
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorMachine but got a %T", obj))
 	}
+
 	return nil, validateHypervisorMachine(machine)
 }
 
@@ -104,10 +106,12 @@ func (w *HypervisorMachineWebhook) ValidateUpdate(
 	if _, ok := oldObj.(*infrav1.HypervisorMachine); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorMachine but got a %T", oldObj))
 	}
+
 	machine, ok := newObj.(*infrav1.HypervisorMachine)
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorMachine but got a %T", newObj))
 	}
+
 	return nil, validateHypervisorMachine(machine)
 }
 
@@ -117,6 +121,7 @@ func (w *HypervisorMachineWebhook) ValidateDelete(_ context.Context, obj runtime
 	if _, ok := obj.(*infrav1.HypervisorMachine); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorMachine but got a %T", obj))
 	}
+
 	return nil, nil
 }
 
@@ -133,18 +138,21 @@ func validateHypervisorMachine(machine *infrav1.HypervisorMachine) error {
 			field.Invalid(fldPath.Child("cpu"), machine.Spec.CPU, "must be greater than 0"),
 		)
 	}
+
 	if machine.Spec.RAM <= 0 {
 		allErrs = append(
 			allErrs,
 			field.Invalid(fldPath.Child("ram"), machine.Spec.RAM, "must be greater than 0"),
 		)
 	}
+
 	if machine.Spec.Disk <= 0 {
 		allErrs = append(
 			allErrs,
 			field.Invalid(fldPath.Child("disk"), machine.Spec.Disk, "must be greater than 0"),
 		)
 	}
+
 	if machine.Spec.MAC != "" {
 		parsed, err := net.ParseMAC(machine.Spec.MAC)
 		if err != nil {
@@ -159,9 +167,11 @@ func validateHypervisorMachine(machine *infrav1.HypervisorMachine) error {
 			)
 		}
 	}
+
 	if len(allErrs) == 0 {
 		return nil
 	}
+
 	return apierrors.NewInvalid(machine.GroupVersionKind().GroupKind(), machine.Name, allErrs)
 }
 

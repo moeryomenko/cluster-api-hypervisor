@@ -74,6 +74,7 @@ func (w *HypervisorControlPlaneWebhook) Default(_ context.Context, obj runtime.O
 	if _, ok := obj.(*controlplanev1alpha1.HypervisorControlPlane); !ok {
 		return apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorControlPlane but got a %T", obj))
 	}
+
 	return nil
 }
 
@@ -89,6 +90,7 @@ func (w *HypervisorControlPlaneWebhook) ValidateCreate(
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorControlPlane but got a %T", obj))
 	}
+
 	return nil, validateHypervisorControlPlane(controlPlane)
 }
 
@@ -103,10 +105,12 @@ func (w *HypervisorControlPlaneWebhook) ValidateUpdate(
 	if _, ok := oldObj.(*controlplanev1alpha1.HypervisorControlPlane); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorControlPlane but got a %T", oldObj))
 	}
+
 	controlPlane, ok := newObj.(*controlplanev1alpha1.HypervisorControlPlane)
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorControlPlane but got a %T", newObj))
 	}
+
 	return nil, validateHypervisorControlPlane(controlPlane)
 }
 
@@ -119,6 +123,7 @@ func (w *HypervisorControlPlaneWebhook) ValidateDelete(
 	if _, ok := obj.(*controlplanev1alpha1.HypervisorControlPlane); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorControlPlane but got a %T", obj))
 	}
+
 	return nil, nil
 }
 
@@ -136,6 +141,7 @@ func validateHypervisorControlPlane(controlPlane *controlplanev1alpha1.Hyperviso
 			field.Invalid(fldPath.Child("replicas"), controlPlane.Spec.Replicas, "must be greater than or equal to 1"),
 		)
 	}
+
 	ref := controlPlane.Spec.MachineTemplate.Spec.InfrastructureRef
 	if ref.Kind == "" {
 		allErrs = append(
@@ -143,15 +149,18 @@ func validateHypervisorControlPlane(controlPlane *controlplanev1alpha1.Hyperviso
 			field.Required(fldPath.Child("machineTemplate", "spec", "infrastructureRef", "kind"), "must not be empty"),
 		)
 	}
+
 	if ref.Name == "" {
 		allErrs = append(
 			allErrs,
 			field.Required(fldPath.Child("machineTemplate", "spec", "infrastructureRef", "name"), "must not be empty"),
 		)
 	}
+
 	if len(allErrs) == 0 {
 		return nil
 	}
+
 	return apierrors.NewInvalid(controlPlane.GroupVersionKind().GroupKind(), controlPlane.Name, allErrs)
 }
 

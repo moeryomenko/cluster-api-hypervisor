@@ -120,6 +120,7 @@ func withTemplateMetadata(
 ) *v1alpha1.HypervisorMachineTemplate {
 	obj.Spec.Template.ObjectMeta.Labels = labels
 	obj.Spec.Template.ObjectMeta.Annotations = annotations
+
 	return obj
 }
 
@@ -187,11 +188,13 @@ func TestHypervisorMachineTemplateDefaulting(t *testing.T) {
 		},
 	}
 	wh := &webhook.HypervisorMachineTemplateWebhook{}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := wh.Default(t.Context(), tt.give); err != nil {
 				t.Fatalf("Default: %v", err)
 			}
+
 			if got := tt.give.Spec; !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("spec after Default = %#v, want %#v", got, tt.want)
 			}
@@ -230,6 +233,7 @@ func TestHypervisorMachineTemplateValidateCreate(t *testing.T) {
 		{name: "nil object", give: nil, wantErr: true},
 	}
 	wh := &webhook.HypervisorMachineTemplateWebhook{}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			warnings, err := wh.ValidateCreate(t.Context(), tt.give)
@@ -237,11 +241,14 @@ func TestHypervisorMachineTemplateValidateCreate(t *testing.T) {
 				if err == nil {
 					t.Error("ValidateCreate: want error, got nil")
 				}
+
 				return
 			}
+
 			if err != nil {
 				t.Fatalf("ValidateCreate: unexpected error: %v", err)
 			}
+
 			if len(warnings) != 0 {
 				t.Errorf("ValidateCreate: unexpected warnings: %v", warnings)
 			}
@@ -353,6 +360,7 @@ func TestHypervisorMachineTemplateValidateUpdate(t *testing.T) {
 		{name: "nil old object", oldObj: nil, newObj: validTemplate(), wantErr: true},
 	}
 	wh := &webhook.HypervisorMachineTemplateWebhook{}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			warnings, err := wh.ValidateUpdate(t.Context(), tt.oldObj, tt.newObj)
@@ -360,11 +368,14 @@ func TestHypervisorMachineTemplateValidateUpdate(t *testing.T) {
 				if err == nil {
 					t.Error("ValidateUpdate: want error, got nil")
 				}
+
 				return
 			}
+
 			if err != nil {
 				t.Fatalf("ValidateUpdate: unexpected error: %v", err)
 			}
+
 			if len(warnings) != 0 {
 				t.Errorf("ValidateUpdate: unexpected warnings: %v", warnings)
 			}
@@ -384,12 +395,14 @@ func TestHypervisorMachineTemplateValidateDelete(t *testing.T) {
 		{name: "zero-value template", give: &v1alpha1.HypervisorMachineTemplate{}},
 	}
 	wh := &webhook.HypervisorMachineTemplateWebhook{}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			warnings, err := wh.ValidateDelete(t.Context(), tt.give)
 			if err != nil {
 				t.Fatalf("ValidateDelete: unexpected error: %v", err)
 			}
+
 			if len(warnings) != 0 {
 				t.Errorf("ValidateDelete: unexpected warnings: %v", warnings)
 			}
