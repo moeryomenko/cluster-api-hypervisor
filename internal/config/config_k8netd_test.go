@@ -54,20 +54,26 @@ const (
 
 func fieldExists(t *testing.T, typ reflect.Type, name string) bool {
 	t.Helper()
+
 	_, ok := typ.FieldByName(name)
+
 	return ok
 }
 
 func stringFieldValue(t *testing.T, cfg config.Config, name string) (string, bool) {
 	t.Helper()
+
 	v := reflect.ValueOf(cfg)
+
 	f := v.FieldByName(name)
 	if !f.IsValid() {
 		return "", false
 	}
+
 	if f.Kind() != reflect.String {
 		t.Fatalf("field %q is not a string (kind %v)", name, f.Kind())
 	}
+
 	return f.String(), true
 }
 
@@ -82,6 +88,7 @@ func TestK8NetdSocket_DefaultWhenUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
+
 	got, ok := stringFieldValue(t, cfg, "K8NetdSocket")
 	if !ok {
 		t.Fatalf(
@@ -89,6 +96,7 @@ func TestK8NetdSocket_DefaultWhenUnset(t *testing.T) {
 			expectedK8NetdSocketDefault,
 		)
 	}
+
 	if got != expectedK8NetdSocketDefault {
 		t.Errorf("K8NetdSocket when unset = %q, want default %q", got, expectedK8NetdSocketDefault)
 	}
@@ -100,10 +108,12 @@ func TestK8NetdSocket_DefaultWhenEmptyString(t *testing.T) {
 	env := map[string]string{
 		"HYPERVISOR_K8NETD_SOCKET": "",
 	}
+
 	cfg, err := config.Load(func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
+
 	got, ok := stringFieldValue(t, cfg, "K8NetdSocket")
 	if !ok {
 		t.Fatalf(
@@ -111,6 +121,7 @@ func TestK8NetdSocket_DefaultWhenEmptyString(t *testing.T) {
 			expectedK8NetdSocketDefault,
 		)
 	}
+
 	if got != expectedK8NetdSocketDefault {
 		t.Errorf("K8NetdSocket when HYPERVISOR_K8NETD_SOCKET=\"\" = %q, want default %q", got, expectedK8NetdSocketDefault)
 	}
@@ -123,10 +134,12 @@ func TestK8NetdSocket_NilEnvUsesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(nil) unexpected error: %v", err)
 	}
+
 	got, ok := stringFieldValue(t, cfg, "K8NetdSocket")
 	if !ok {
 		t.Fatalf("Config has no field K8NetdSocket — Load(nil) must still expose default %q", expectedK8NetdSocketDefault)
 	}
+
 	if got != expectedK8NetdSocketDefault {
 		t.Errorf("K8NetdSocket with nil env = %q, want default %q", got, expectedK8NetdSocketDefault)
 	}
@@ -139,14 +152,17 @@ func TestK8NetdSocket_OverrideWhenSet(t *testing.T) {
 	env := map[string]string{
 		"HYPERVISOR_K8NETD_SOCKET": custom,
 	}
+
 	cfg, err := config.Load(func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
+
 	got, ok := stringFieldValue(t, cfg, "K8NetdSocket")
 	if !ok {
 		t.Fatalf("Config has no field K8NetdSocket — REQ-002 requires it")
 	}
+
 	if got != custom {
 		t.Errorf("K8NetdSocket when HYPERVISOR_K8NETD_SOCKET=%q = %q, want %q", custom, got, custom)
 	}
@@ -164,15 +180,19 @@ func TestK8NetdSocket_PreservesCustomValueVerbatim(t *testing.T) {
 	for _, custom := range cases {
 		t.Run(custom, func(t *testing.T) {
 			t.Parallel()
+
 			env := map[string]string{"HYPERVISOR_K8NETD_SOCKET": custom}
+
 			cfg, err := config.Load(func(name string) string { return env[name] })
 			if err != nil {
 				t.Fatalf("Load() unexpected error: %v", err)
 			}
+
 			got, ok := stringFieldValue(t, cfg, "K8NetdSocket")
 			if !ok {
 				t.Fatalf("Config has no field K8NetdSocket")
 			}
+
 			if got != custom {
 				t.Errorf("K8NetdSocket verbatim: got %q, want %q", got, custom)
 			}
@@ -184,6 +204,7 @@ func TestK8NetdSocket_QueriedByLoad(t *testing.T) {
 	t.Parallel()
 
 	queried := map[string]bool{}
+
 	env := func(name string) string {
 		queried[name] = true
 		return ""
@@ -191,6 +212,7 @@ func TestK8NetdSocket_QueriedByLoad(t *testing.T) {
 	if _, err := config.Load(env); err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
+
 	if !queried["HYPERVISOR_K8NETD_SOCKET"] {
 		t.Errorf("Load() did not query HYPERVISOR_K8NETD_SOCKET — REQ-002 requires it")
 	}
@@ -213,6 +235,7 @@ func TestHYPERVISOR_DNSMASQ_IgnoredNotQueried(t *testing.T) {
 	t.Parallel()
 
 	queried := map[string]bool{}
+
 	env := func(name string) string {
 		queried[name] = true
 		return ""
@@ -220,6 +243,7 @@ func TestHYPERVISOR_DNSMASQ_IgnoredNotQueried(t *testing.T) {
 	if _, err := config.Load(env); err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
+
 	if queried["HYPERVISOR_DNSMASQ"] {
 		t.Errorf("Load() queried HYPERVISOR_DNSMASQ — REQ-002 requires HYPERVISOR_DNSMASQ be ignored (field removed)")
 	}
@@ -232,10 +256,12 @@ func TestHYPERVISOR_DNSMASQ_DoesNotAffectConfig(t *testing.T) {
 	// any observable Config field compared to not setting it.
 	loadWith := func(dnsmasq string) config.Config {
 		env := map[string]string{"HYPERVISOR_DNSMASQ": dnsmasq}
+
 		cfg, err := config.Load(func(name string) string { return env[name] })
 		if err != nil {
 			t.Fatalf("Load() unexpected error: %v", err)
 		}
+
 		return cfg
 	}
 	cfgWithout := loadWith("")
@@ -271,6 +297,7 @@ func TestStateDir_DefaultIsUserWritable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
+
 	if cfg.StateDir == oldStateDirDefault {
 		t.Errorf(
 			"StateDir default = %q — REQ-002 requires a new user-writable path, not %q",
@@ -278,9 +305,11 @@ func TestStateDir_DefaultIsUserWritable(t *testing.T) {
 			oldStateDirDefault,
 		)
 	}
+
 	if cfg.StateDir == "" {
 		t.Errorf("StateDir default is empty — must be a user-writable path per REQ-002")
 	}
+
 	if strings.HasPrefix(cfg.StateDir, "/var/lib/") {
 		t.Errorf(
 			"StateDir default = %q — must not be under /var/lib (requires root) per REQ-002 rootless contract",
@@ -308,6 +337,7 @@ func TestStateDir_DefaultNotVarLibWhenNilEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(nil) unexpected error: %v", err)
 	}
+
 	if cfg.StateDir == oldStateDirDefault {
 		t.Errorf("StateDir with nil env = %q — must be new user-writable default, not %q", cfg.StateDir, oldStateDirDefault)
 	}
@@ -319,10 +349,12 @@ func TestStateDir_OverrideStillHonoured(t *testing.T) {
 	// grill: ensure default change did not break explicit override
 	custom := "/tmp/my-state"
 	env := map[string]string{"HYPERVISOR_STATE_DIR": custom}
+
 	cfg, err := config.Load(func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
+
 	if cfg.StateDir != custom {
 		t.Errorf(
 			"StateDir when HYPERVISOR_STATE_DIR=%q = %q, want %q (override must still work)",
@@ -337,10 +369,12 @@ func TestStateDir_EmptyStringFallsBackToNewDefault(t *testing.T) {
 	t.Parallel()
 
 	env := map[string]string{"HYPERVISOR_STATE_DIR": ""}
+
 	cfg, err := config.Load(func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
+
 	if cfg.StateDir == oldStateDirDefault {
 		t.Errorf(
 			"StateDir when HYPERVISOR_STATE_DIR=\"\" = %q — must fall back to new user-writable default, not old %q",
@@ -348,6 +382,7 @@ func TestStateDir_EmptyStringFallsBackToNewDefault(t *testing.T) {
 			oldStateDirDefault,
 		)
 	}
+
 	if cfg.StateDir == "" {
 		t.Errorf("StateDir when HYPERVISOR_STATE_DIR=\"\" is empty — must fall back to default")
 	}
@@ -376,6 +411,7 @@ func TestK8NetdConfig_NetworkCIDRValidationUntouched(t *testing.T) {
 			"Load() with invalid HYPERVISOR_NETWORK_CIDR expected error, got nil — REQ-002 must not change CIDR validation",
 		)
 	}
+
 	if !strings.Contains(strings.ToLower(err.Error()), "cidr") {
 		t.Errorf("error %q does not mention cidr", err)
 	}

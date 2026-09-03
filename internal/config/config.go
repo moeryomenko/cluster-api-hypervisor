@@ -90,9 +90,11 @@ func defaultStateDir() string {
 	if home := os.Getenv("HOME"); home != "" {
 		return filepath.Join(home, ".local", "state", "k8slab")
 	}
+
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
 		return filepath.Join(xdg, "k8slab")
 	}
+
 	return "/tmp/k8slab-state"
 }
 
@@ -135,6 +137,7 @@ func valueOrDefault(value, fallback string) string {
 	if value == "" {
 		return fallback
 	}
+
 	return value
 }
 
@@ -144,8 +147,10 @@ func validateNetworkCIDR(cidr string) error {
 	if err != nil {
 		return fmt.Errorf("invalid network CIDR %q: %w", cidr, err)
 	}
+
 	if !prefix.Addr().Is4() {
 		return fmt.Errorf("invalid network CIDR %q: not an IPv4 network", cidr)
 	}
+
 	return nil
 }

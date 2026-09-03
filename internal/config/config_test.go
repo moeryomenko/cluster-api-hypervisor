@@ -72,9 +72,11 @@ func expectedDefaultStateDir() string {
 	if home := os.Getenv("HOME"); home != "" {
 		return filepath.Join(home, ".local", "state", "k8slab")
 	}
+
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
 		return filepath.Join(xdg, "k8slab")
 	}
+
 	return "/tmp/k8slab-state"
 }
 
@@ -215,6 +217,7 @@ func TestLoadNetworkCIDRValidation(t *testing.T) {
 				if name == "HYPERVISOR_NETWORK_CIDR" {
 					return tt.cidr
 				}
+
 				return ""
 			})
 			if err == nil {
@@ -281,6 +284,7 @@ func TestLoadSSHPublicKeyFile(t *testing.T) {
 		t.Parallel()
 
 		const path = "/build/ssh-lab.pub"
+
 		got := loadConfig(t, map[string]string{"HYPERVISOR_SSH_PUBLIC_KEY_FILE": path})
 		if got.SSHPublicKeyFile != path {
 			t.Errorf("SSHPublicKeyFile = %q, want %q", got.SSHPublicKeyFile, path)
