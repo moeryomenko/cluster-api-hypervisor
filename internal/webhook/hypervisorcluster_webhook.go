@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/netip"
 
+	"golang.org/x/mod/semver"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -76,15 +77,19 @@ func (w *HypervisorClusterWebhook) Default(_ context.Context, obj runtime.Object
 	if !ok {
 		return apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorCluster but got a %T", obj))
 	}
+
 	if cluster.Spec.Network.CIDR == "" {
 		cluster.Spec.Network.CIDR = "192.168.124.0/24"
 	}
+
 	if cluster.Spec.Network.BridgeName == "" {
 		cluster.Spec.Network.BridgeName = "k8sbr0"
 	}
+
 	if cluster.Spec.Network.NATTable == "" {
 		cluster.Spec.Network.NATTable = "k8slab"
 	}
+
 	return nil
 }
 
@@ -96,6 +101,7 @@ func (w *HypervisorClusterWebhook) ValidateCreate(_ context.Context, obj runtime
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorCluster but got a %T", obj))
 	}
+
 	return nil, validateHypervisorCluster(cluster)
 }
 
@@ -109,10 +115,12 @@ func (w *HypervisorClusterWebhook) ValidateUpdate(
 	if _, ok := oldObj.(*infrav1.HypervisorCluster); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorCluster but got a %T", oldObj))
 	}
+
 	cluster, ok := newObj.(*infrav1.HypervisorCluster)
 	if !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorCluster but got a %T", newObj))
 	}
+
 	return nil, validateHypervisorCluster(cluster)
 }
 
@@ -122,6 +130,7 @@ func (w *HypervisorClusterWebhook) ValidateDelete(_ context.Context, obj runtime
 	if _, ok := obj.(*infrav1.HypervisorCluster); !ok {
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a HypervisorCluster but got a %T", obj))
 	}
+
 	return nil, nil
 }
 
@@ -138,6 +147,7 @@ func validateHypervisorCluster(cluster *infrav1.HypervisorCluster) error {
 			field.Invalid(fldPath.Child("cidr"), cluster.Spec.Network.CIDR, "must be a valid IPv4 CIDR"),
 		)
 	}
+
 	if cluster.Spec.Network.Gateway != "" {
 		if _, err := netip.ParseAddr(cluster.Spec.Network.Gateway); err != nil {
 			allErrs = append(
@@ -146,10 +156,43 @@ func validateHypervisorCluster(cluster *infrav1.HypervisorCluster) error {
 			)
 		}
 	}
+
+	allErrs = append(allErrs, validateClusterImages(cluster, field.NewPath("spec", "images"))...)
+
 	if len(allErrs) == 0 {
 		return nil
 	}
+
 	return apierrors.NewInvalid(cluster.GroupVersionKind().GroupKind(), cluster.Name, allErrs)
+}
+
+// validateClusterImages validates the version-to-image map of a cluster:
+// v-prefixed semver versions, unique versions, and non-empty host paths.
+func validateClusterImages(cluster *infrav1.HypervisorCluster, fldPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+
+	seen := map[string]bool{}
+
+	for i, image := range cluster.Spec.Images {
+		imagePath := fldPath.Index(i)
+		if !semver.IsValid(image.Version) {
+			allErrs = append(
+				allErrs,
+				field.Invalid(imagePath.Child("version"), image.Version, "must be v-prefixed semver (e.g. v1.38.0)"),
+			)
+		}
+
+		if seen[image.Version] {
+			allErrs = append(allErrs, field.Duplicate(imagePath.Child("version"), image.Version))
+		}
+
+		seen[image.Version] = true
+		if image.Path == "" {
+			allErrs = append(allErrs, field.Required(imagePath.Child("path"), "must not be empty"))
+		}
+	}
+
+	return allErrs
 }
 
 // Default delegates to the runtime.Object-based implementation.
