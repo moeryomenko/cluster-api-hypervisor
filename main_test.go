@@ -132,7 +132,9 @@ func startManager(t *testing.T, args ...string) *runningManager {
 		exited: make(chan struct{}),
 	}
 	mgr.cmd.Stdout = &mgr.stdout
+
 	mgr.cmd.Stderr = &mgr.stderr
+
 	if err := mgr.cmd.Start(); err != nil {
 		t.Fatalf("start manager binary: %v", err)
 	}
@@ -140,16 +142,19 @@ func startManager(t *testing.T, args ...string) *runningManager {
 		_ = mgr.cmd.Wait()
 		close(mgr.exited)
 	}()
+
 	t.Cleanup(func() {
 		if mgr.cmd.Process != nil {
 			_ = mgr.cmd.Process.Kill()
 		}
+
 		select {
 		case <-mgr.exited:
 		case <-time.After(5 * time.Second):
 			t.Logf("manager process did not exit after kill")
 		}
 	})
+
 	return mgr
 }
 
@@ -167,6 +172,7 @@ func (m *runningManager) stop(t *testing.T) {
 	if err := m.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Logf("send SIGTERM to manager: %v", err)
 	}
+
 	select {
 	case <-m.exited:
 		if m.cmd.ProcessState.ExitCode() != 0 {
@@ -194,14 +200,17 @@ func (m *runningManager) alive() bool {
 // port 0 and reading the OS-assigned port number.
 func freePort(t *testing.T) int {
 	t.Helper()
+
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for free port: %v", err)
 	}
+
 	port := l.Addr().(*net.TCPAddr).Port
 	if err := l.Close(); err != nil {
 		t.Fatalf("close free port listener: %v", err)
 	}
+
 	return port
 }
 
@@ -217,10 +226,12 @@ func buildManagerBinary(t *testing.T) string {
 
 	bin := filepath.Join(t.TempDir(), "cluster-api-hypervisor")
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, ".")
+
 	cmd.Env = append(os.Environ(), "GOPROXY=off", "GOTOOLCHAIN=local")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build manager binary: %v: %s", err, out)
 	}
+
 	return bin
 }
 
@@ -232,8 +243,10 @@ func writeEnvTestKubeconfig(t *testing.T, data []byte) string {
 	if len(data) == 0 {
 		t.Fatalf("envtest control plane did not expose a kubeconfig")
 	}
+
 	path := filepath.Join(t.TempDir(), "kubeconfig")
 	writeFile(t, path, data)
+
 	return path
 }
 
@@ -244,14 +257,18 @@ func waitForHealthz(t *testing.T, mgr *runningManager, url string, timeout time.
 
 	client := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(timeout)
+
 	var last string
+
 	for {
 		if !mgr.alive() {
 			t.Fatalf("manager exited before serving %s (last: %s); stderr:\n%s", url, last, mgr.stderr.String())
 		}
+
 		resp, err := client.Get(url)
 		if err == nil {
 			body, readErr := io.ReadAll(resp.Body)
+
 			_ = resp.Body.Close()
 			switch {
 			case readErr != nil:
@@ -264,9 +281,11 @@ func waitForHealthz(t *testing.T, mgr *runningManager, url string, timeout time.
 		} else {
 			last = err.Error()
 		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("health endpoint %s never answered 200 (last: %s); stderr:\n%s", url, last, mgr.stderr.String())
 		}
+
 		time.Sleep(200 * time.Millisecond)
 	}
 }
@@ -283,6 +302,7 @@ func assertWebhookSpeaksTLS(t *testing.T, mgr *runningManager, url, caPath strin
 	if err != nil {
 		t.Fatalf("read CA certificate %s: %v", caPath, err)
 	}
+
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caPEM) {
 		t.Fatalf("CA file %s contains no usable certificates", caPath)
@@ -296,21 +316,26 @@ func assertWebhookSpeaksTLS(t *testing.T, mgr *runningManager, url, caPath strin
 	}
 
 	deadline := time.Now().Add(timeout)
+
 	var lastErr error
+
 	for {
 		resp, err := client.Get(url)
 		if err == nil {
 			_ = resp.Body.Close()
 			return
 		}
+
 		if isTLSVerificationError(err) {
 			t.Fatalf("webhook TLS certificate rejected by the provisioned CA: %v", err)
 		}
+
 		lastErr = err
 		if time.Now().After(deadline) {
 			t.Fatalf("webhook TLS endpoint %s never became reachable (last error: %v); stderr:\n%s",
 				url, lastErr, mgr.stderr.String())
 		}
+
 		time.Sleep(200 * time.Millisecond)
 	}
 }
@@ -321,13 +346,17 @@ func isTLSVerificationError(err error) bool {
 	if _, ok := errors.AsType[x509.UnknownAuthorityError](err); ok {
 		return true
 	}
+
 	if _, ok := errors.AsType[x509.CertificateInvalidError](err); ok {
 		return true
 	}
+
 	if _, ok := errors.AsType[x509.HostnameError](err); ok {
 		return true
 	}
+
 	var verificationError *tls.CertificateVerificationError
+
 	return errors.As(err, &verificationError)
 }
 
@@ -341,6 +370,7 @@ func generateWebhookCerts(t *testing.T) (caPEM, serverCertPEM, serverKeyPEM []by
 	if err != nil {
 		t.Fatalf("generate CA key: %v", err)
 	}
+
 	caTemplate := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "cluster-api-hypervisor test CA"},
@@ -350,10 +380,12 @@ func generateWebhookCerts(t *testing.T) (caPEM, serverCertPEM, serverKeyPEM []by
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
+
 	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
 	if err != nil {
 		t.Fatalf("create CA certificate: %v", err)
 	}
+
 	caCert, err := x509.ParseCertificate(caDER)
 	if err != nil {
 		t.Fatalf("parse CA certificate: %v", err)
@@ -363,6 +395,7 @@ func generateWebhookCerts(t *testing.T) (caPEM, serverCertPEM, serverKeyPEM []by
 	if err != nil {
 		t.Fatalf("generate webhook server key: %v", err)
 	}
+
 	serverTemplate := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
 		Subject:      pkix.Name{CommonName: "cluster-api-hypervisor webhook"},
@@ -373,10 +406,12 @@ func generateWebhookCerts(t *testing.T) (caPEM, serverCertPEM, serverKeyPEM []by
 		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
 		DNSNames:     []string{"localhost"},
 	}
+
 	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caCert, &serverKey.PublicKey, caKey)
 	if err != nil {
 		t.Fatalf("create webhook server certificate: %v", err)
 	}
+
 	serverKeyDER, err := x509.MarshalECPrivateKey(serverKey)
 	if err != nil {
 		t.Fatalf("marshal webhook server key: %v", err)
@@ -385,6 +420,7 @@ func generateWebhookCerts(t *testing.T) (caPEM, serverCertPEM, serverKeyPEM []by
 	caPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
 	serverCertPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverDER})
 	serverKeyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: serverKeyDER})
+
 	return caPEM, serverCertPEM, serverKeyPEM
 }
 
@@ -461,12 +497,16 @@ func TestMainInfraControllerFlags(t *testing.T) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, "--help")
+
 	var stdout, stderr bytes.Buffer
+
 	cmd.Stdout = &stdout
+
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("manager --help exited with an error: %v (stderr: %s)", err, stderr.String())
 	}
+
 	output := stdout.String() + stderr.String()
 
 	for _, flag := range infraConcurrencyFlags {
@@ -487,12 +527,16 @@ func TestMainInfraControllerFlags(t *testing.T) {
 			// proves the flag is parsed as an integer at runtime rather than
 			// accepted as an opaque string.
 			reject := exec.CommandContext(ctx, bin, "--"+flag+"=not-an-int")
+
 			var rejectOut, rejectErr bytes.Buffer
+
 			reject.Stdout = &rejectOut
+
 			reject.Stderr = &rejectErr
 			if err := reject.Run(); err == nil {
 				t.Fatalf("manager accepted --%s=not-an-int, want a flag parse error", flag)
 			}
+
 			if msg := rejectErr.String(); !strings.Contains(msg, "invalid argument") {
 				t.Errorf("manager rejected --%s=not-an-int with %q, want an invalid-argument parse error", flag, msg)
 			}
@@ -513,6 +557,7 @@ func TestMainInfraControllersRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helpers.StartEnvTest: %v", err)
 	}
+
 	installCAPICoreCRDs(t, envTest.Env.Config)
 
 	// The test client is built over the manager's own package-level scheme,
@@ -532,6 +577,7 @@ func TestMainInfraControllersRegistered(t *testing.T) {
 	cluster := newCAPIInfrastructureCluster(t, c, namespace, clusterName)
 	pausedHC := newPausedHypervisorCluster(t, c, namespace, cluster)
 	baselineResourceVersion := pausedHC.ResourceVersion
+
 	newBareHypervisorMachine(t, c, namespace, machineName)
 
 	kubeconfigPath := writeEnvTestKubeconfig(t, envTest.Env.KubeConfig)
@@ -579,10 +625,12 @@ func TestMainInfraControllersRegistered(t *testing.T) {
 	// The machine controller stops at owner resolution: the unowned machine
 	// gains no finalizer, no status, and no provider ID.
 	machineKey := client.ObjectKey{Namespace: namespace, Name: machineName}
+
 	hm := &infrastructurev1alpha1.HypervisorMachine{}
 	if err := c.Get(t.Context(), machineKey, hm); err != nil {
 		t.Fatalf("Get HypervisorMachine: %v", err)
 	}
+
 	if len(hm.Finalizers) != 0 || hm.Status.Ready || len(hm.Status.Addresses) != 0 || hm.Status.ProviderID != nil {
 		t.Errorf("unowned HypervisorMachine modified: finalizers=%v ready=%v addresses=%v providerID=%v",
 			hm.Finalizers, hm.Status.Ready, hm.Status.Addresses, hm.Status.ProviderID)
@@ -599,9 +647,11 @@ func createInfraNamespace(t *testing.T, c client.Client, name string) {
 	if err := c.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}); err != nil {
 		t.Fatalf("create namespace %q: %v", name, err)
 	}
+
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
 		_ = c.Delete(cleanupCtx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}})
 	})
 }
@@ -625,6 +675,7 @@ func newCAPIInfrastructureCluster(t *testing.T, c client.Client, namespace, name
 	if err := c.Create(t.Context(), cluster); err != nil {
 		t.Fatalf("create Cluster %q: %v", name, err)
 	}
+
 	return cluster
 }
 
@@ -671,6 +722,7 @@ func newPausedHypervisorCluster(
 	if err := c.Create(t.Context(), hc); err != nil {
 		t.Fatalf("create paused HypervisorCluster %q: %v", cluster.Name, err)
 	}
+
 	return hc
 }
 
@@ -700,6 +752,7 @@ func installCAPICoreCRDs(t *testing.T, cfg *rest.Config) {
 	if err != nil {
 		t.Fatalf("resolve cluster-api module directory: %v", err)
 	}
+
 	paths := []string{
 		filepath.Join(dir, "cluster.x-k8s.io_clusters.yaml"),
 		filepath.Join(dir, "cluster.x-k8s.io_machines.yaml"),
@@ -716,6 +769,7 @@ func capiCRDDirectory() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("go list -m sigs.k8s.io/cluster-api: %w", err)
 	}
+
 	return filepath.Join(strings.TrimSpace(string(out)), "config", "crd", "bases"), nil
 }
 
@@ -723,18 +777,23 @@ func capiCRDDirectory() (string, error) {
 // the body on a 200 response.
 func scrapeMetrics(mgr *runningManager, metricsPort int) (string, error) {
 	httpClient := &http.Client{Timeout: 2 * time.Second}
+
 	resp, err := httpClient.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", metricsPort))
 	if err != nil {
 		return "", err
 	}
+
 	body, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
+
 	if err != nil {
 		return "", err
 	}
+
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("metrics endpoint status %d", resp.StatusCode)
 	}
+
 	return string(body), nil
 }
 
@@ -752,11 +811,14 @@ func waitForControllerConcurrency(
 
 	re := regexp.MustCompile(`controller_runtime_max_concurrent_reconciles\{controller="` + controller + `"\} (\d+)`)
 	deadline := time.Now().Add(timeout)
+
 	var lastBody string
+
 	for {
 		if !mgr.alive() {
 			t.Fatalf("manager exited while waiting for controller %q concurrency; stderr:\n%s", controller, mgr.stderr.String())
 		}
+
 		body, err := scrapeMetrics(mgr, metricsPort)
 		if err == nil {
 			lastBody = body
@@ -766,9 +828,11 @@ func waitForControllerConcurrency(
 				}
 			}
 		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("controller %q never reported max-concurrent-reconciles %d (metrics body:\n%s)", controller, want, lastBody)
 		}
+
 		time.Sleep(200 * time.Millisecond)
 	}
 }
@@ -792,11 +856,14 @@ func waitForControllerReconcileSuccess(
 		`controller_runtime_reconcile_total\{controller="` + controller + `",result="success"\} (\d+)`,
 	)
 	deadline := time.Now().Add(timeout)
+
 	var lastBody string
+
 	for {
 		if !mgr.alive() {
 			t.Fatalf("manager exited while waiting for controller %q reconcile; stderr:\n%s", controller, mgr.stderr.String())
 		}
+
 		body, err := scrapeMetrics(mgr, metricsPort)
 		if err == nil {
 			lastBody = body
@@ -806,9 +873,11 @@ func waitForControllerReconcileSuccess(
 				}
 			}
 		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("controller %q never reported a successful reconcile (metrics body:\n%s)", controller, lastBody)
 		}
+
 		time.Sleep(200 * time.Millisecond)
 	}
 }
@@ -821,23 +890,29 @@ func assertPausedClusterUntouched(t *testing.T, c client.Client, key client.Obje
 	t.Helper()
 
 	deadline := time.Now().Add(10 * time.Second)
+
 	for {
 		hc := &infrastructurev1alpha1.HypervisorCluster{}
 		if err := c.Get(t.Context(), key, hc); err != nil {
 			t.Fatalf("Get paused HypervisorCluster: %v", err)
 		}
+
 		if hc.ResourceVersion != baselineResourceVersion {
 			t.Fatalf("paused HypervisorCluster modified: resourceVersion %s -> %s", baselineResourceVersion, hc.ResourceVersion)
 		}
+
 		if len(hc.Finalizers) != 0 {
 			t.Fatalf("paused HypervisorCluster gained finalizers %v", hc.Finalizers)
 		}
+
 		if hc.Status.Ready || len(hc.Status.Conditions) != 0 {
 			t.Fatalf("paused HypervisorCluster status changed: ready=%v conditions=%v", hc.Status.Ready, hc.Status.Conditions)
 		}
+
 		if time.Now().After(deadline) {
 			return
 		}
+
 		time.Sleep(250 * time.Millisecond)
 	}
 }
@@ -900,12 +975,16 @@ func TestMainBootstrapControllerFlags(t *testing.T) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, "--help")
+
 	var stdout, stderr bytes.Buffer
+
 	cmd.Stdout = &stdout
+
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("manager --help exited with an error: %v (stderr: %s)", err, stderr.String())
 	}
+
 	output := stdout.String() + stderr.String()
 
 	for _, flag := range bootstrapConcurrencyFlags {
@@ -926,12 +1005,16 @@ func TestMainBootstrapControllerFlags(t *testing.T) {
 			// proves the flag is parsed as an integer at runtime rather than
 			// accepted as an opaque string.
 			reject := exec.CommandContext(ctx, bin, "--"+flag+"=not-an-int")
+
 			var rejectOut, rejectErr bytes.Buffer
+
 			reject.Stdout = &rejectOut
+
 			reject.Stderr = &rejectErr
 			if err := reject.Run(); err == nil {
 				t.Fatalf("manager accepted --%s=not-an-int, want a flag parse error", flag)
 			}
+
 			if msg := rejectErr.String(); !strings.Contains(msg, "invalid argument") {
 				t.Errorf("manager rejected --%s=not-an-int with %q, want an invalid-argument parse error", flag, msg)
 			}
@@ -955,6 +1038,7 @@ func TestMainBootstrapControllersRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helpers.StartEnvTest: %v", err)
 	}
+
 	installCAPICoreCRDs(t, envTest.Env.Config)
 
 	kubeconfigPath := writeEnvTestKubeconfig(t, envTest.Env.KubeConfig)
@@ -1017,6 +1101,7 @@ func assertNoControllerReconciles(
 
 	re := regexp.MustCompile(`controller_runtime_reconcile_total\{controller="` + controller + `"(?:,[^}]*)?\} (\d+)`)
 	deadline := time.Now().Add(timeout)
+
 	for {
 		if !mgr.alive() {
 			t.Fatalf(
@@ -1025,6 +1110,7 @@ func assertNoControllerReconciles(
 				mgr.stderr.String(),
 			)
 		}
+
 		body, err := scrapeMetrics(mgr, metricsPort)
 		if err == nil {
 			for _, m := range re.FindAllStringSubmatch(body, -1) {
@@ -1032,14 +1118,17 @@ func assertNoControllerReconciles(
 				if err != nil {
 					t.Fatalf("controller %q reconcile_total series has non-integer value %q: %s", controller, m[1], m[0])
 				}
+
 				if n > 0 {
 					t.Fatalf("controller %q recorded an unexpected reconcile count %d: %s", controller, n, m[0])
 				}
 			}
 		}
+
 		if time.Now().After(deadline) {
 			return
 		}
+
 		time.Sleep(250 * time.Millisecond)
 	}
 }

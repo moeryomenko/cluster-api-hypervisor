@@ -45,13 +45,16 @@ func TestSeedClusterAdminBinding(t *testing.T) {
 	if err := seedClusterAdminBinding(ctx, cs); err != nil {
 		t.Fatalf("seedClusterAdminBinding: %v", err)
 	}
+
 	b, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, "cluster-ca-admin", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get cluster-ca-admin binding: %v", err)
 	}
+
 	if b.RoleRef.Name != "cluster-admin" {
 		t.Errorf("binding role = %q, want cluster-admin", b.RoleRef.Name)
 	}
+
 	if len(b.Subjects) != 1 || b.Subjects[0].Name != "cluster-ca" {
 		t.Errorf("binding subjects = %+v, want [cluster-ca]", b.Subjects)
 	}
@@ -72,13 +75,16 @@ func TestSeedKubeDNSService(t *testing.T) {
 	if err := seedKubeDNSService(ctx, cs); err != nil {
 		t.Fatalf("seedKubeDNSService: %v", err)
 	}
+
 	svc, err := cs.CoreV1().Services("kube-system").Get(ctx, "kube-dns", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get kube-dns Service: %v", err)
 	}
+
 	if svc.Spec.ClusterIP != "10.96.0.10" {
 		t.Errorf("kube-dns clusterIP = %q, want 10.96.0.10", svc.Spec.ClusterIP)
 	}
+
 	if svc.Spec.Selector["k8s-app"] != "kube-dns" {
 		t.Errorf("kube-dns selector = %v, want k8s-app=kube-dns", svc.Spec.Selector)
 	}
@@ -102,10 +108,12 @@ func TestSeedKubeDNSServiceHonorsExisting(t *testing.T) {
 	if err := seedKubeDNSService(ctx, cs); err != nil {
 		t.Fatalf("seedKubeDNSService on existing Service: %v", err)
 	}
+
 	got, err := cs.CoreV1().Services("kube-system").Get(ctx, "kube-dns", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get kube-dns: %v", err)
 	}
+
 	if got.Spec.ClusterIP != "10.96.0.10" {
 		t.Errorf("kube-dns clusterIP changed to %q", got.Spec.ClusterIP)
 	}
@@ -123,13 +131,16 @@ func TestSeedCiliumConfig(t *testing.T) {
 	if err := seedCiliumConfig(ctx, cs, "192.168.124.20"); err != nil {
 		t.Fatalf("seedCiliumConfig: %v", err)
 	}
+
 	cm, err := cs.CoreV1().ConfigMaps("kube-system").Get(ctx, "cilium-config", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get cilium-config: %v", err)
 	}
+
 	if cm.Data["k8sServiceHost"] != "192.168.124.20" {
 		t.Errorf("k8sServiceHost = %q, want 192.168.124.20", cm.Data["k8sServiceHost"])
 	}
+
 	if cm.Data["k8sServicePort"] != strconv.Itoa(controlPlaneAPIServerPort) {
 		t.Errorf("k8sServicePort = %q, want %d", cm.Data["k8sServicePort"], controlPlaneAPIServerPort)
 	}
@@ -154,6 +165,7 @@ func TestSeedCiliumConfigMissingConfigMap(t *testing.T) {
 	if err := seedCiliumConfig(ctx, cs, "192.168.124.20"); err != nil {
 		t.Fatalf("seedCiliumConfig on missing ConfigMap: %v", err)
 	}
+
 	_, err := cs.CoreV1().ConfigMaps("kube-system").Get(ctx, "cilium-config", metav1.GetOptions{})
 	if !apierrors.IsNotFound(err) {
 		t.Errorf("cilium-config should not be created by the seed: %v", err)
@@ -172,10 +184,12 @@ func TestSeedCiliumConfigEmptyIP(t *testing.T) {
 	if err := seedCiliumConfig(ctx, cs, ""); err != nil {
 		t.Fatalf("seedCiliumConfig with empty IP: %v", err)
 	}
+
 	cm, err := cs.CoreV1().ConfigMaps("kube-system").Get(ctx, "cilium-config", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get cilium-config: %v", err)
 	}
+
 	if _, ok := cm.Data["k8sServiceHost"]; ok {
 		t.Errorf("k8sServiceHost set with empty CP IP")
 	}
@@ -187,10 +201,12 @@ func TestSeedClusterAdminPinsRbacTypes(t *testing.T) {
 	ctx := context.Background()
 	cs := fake.NewSimpleClientset()
 	_ = seedClusterAdminBinding(ctx, cs)
+
 	b, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, "cluster-ca-admin", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get binding: %v", err)
 	}
+
 	if b.RoleRef.APIGroup != rbacv1.GroupName || b.RoleRef.Kind != "ClusterRole" {
 		t.Errorf("roleRef = %+v, want rbac.authorization.k8s.io/ClusterRole", b.RoleRef)
 	}

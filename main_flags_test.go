@@ -50,8 +50,11 @@ func TestManagerFlagContract(t *testing.T) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, "--help")
+
 	var stdout, stderr bytes.Buffer
+
 	cmd.Stdout = &stdout
+
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("manager --help exited with an error: %v (stderr: %s)", err, stderr.String())
