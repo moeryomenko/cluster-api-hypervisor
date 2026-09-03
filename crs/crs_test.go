@@ -88,9 +88,11 @@ func TestCRSExistsAndParses(t *testing.T) {
 		if pc.crs.APIVersion != addonsv1.GroupVersion.String() {
 			t.Errorf("%s: apiVersion must be %s, got %q", pc.file, addonsv1.GroupVersion.String(), pc.crs.APIVersion)
 		}
+
 		if pc.crs.Kind != "ClusterResourceSet" {
 			t.Errorf("%s: kind must be ClusterResourceSet, got %q", pc.file, pc.crs.Kind)
 		}
+
 		if pc.crs.Name == "" {
 			t.Errorf("%s: metadata.name must be set", pc.file)
 		}
@@ -117,8 +119,10 @@ func TestCRSSelector(t *testing.T) {
 				pc.file,
 				clusterNameLabel,
 			)
+
 			continue
 		}
+
 		value, ok := labels[clusterNameLabel]
 		if !ok {
 			t.Errorf(
@@ -126,8 +130,10 @@ func TestCRSSelector(t *testing.T) {
 				pc.file,
 				clusterNameLabel,
 			)
+
 			continue
 		}
+
 		if value == "" {
 			t.Errorf("%s: spec.clusterSelector.matchLabels[%q] must have a non-empty value", pc.file, clusterNameLabel)
 		}
@@ -141,8 +147,10 @@ func TestCRSResources(t *testing.T) {
 				"%s: spec.resources must reference at least one ConfigMap carrying the rbac, cilium, coredns, and metrics-server manifests",
 				pc.file,
 			)
+
 			continue
 		}
+
 		for i, res := range pc.crs.Spec.Resources {
 			path := fmt.Sprintf("%s: spec.resources[%d]", pc.file, i)
 			if res.Kind != string(addonsv1.ConfigMapClusterResourceSetResourceKind) {
@@ -152,10 +160,12 @@ func TestCRSResources(t *testing.T) {
 					res.Kind,
 				)
 			}
+
 			if res.Name == "" {
 				t.Errorf("%s: name must reference a ConfigMap emitted by crs/populate.sh", path)
 				continue
 			}
+
 			if !dns1123Subdomain.MatchString(res.Name) {
 				t.Errorf("%s: name %q must be a valid Kubernetes object name (DNS-1123 subdomain)", path, res.Name)
 			}
@@ -168,18 +178,23 @@ func TestCRSOrderingNote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("glob *.md: %v", err)
 	}
+
 	if len(notes) == 0 {
 		t.Fatal("crs/ must ship a markdown note (e.g. README.md) documenting the apply ordering")
 	}
+
 	var text strings.Builder
+
 	for _, note := range notes {
 		raw, err := os.ReadFile(note)
 		if err != nil {
 			t.Errorf("reading %s: %v", note, err)
 			continue
 		}
+
 		text.Write(raw)
 	}
+
 	lower := strings.ToLower(text.String())
 	for _, component := range []string{"rbac", "cilium"} {
 		if !strings.Contains(lower, component) {
@@ -189,6 +204,7 @@ func TestCRSOrderingNote(t *testing.T) {
 			)
 		}
 	}
+
 	if !strings.Contains(lower, "before") && !strings.Contains(lower, "then") && !strings.Contains(lower, "order") {
 		t.Error("the ordering note must state that rbac precedes cilium (e.g. \"rbac before cilium\")")
 	}
@@ -196,6 +212,7 @@ func TestCRSOrderingNote(t *testing.T) {
 
 func TestPopulateScriptContract(t *testing.T) {
 	const script = "populate.sh"
+
 	info, err := os.Stat(script)
 	if err != nil {
 		t.Fatalf(
@@ -203,24 +220,29 @@ func TestPopulateScriptContract(t *testing.T) {
 			script,
 		)
 	}
+
 	if info.Mode().Perm()&0o111 == 0 {
 		t.Fatalf("crs/%s must be executable", script)
 	}
 
 	out := runPopulate(t, script, fixtureManifestDir)
+
 	configMaps := configMapsFromStream(t, out)
 	if len(configMaps) == 0 {
 		t.Fatal("populate.sh must emit at least one ConfigMap document")
 	}
 
 	var data strings.Builder
+
 	for _, cm := range configMaps {
 		if cm.APIVersion != "v1" {
 			t.Errorf("emitted ConfigMap must have apiVersion v1, got %q", cm.APIVersion)
 		}
+
 		if cm.Metadata.Name == "" {
 			t.Error("emitted ConfigMap must have metadata.name")
 		}
+
 		for _, value := range cm.Data {
 			data.WriteString(value)
 		}
@@ -250,29 +272,35 @@ type parsedCRS struct {
 // red phase of this suite.
 func clusterResourceSets(t *testing.T) []parsedCRS {
 	t.Helper()
+
 	var found []parsedCRS
+
 	for _, file := range yamlFiles(t) {
 		raw, err := os.ReadFile(file)
 		if err != nil {
 			t.Errorf("reading %s: %v", file, err)
 			continue
 		}
+
 		for _, doc := range splitYAML(t, raw) {
 			var crs addonsv1.ClusterResourceSet
 			if err := sigsyaml.Unmarshal(doc, &crs); err != nil {
 				t.Errorf("%s: parsing ClusterResourceSet document: %v", file, err)
 				continue
 			}
+
 			if crs.Kind == "ClusterResourceSet" {
 				found = append(found, parsedCRS{file: file, crs: crs})
 			}
 		}
 	}
+
 	if len(found) == 0 {
 		t.Fatal(
 			"crs/ must ship at least one ClusterResourceSet manifest (kind ClusterResourceSet, group addons.cluster.x-k8s.io, version v1beta2)",
 		)
 	}
+
 	return found
 }
 
@@ -281,14 +309,18 @@ func clusterResourceSets(t *testing.T) []parsedCRS {
 // be parsed as a ClusterResourceSet.
 func yamlFiles(t *testing.T) []string {
 	t.Helper()
+
 	var files []string
+
 	for _, pattern := range []string{"*.yaml", "*.yml"} {
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
 			t.Fatalf("glob %q: %v", pattern, err)
 		}
+
 		files = append(files, matches...)
 	}
+
 	return files
 }
 
@@ -296,24 +328,32 @@ func yamlFiles(t *testing.T) []string {
 // YAML stream and returns each document re-encoded as its own byte slice.
 func splitYAML(t *testing.T, raw []byte) [][]byte {
 	t.Helper()
+
 	dec := yamlv3.NewDecoder(bytes.NewReader(raw))
+
 	var docs [][]byte
+
 	for {
 		var doc any
+
 		err := dec.Decode(&doc)
 		if errors.Is(err, io.EOF) {
 			return docs
 		}
+
 		if err != nil {
 			t.Fatalf("invalid YAML document: %v", err)
 		}
+
 		if doc == nil {
 			continue
 		}
+
 		rawDoc, err := yamlv3.Marshal(doc)
 		if err != nil {
 			t.Fatalf("re-encoding YAML document: %v", err)
 		}
+
 		docs = append(docs, rawDoc)
 	}
 }
@@ -327,12 +367,16 @@ func runPopulate(t *testing.T, script, sourceDir string) []byte {
 	// The leading "./" forces a lookup relative to the package directory; a
 	// bare name would go through $PATH instead.
 	scriptPath := "./" + script
+
 	argOut, argErr := exec.Command(scriptPath, sourceDir).CombinedOutput()
 	if argErr == nil {
 		return argOut
 	}
+
 	cmd := exec.Command(scriptPath)
+
 	cmd.Env = append(os.Environ(), "CRS_MANIFEST_DIR="+sourceDir)
+
 	envOut, envErr := cmd.CombinedOutput()
 	if envErr != nil {
 		t.Fatalf(
@@ -342,6 +386,7 @@ func runPopulate(t *testing.T, script, sourceDir string) []byte {
 			envOut,
 		)
 	}
+
 	return envOut
 }
 
@@ -359,18 +404,23 @@ type emittedConfigMap struct {
 // configMapsFromStream collects every ConfigMap document from a YAML stream.
 func configMapsFromStream(t *testing.T, raw []byte) []emittedConfigMap {
 	t.Helper()
+
 	var configMaps []emittedConfigMap
+
 	for _, doc := range splitYAML(t, raw) {
 		var cm emittedConfigMap
 		if err := sigsyaml.Unmarshal(doc, &cm); err != nil {
 			t.Errorf("parsing populate.sh output document: %v", err)
 			continue
 		}
+
 		if cm.Kind != "ConfigMap" {
 			t.Errorf("populate.sh must emit ConfigMap documents, got kind %q", cm.Kind)
 			continue
 		}
+
 		configMaps = append(configMaps, cm)
 	}
+
 	return configMaps
 }
