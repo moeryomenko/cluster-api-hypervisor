@@ -65,32 +65,39 @@ var providerTypes = []providerTypeSpec{
 // can assert key presence without relying on zero values.
 func mustClusterctlMap(t *testing.T) map[string]any {
 	t.Helper()
+
 	var doc map[string]any
 	if err := yamlv3.Unmarshal(readRepoFile(t, "clusterctl.yaml"), &doc); err != nil {
 		t.Fatalf("clusterctl.yaml is not valid YAML: %v", err)
 	}
+
 	return doc
 }
 
 // mustClusterctlConfig decodes clusterctl.yaml into the typed shape.
 func mustClusterctlConfig(t *testing.T) clusterctlConfig {
 	t.Helper()
+
 	var cfg clusterctlConfig
 	if err := yamlv3.Unmarshal(readRepoFile(t, "clusterctl.yaml"), &cfg); err != nil {
 		t.Fatalf("clusterctl.yaml does not decode as clusterctlConfig: %v", err)
 	}
+
 	return cfg
 }
 
 // providerOfType returns the provider entry with the given type.
 func providerOfType(t *testing.T, cfg clusterctlConfig, typeName string) clusterctlProvider {
 	t.Helper()
+
 	for _, p := range cfg.Providers {
 		if p.Type == typeName {
 			return p
 		}
 	}
+
 	t.Fatalf("no provider of type %q", typeName)
+
 	return clusterctlProvider{}
 }
 
@@ -100,7 +107,9 @@ func typeKeys(m map[string]int) []string {
 	for k := range m {
 		keys = append(keys, k)
 	}
+
 	sort.Strings(keys)
+
 	return keys
 }
 
@@ -124,19 +133,23 @@ func TestClusterctlDocument(t *testing.T) {
 
 func TestClusterctlProviders(t *testing.T) {
 	doc := mustClusterctlMap(t)
+
 	raw, ok := doc["providers"].([]any)
 	if !ok {
 		t.Fatalf("providers must be a list, got %T", doc["providers"])
 	}
+
 	if len(raw) != 3 {
 		t.Fatalf("providers has %d entries, want exactly 3", len(raw))
 	}
+
 	for i, entry := range raw {
 		prov, ok := entry.(map[string]any)
 		if !ok {
 			t.Errorf("provider %d must be a mapping, got %T", i, entry)
 			continue
 		}
+
 		for _, key := range []string{"name", "url", "type"} {
 			if _, ok := prov[key]; !ok {
 				t.Errorf("provider %d missing key %q", i, key)
@@ -154,17 +167,21 @@ func TestClusterctlProviders(t *testing.T) {
 
 func TestClusterctlProviderTypes(t *testing.T) {
 	cfg := mustClusterctlConfig(t)
+
 	got := map[string]int{}
 	for _, p := range cfg.Providers {
 		got[p.Type]++
 	}
+
 	want := map[string]int{}
 	for _, tt := range providerTypes {
 		want[tt.typeName] = 1
 	}
+
 	if len(got) != len(want) {
 		t.Errorf("provider types = %v, want %v", typeKeys(got), typeKeys(want))
 	}
+
 	for _, tt := range providerTypes {
 		if got[tt.typeName] != 1 {
 			t.Errorf("provider type %q count = %d, want 1", tt.typeName, got[tt.typeName])
@@ -182,9 +199,11 @@ func TestClusterctlProviderURLs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse url %q: %v", p.URL, err)
 			}
+
 			if u.Scheme != "file" {
 				t.Errorf("url %q scheme = %q, want %q", p.URL, u.Scheme, "file")
 			}
+
 			if !filepath.IsAbs(u.Path) {
 				t.Errorf("url %q path %q must be absolute", p.URL, u.Path)
 			}
@@ -196,13 +215,16 @@ func TestClusterctlProviderURLs(t *testing.T) {
 			if len(segs) < 3 {
 				t.Fatalf("url %q path must be {basepath}/{provider-label}/{version}/{components.yaml}", p.URL)
 			}
+
 			wantLabel := tt.labelPrefix + "-" + providerName
 			if got := segs[len(segs)-3]; got != wantLabel {
 				t.Errorf("url %q provider-label segment = %q, want %q", p.URL, got, wantLabel)
 			}
+
 			if got := segs[len(segs)-2]; got != providerVersion {
 				t.Errorf("url %q version segment = %q, want %q", p.URL, got, providerVersion)
 			}
+
 			if got := segs[len(segs)-1]; got != tt.componentsFile {
 				t.Errorf("url %q components segment = %q, want %q", p.URL, got, tt.componentsFile)
 			}
@@ -212,10 +234,12 @@ func TestClusterctlProviderURLs(t *testing.T) {
 
 func TestClusterctlOverridesFolder(t *testing.T) {
 	doc := mustClusterctlMap(t)
+
 	value, ok := doc["overridesFolder"]
 	if !ok {
 		t.Fatal("clusterctl.yaml missing top-level key \"overridesFolder\"")
 	}
+
 	folder, ok := value.(string)
 	if !ok {
 		t.Fatalf("overridesFolder must be a string, got %T", value)

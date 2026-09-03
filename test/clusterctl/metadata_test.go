@@ -79,10 +79,12 @@ const (
 // levels up.
 func readRepoFile(t *testing.T, name string) []byte {
 	t.Helper()
+
 	data, err := os.ReadFile(filepath.Join("..", "..", name))
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
 	}
+
 	return data
 }
 
@@ -90,10 +92,12 @@ func readRepoFile(t *testing.T, name string) []byte {
 // assert key presence without relying on zero values.
 func mustMetadataMap(t *testing.T) map[string]any {
 	t.Helper()
+
 	var doc map[string]any
 	if err := yamlv3.Unmarshal(readRepoFile(t, "metadata.yaml"), &doc); err != nil {
 		t.Fatalf("metadata.yaml is not valid YAML: %v", err)
 	}
+
 	return doc
 }
 
@@ -115,9 +119,11 @@ func TestMetadataDocument(t *testing.T) {
 	if err := yamlv3.Unmarshal(readRepoFile(t, "metadata.yaml"), &md); err != nil {
 		t.Fatalf("metadata.yaml does not decode as metadataDocument: %v", err)
 	}
+
 	if md.APIVersion != metadataAPIVersion {
 		t.Errorf("apiVersion = %q, want %q", md.APIVersion, metadataAPIVersion)
 	}
+
 	if md.Kind != metadataKind {
 		t.Errorf("kind = %q, want %q", md.Kind, metadataKind)
 	}
@@ -125,13 +131,16 @@ func TestMetadataDocument(t *testing.T) {
 
 func TestMetadataReleaseSeries(t *testing.T) {
 	doc := mustMetadataMap(t)
+
 	raw, ok := doc["releaseSeries"].([]any)
 	if !ok {
 		t.Fatalf("releaseSeries must be a list, got %T", doc["releaseSeries"])
 	}
+
 	if len(raw) != 1 {
 		t.Fatalf("releaseSeries has %d entries, want exactly 1", len(raw))
 	}
+
 	entry, ok := raw[0].(map[string]any)
 	if !ok {
 		t.Fatalf("releaseSeries entry must be a mapping, got %T", raw[0])
@@ -148,9 +157,11 @@ func TestMetadataReleaseSeries(t *testing.T) {
 	if err := yamlv3.Unmarshal(readRepoFile(t, "metadata.yaml"), &md); err != nil {
 		t.Fatalf("metadata.yaml does not decode as metadataDocument: %v", err)
 	}
+
 	if len(md.ReleaseSeries) != 1 {
 		t.Fatalf("releaseSeries has %d entries, want exactly 1", len(md.ReleaseSeries))
 	}
+
 	rs := md.ReleaseSeries[0]
 	if rs.Major != metadataMajor || rs.Minor != metadataMinor || rs.Contract != metadataContract {
 		t.Errorf("releaseSeries = {%d, %d, %q}, want {%d, %d, %q}",
