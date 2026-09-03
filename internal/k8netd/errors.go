@@ -49,7 +49,9 @@ func mapRPCError(code, message string) error {
 	if message == "" {
 		message = code
 	}
+
 	var sentinel error
+
 	switch code {
 	case "not_found":
 		sentinel = ErrNotFound
@@ -64,5 +66,6 @@ func mapRPCError(code, message string) error {
 	default:
 		sentinel = ErrInternal
 	}
+
 	return fmt.Errorf("%w: %s: %s", sentinel, code, message)
 }

@@ -112,10 +112,12 @@ type Server struct {
 //	t.Cleanup(func(){ srv.Close() })
 func New(socketPath string) (*Server, error) {
 	_ = os.Remove(socketPath) // unlink stale file, per REQ-010
+
 	l, err := net.Listen("unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("fake k8netd listen %q: %w", socketPath, err)
 	}
+
 	s := &Server{
 		path:            socketPath,
 		listener:        l,
@@ -127,6 +129,7 @@ func New(socketPath string) (*Server, error) {
 		nextHostPort:    fakePublishBasePort,
 	}
 	go s.serve()
+
 	return s, nil
 }
 
@@ -137,7 +140,9 @@ func NewWithVersion(socketPath, expectedVersion string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	s.expectedVersion = expectedVersion
+
 	return s, nil
 }
 
@@ -148,6 +153,7 @@ func (s *Server) SocketPath() string { return s.path }
 func (s *Server) Handle(method string, fn HandlerFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.handlers[method] = fn
 	delete(s.results, method)
 	delete(s.errors, method)
@@ -157,6 +163,7 @@ func (s *Server) Handle(method string, fn HandlerFunc) {
 func (s *Server) SetResult(method string, result any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.results[method] = result
 	delete(s.handlers, method)
 	delete(s.errors, method)
@@ -167,6 +174,7 @@ func (s *Server) SetResult(method string, result any) {
 func (s *Server) SetError(method, code, message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.errors[method] = &RPCError{Code: code, Message: message}
 	delete(s.handlers, method)
 	delete(s.results, method)
@@ -181,6 +189,7 @@ func (s *Server) SetErrorCode(method, code string) {
 func (s *Server) SetExpectedVersion(v string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.expectedVersion = v
 }
 
@@ -188,8 +197,10 @@ func (s *Server) SetExpectedVersion(v string) {
 func (s *Server) Requests() []CapturedRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	out := make([]CapturedRequest, len(s.requests))
 	copy(out, s.requests)
+
 	return out
 }
 
@@ -197,6 +208,7 @@ func (s *Server) Requests() []CapturedRequest {
 func (s *Server) RequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	return len(s.requests)
 }
 
@@ -204,9 +216,11 @@ func (s *Server) RequestCount() int {
 func (s *Server) IsSet(method string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	_, hasResult := s.results[method]
 	_, hasErr := s.errors[method]
 	_, hasHandler := s.handlers[method]
+
 	return hasResult || hasErr || hasHandler
 }
 
@@ -214,6 +228,7 @@ func (s *Server) IsSet(method string) bool {
 func (s *Server) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.requests = nil
 	s.handlers = make(map[string]HandlerFunc)
 	s.results = make(map[string]any)
@@ -227,12 +242,16 @@ func (s *Server) Close() error {
 		s.mu.Unlock()
 		return nil
 	}
+
 	s.closed = true
 	s.mu.Unlock()
+
 	if s.listener != nil {
 		_ = s.listener.Close()
 	}
+
 	_ = os.Remove(s.path)
+
 	return nil
 }
 
@@ -242,25 +261,32 @@ func (s *Server) serve() {
 		if err != nil {
 			return
 		}
+
 		go s.handleConn(conn)
 	}
 }
 
 func (s *Server) handleConn(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
+
 	dec := json.NewDecoder(conn)
 	enc := json.NewEncoder(conn)
 
-	var req rpcRequest
-	var raw json.RawMessage
+	var (
+		req rpcRequest
+		raw json.RawMessage
+	)
+
 	if err := dec.Decode(&req); err != nil {
 		_ = enc.Encode(rpcResponse{
 			JSONRPC: "2.0",
 			ID:      nil,
 			Error:   &RPCError{Code: "invalid_params", Message: fmt.Sprintf("decode error: %v", err)},
 		})
+
 		return
 	}
+
 	b, _ := json.Marshal(req)
 	raw = b
 
@@ -283,14 +309,18 @@ func (s *Server) handleConn(conn net.Conn) {
 		_ = enc.Encode(
 			rpcResponse{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: "invalid_params", Message: "jsonrpc must be 2.0"}},
 		)
+
 		return
 	}
+
 	if req.Method == "" {
 		_ = enc.Encode(
 			rpcResponse{JSONRPC: "2.0", ID: req.ID, Error: &RPCError{Code: "invalid_params", Message: "method required"}},
 		)
+
 		return
 	}
+
 	if expectedVersion != "" && req.Version != expectedVersion {
 		_ = enc.Encode(rpcResponse{
 			JSONRPC: "2.0",
@@ -301,6 +331,7 @@ func (s *Server) handleConn(conn net.Conn) {
 				Message: fmt.Sprintf("version mismatch: got %q want %q", req.Version, expectedVersion),
 			},
 		})
+
 		return
 	}
 
@@ -308,28 +339,36 @@ func (s *Server) handleConn(conn net.Conn) {
 		_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Error: cannedErr})
 		return
 	}
+
 	if handler != nil {
 		result, herr := handler(req.Params)
 		if herr != nil {
 			_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Error: herr})
 			return
 		}
+
 		_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Result: result})
+
 		return
 	}
+
 	if hasResult {
 		_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Result: cannedResult})
 		return
 	}
+
 	if req.Method == "PublishPort" {
 		result, perr := s.builtinPublishPort(req.Params)
 		if perr != nil {
 			_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Error: perr})
 			return
 		}
+
 		_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Result: result})
+
 		return
 	}
+
 	_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Result: nil})
 }
 
@@ -345,18 +384,22 @@ func (s *Server) builtinPublishPort(params json.RawMessage) (any, *RPCError) {
 	if err := json.Unmarshal(params, &key); err != nil {
 		return nil, &RPCError{Code: "invalid_params", Message: fmt.Sprintf("decode PublishPort params: %v", err)}
 	}
+
 	if key.Port == "" || key.VMPort <= 0 {
 		return nil, &RPCError{Code: "invalid_params", Message: "PublishPort params must carry port and vm_port"}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	if s.published == nil {
 		s.published = make(map[publishKey]int32)
 	}
+
 	if host, ok := s.published[key]; ok {
 		return map[string]int32{"host_port": host}, nil
 	}
+
 	host := s.nextHostPort
 	s.nextHostPort++
 	s.published[key] = host

@@ -61,6 +61,7 @@ func NewClient(socketPath string) *Client {
 		version:    k8netdVersion,
 	}
 	c.nextID.Store(0)
+
 	return c
 }
 
@@ -73,6 +74,7 @@ func (c *Client) CreateNetwork(ctx context.Context, name, cidr, gateway, poolSta
 		"poolStart": poolStart,
 		"poolEnd":   poolEnd,
 	}
+
 	return c.call(ctx, "CreateNetwork", params, nil)
 }
 
@@ -85,10 +87,12 @@ func (c *Client) DeleteNetwork(ctx context.Context, name string) error {
 // GetNetwork returns the network by name.
 func (c *Client) GetNetwork(ctx context.Context, name string) (*Network, error) {
 	params := map[string]string{"name": name}
+
 	var out Network
 	if err := c.call(ctx, "GetNetwork", params, &out); err != nil {
 		return nil, err
 	}
+
 	return &out, nil
 }
 
@@ -107,10 +111,12 @@ func (c *Client) DeletePort(ctx context.Context, name string) error {
 // GetPort returns the port by name.
 func (c *Client) GetPort(ctx context.Context, name string) (*Port, error) {
 	params := map[string]string{"name": name}
+
 	var out Port
 	if err := c.call(ctx, "GetPort", params, &out); err != nil {
 		return nil, err
 	}
+
 	return &out, nil
 }
 
@@ -124,6 +130,7 @@ func (c *Client) AttachPort(ctx context.Context, port, network, mac string) erro
 		"network": network,
 		"mac":     mac,
 	}
+
 	return c.call(ctx, "AttachPort", params, nil)
 }
 
@@ -142,17 +149,21 @@ func (c *Client) AllocateIP(ctx context.Context, network, mac string) (string, e
 		"network": network,
 		"mac":     mac,
 	}
+
 	var raw json.RawMessage
 	if err := c.call(ctx, "AllocateIP", params, &raw); err != nil {
 		return "", err
 	}
+
 	var ip string
 	if err := json.Unmarshal(raw, &ip); err != nil {
 		return "", fmt.Errorf("%w: AllocateIP result shape: want a JSON string, got %s", ErrInternal, string(raw))
 	}
+
 	if ip == "" {
 		return "", fmt.Errorf("%w: AllocateIP returned an empty address", ErrInternal)
 	}
+
 	return ip, nil
 }
 
@@ -162,6 +173,7 @@ func (c *Client) ReleaseIP(ctx context.Context, network, mac string) error {
 		"network": network,
 		"mac":     mac,
 	}
+
 	return c.call(ctx, "ReleaseIP", params, nil)
 }
 
@@ -176,16 +188,19 @@ func (c *Client) PublishPort(ctx context.Context, port string, vmPort int32) (in
 		"port":    port,
 		"vm_port": vmPort,
 	}
+
 	var raw json.RawMessage
 	if err := c.call(ctx, "PublishPort", params, &raw); err != nil {
 		return 0, err
 	}
+
 	var envelope struct {
 		HostPort *int32 `json:"host_port"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return 0, fmt.Errorf("%w: PublishPort result shape: want {\"host_port\": N}, got %s", ErrInternal, string(raw))
 	}
+
 	if envelope.HostPort == nil || *envelope.HostPort <= 0 {
 		return 0, fmt.Errorf("%w: PublishPort result shape: want a positive host_port, got %s", ErrInternal, string(raw))
 	}
@@ -216,6 +231,7 @@ func (c *Client) call(ctx context.Context, method string, params any, result any
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
 	id := c.nextID.Add(1)
 	req := rpcRequest{
 		JSONRPC: "2.0",
@@ -241,6 +257,7 @@ func (c *Client) call(ctx context.Context, method string, params any, result any
 	}
 
 	dec := json.NewDecoder(conn)
+
 	var resp rpcResponse
 	if err := dec.Decode(&resp); err != nil {
 		return fmt.Errorf("%w: decode response %q: %v", ErrInternal, method, err)
@@ -255,6 +272,7 @@ func (c *Client) call(ctx context.Context, method string, params any, result any
 			// No result to decode for void methods.
 			return nil
 		}
+
 		switch v := result.(type) {
 		case *json.RawMessage:
 			*v = resp.Result
@@ -273,15 +291,20 @@ func (c *Client) call(ctx context.Context, method string, params any, result any
 func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 	start := time.Now()
 	delay := 10 * time.Millisecond
-	const maxDelay = 100 * time.Millisecond
-	const defaultTimeout = 2 * time.Second
+
+	const (
+		maxDelay       = 100 * time.Millisecond
+		defaultTimeout = 2 * time.Second
+	)
 
 	var lastErr error
+
 	for {
 		conn, err := net.Dial("unix", c.socketPath)
 		if err == nil {
 			return conn, nil
 		}
+
 		lastErr = err
 
 		// If context is done, return its error.

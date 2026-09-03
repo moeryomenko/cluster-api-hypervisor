@@ -51,11 +51,14 @@ func newPublishTestServer(t *testing.T) *fake.Server {
 	t.Helper()
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New %q: %v", sock, err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
+
 	return srv
 }
 
@@ -83,13 +86,16 @@ func TestPublishPort_RequestWireShape(t *testing.T) {
 	if len(reqs) != 1 {
 		t.Fatalf("Requests len = %d, want 1", len(reqs))
 	}
+
 	req := reqs[0]
 	if req.Method != "PublishPort" {
 		t.Errorf("method = %q, want %q", req.Method, "PublishPort")
 	}
+
 	if req.JSONRPC != "2.0" {
 		t.Errorf("jsonrpc = %q, want 2.0", req.JSONRPC)
 	}
+
 	if req.Version != k8netdVersion {
 		t.Errorf("version = %q, want contract version %q", req.Version, k8netdVersion)
 	}
@@ -98,16 +104,20 @@ func TestPublishPort_RequestWireShape(t *testing.T) {
 	if err := json.Unmarshal(req.Params, &keys); err != nil {
 		t.Fatalf("unmarshal params %s: %v", string(req.Params), err)
 	}
+
 	if len(keys) != 2 {
 		t.Errorf("params carry %d keys (%v), want exactly 2: port, vm_port", len(keys), string(req.Params))
 	}
+
 	var p publishParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		t.Fatalf("unmarshal typed params %s: %v", string(req.Params), err)
 	}
+
 	if p.Port != "lab-cluster-cp-0" {
 		t.Errorf("param port = %q, want %q", p.Port, "lab-cluster-cp-0")
 	}
+
 	if p.VMPort != 6443 {
 		t.Errorf("param vm_port = %d, want 6443", p.VMPort)
 	}
@@ -121,10 +131,12 @@ func TestPublishPort_ResultDecode(t *testing.T) {
 	srv.SetResult("PublishPort", map[string]int64{"host_port": 20123})
 
 	client := NewClient(srv.SocketPath())
+
 	hostPort, err := client.PublishPort(context.Background(), "lab-cluster-cp-0", 6443)
 	if err != nil {
 		t.Fatalf("PublishPort error = %v", err)
 	}
+
 	if hostPort != 20123 {
 		t.Errorf("PublishPort host_port = %d, want 20123", hostPort)
 	}
@@ -135,6 +147,7 @@ func TestPublishPort_ResultDecode(t *testing.T) {
 // a non-zero port surfaces as ErrInternal instead of being guessed apart.
 func TestPublishPort_UnexpectedResultShapeFailsLoudly(t *testing.T) {
 	t.Parallel()
+
 	tests := []struct {
 		name   string
 		result any
@@ -151,6 +164,7 @@ func TestPublishPort_UnexpectedResultShapeFailsLoudly(t *testing.T) {
 			srv.SetResult("PublishPort", tt.result)
 
 			client := NewClient(srv.SocketPath())
+
 			hostPort, err := client.PublishPort(context.Background(), "lab-cluster-cp-0", 6443)
 			if err == nil {
 				t.Fatalf(
@@ -159,6 +173,7 @@ func TestPublishPort_UnexpectedResultShapeFailsLoudly(t *testing.T) {
 					hostPort,
 				)
 			}
+
 			if !errors.Is(err, ErrInternal) {
 				t.Errorf("PublishPort error = %v, want errors.Is(err, ErrInternal)", err)
 			}
@@ -172,6 +187,7 @@ func TestPublishPort_UnexpectedResultShapeFailsLoudly(t *testing.T) {
 // code class.
 func TestPublishPort_TypedErrorMapping(t *testing.T) {
 	t.Parallel()
+
 	tests := []struct {
 		name string
 		code string
@@ -188,10 +204,12 @@ func TestPublishPort_TypedErrorMapping(t *testing.T) {
 			srv.SetError("PublishPort", tt.code, tt.code)
 
 			client := NewClient(srv.SocketPath())
+
 			_, err := client.PublishPort(context.Background(), "ghost-port", 6443)
 			if err == nil {
 				t.Fatalf("PublishPort expected error with code %q, got nil", tt.code)
 			}
+
 			if !errors.Is(err, tt.want) {
 				t.Errorf("code %q error = %v, want errors.Is(err, %v)", tt.code, err, tt.want)
 			}
@@ -208,10 +226,12 @@ func TestFakePublishPort_StableAcrossRepeatedCalls(t *testing.T) {
 	srv := newPublishTestServer(t)
 
 	client := NewClient(srv.SocketPath())
+
 	first, err := client.PublishPort(context.Background(), "lab-cluster-cp-0", 6443)
 	if err != nil {
 		t.Fatalf("first PublishPort error = %v", err)
 	}
+
 	second, err := client.PublishPort(context.Background(), "lab-cluster-cp-0", 6443)
 	if err != nil {
 		t.Fatalf("second identical PublishPort error = %v", err)
@@ -220,6 +240,7 @@ func TestFakePublishPort_StableAcrossRepeatedCalls(t *testing.T) {
 	if first <= 0 {
 		t.Fatalf("first host_port = %d, want a positive allocated port", first)
 	}
+
 	if second != first {
 		t.Errorf("re-published host_port = %d, want stable %d", second, first)
 	}
@@ -240,10 +261,12 @@ func TestFakePublishPort_DistinctAllocationsPerKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PublishPort(cp-0, 6443): %v", err)
 	}
+
 	sshOnCP0, err := client.PublishPort(ctx, "lab-cluster-cp-0", 22)
 	if err != nil {
 		t.Fatalf("PublishPort(cp-0, 22): %v", err)
 	}
+
 	apiOnCP1, err := client.PublishPort(ctx, "lab-cluster-cp-1", 6443)
 	if err != nil {
 		t.Fatalf("PublishPort(cp-1, 6443): %v", err)
@@ -252,6 +275,7 @@ func TestFakePublishPort_DistinctAllocationsPerKey(t *testing.T) {
 	if sshOnCP0 == apiOnCP0 {
 		t.Errorf("vm_port 22 and 6443 on the same port share host_port %d, want distinct allocations", apiOnCP0)
 	}
+
 	if apiOnCP1 == apiOnCP0 {
 		t.Errorf("two different ports share host_port %d for vm_port 6443, want distinct allocations", apiOnCP0)
 	}

@@ -65,6 +65,7 @@ import (
 // TestSentinelErrorsExist verifies that the five sentinels exist and are distinct.
 func TestSentinelErrorsExist(t *testing.T) {
 	t.Parallel()
+
 	sentinels := map[string]error{
 		"ErrNotFound":      ErrNotFound,
 		"ErrAlreadyExists": ErrAlreadyExists,
@@ -81,6 +82,7 @@ func TestSentinelErrorsExist(t *testing.T) {
 	if errors.Is(ErrNotFound, ErrAlreadyExists) || errors.Is(ErrConflict, ErrInternal) {
 		t.Errorf("sentinels must be distinct (errors.Is cross-check failed)")
 	}
+
 	if errors.Is(ErrNotFound, ErrInvalidParams) {
 		t.Errorf("ErrNotFound should not equal ErrInvalidParams")
 	}
@@ -89,6 +91,7 @@ func TestSentinelErrorsExist(t *testing.T) {
 // TestErrorCodeMapping covers VC-02: each typed code maps to the matching sentinel via errors.Is.
 func TestErrorCodeMapping(t *testing.T) {
 	t.Parallel()
+
 	cases := []struct {
 		code string
 		want error
@@ -104,18 +107,22 @@ func TestErrorCodeMapping(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			sock := filepath.Join(dir, "control.sock")
+
 			srv, err := fake.New(sock)
 			if err != nil {
 				t.Fatalf("fake.New: %v", err)
 			}
+
 			t.Cleanup(func() { _ = srv.Close() })
 			srv.SetErrorCode("GetNetwork", tc.code)
 
 			client := NewClient(sock)
+
 			_, err = client.GetNetwork(context.Background(), "missing")
 			if err == nil {
 				t.Fatalf("GetNetwork expected error with code %q, got nil", tc.code)
 			}
+
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("errors.Is(err, %v) = false for code %q, err = %v", tc.want, tc.code, err)
 			}
@@ -132,18 +139,22 @@ func TestErrorCodeMapping_UnknownMapsToInternal(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New: %v", err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 	srv.SetError("GetNetwork", "weird_code", "weird")
 
 	client := NewClient(sock)
+
 	_, err = client.GetNetwork(context.Background(), "x")
 	if err == nil {
 		t.Fatalf("expected error for unknown code")
 	}
+
 	if !errors.Is(err, ErrInternal) {
 		t.Fatalf("unknown code should map to ErrInternal, got %v", err)
 	}
@@ -155,14 +166,18 @@ func TestJSONRPCEnvelope(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New: %v", err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 
 	srv.SetResult("CreateNetwork", nil)
+
 	client := NewClient(sock)
+
 	err = client.CreateNetwork(
 		context.Background(),
 		"demo",
@@ -179,16 +194,20 @@ func TestJSONRPCEnvelope(t *testing.T) {
 	if len(reqs) != 1 {
 		t.Fatalf("Requests len = %d, want 1", len(reqs))
 	}
+
 	req := reqs[0]
 	if req.JSONRPC != "2.0" {
 		t.Errorf("jsonrpc = %q, want 2.0", req.JSONRPC)
 	}
+
 	if req.Version == "" {
 		t.Errorf("version field empty, want non-empty version per REQ-001")
 	}
+
 	if req.ID == nil {
 		t.Errorf("id field missing/nil, want present")
 	}
+
 	if req.Method != "CreateNetwork" {
 		t.Errorf("method = %q, want CreateNetwork", req.Method)
 	}
@@ -203,12 +222,14 @@ func TestJSONRPCEnvelope(t *testing.T) {
 		if _, ok := params[key]; !ok {
 			// try capitalized variants
 			found := false
+
 			for k := range params {
 				if k == key || k == "Name" || k == "CIDR" || k == "Gateway" {
 					found = true
 					break
 				}
 			}
+
 			if !found {
 				t.Errorf("params missing key %q, got %v", key, params)
 			}
@@ -237,6 +258,7 @@ func TestVersionMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fake.NewWithVersion: %v", err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 
 	client := NewClient(sock)
@@ -245,6 +267,7 @@ func TestVersionMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected version mismatch error, got nil")
 	}
+
 	if !errors.Is(err, ErrInvalidParams) {
 		t.Fatalf(
 			"version mismatch should map to ErrInvalidParams, got %v (Is ErrInvalidParams=%v)",
@@ -257,6 +280,7 @@ func TestVersionMismatch(t *testing.T) {
 	if len(reqs) == 0 {
 		t.Fatalf("no requests captured")
 	}
+
 	if reqs[0].Version == "expected-v1" {
 		t.Errorf(
 			"client sent expected version, so mismatch test is not exercising mismatch (client version=%q)",
@@ -285,6 +309,7 @@ func TestAllTenMethods_ProvesMethodNameAndDecode(t *testing.T) {
 			},
 			captureOK: func(t *testing.T, req fake.CapturedRequest) {
 				var p map[string]string
+
 				_ = json.Unmarshal(req.Params, &p)
 				if p["name"] != "test-net" && p["Name"] != "test-net" {
 					t.Errorf("CreateNetwork param name = %v, want test-net", p)
@@ -334,6 +359,7 @@ func TestAllTenMethods_ProvesMethodNameAndDecode(t *testing.T) {
 			},
 			captureOK: func(t *testing.T, req fake.CapturedRequest) {
 				var p map[string]string
+
 				_ = json.Unmarshal(req.Params, &p)
 				if p["name"] == "" && p["Name"] == "" {
 					t.Errorf("CreatePort param name missing in %s", string(req.Params))
@@ -368,6 +394,7 @@ func TestAllTenMethods_ProvesMethodNameAndDecode(t *testing.T) {
 			},
 			captureOK: func(t *testing.T, req fake.CapturedRequest) {
 				var p map[string]string
+
 				_ = json.Unmarshal(req.Params, &p)
 				// The daemon's handler reads exactly these keys: "port"
 				// carries the port identity, "network" the L2 segment, and
@@ -375,13 +402,16 @@ func TestAllTenMethods_ProvesMethodNameAndDecode(t *testing.T) {
 				if p["port"] != "machine-0" {
 					t.Errorf("AttachPort param port = %v, want canonical port=machine-0", p)
 				}
+
 				if _, alias := p["name"]; alias {
 					t.Errorf("AttachPort params carry the non-canonical %q alias: %s", "name", string(req.Params))
 				}
+
 				hasNet := p["network"] != "" || p["Network"] != "" || p["networkName"] != ""
 				if !hasNet {
 					t.Errorf("AttachPort params missing network field in %s", string(req.Params))
 				}
+
 				if p["mac"] == "" {
 					t.Errorf("AttachPort params missing mac field in %s", string(req.Params))
 				}
@@ -396,6 +426,7 @@ func TestAllTenMethods_ProvesMethodNameAndDecode(t *testing.T) {
 			},
 			captureOK: func(t *testing.T, req fake.CapturedRequest) {
 				var p map[string]string
+
 				_ = json.Unmarshal(req.Params, &p)
 				// The daemon's DetachPort handler reads the "name" key.
 				if p["name"] != "machine-0" {
@@ -412,6 +443,7 @@ func TestAllTenMethods_ProvesMethodNameAndDecode(t *testing.T) {
 				if err != nil {
 					return err
 				}
+
 				if ip == "" {
 					t.Errorf("AllocateIP returned empty IP")
 				}
@@ -419,16 +451,20 @@ func TestAllTenMethods_ProvesMethodNameAndDecode(t *testing.T) {
 				if len(ip) < 7 {
 					t.Errorf("AllocateIP ip %q suspiciously short", ip)
 				}
+
 				return nil
 			},
 			captureOK: func(t *testing.T, req fake.CapturedRequest) {
 				var p map[string]string
+
 				_ = json.Unmarshal(req.Params, &p)
 				hasNet := p["network"] != "" || p["Network"] != "" || p["networkName"] != ""
 				hasMAC := p["mac"] != "" || p["MAC"] != "" || p["Mac"] != ""
+
 				if !hasNet {
 					t.Errorf("AllocateIP params missing network in %s", string(req.Params))
 				}
+
 				if !hasMAC {
 					t.Errorf("AllocateIP params missing mac in %s", string(req.Params))
 				}
@@ -450,10 +486,12 @@ func TestAllTenMethods_ProvesMethodNameAndDecode(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			sock := filepath.Join(dir, "control.sock")
+
 			srv, err := fake.New(sock)
 			if err != nil {
 				t.Fatalf("fake.New: %v", err)
 			}
+
 			t.Cleanup(func() { _ = srv.Close() })
 
 			// Prepare stub result. For AllocateIP string case, need to handle that server encodes string result as JSON string.
@@ -475,19 +513,24 @@ func TestAllTenMethods_ProvesMethodNameAndDecode(t *testing.T) {
 			if err := tt.call(context.Background(), client); err != nil {
 				t.Fatalf("%s call error = %v", tt.method, err)
 			}
+
 			reqs := srv.Requests()
 			if len(reqs) != 1 {
 				t.Fatalf("Requests len = %d, want 1", len(reqs))
 			}
+
 			if reqs[0].Method != tt.method {
 				t.Errorf("method = %q, want %q", reqs[0].Method, tt.method)
 			}
+
 			if reqs[0].JSONRPC != "2.0" {
 				t.Errorf("jsonrpc = %q, want 2.0", reqs[0].JSONRPC)
 			}
+
 			if reqs[0].Version == "" {
 				t.Errorf("version empty for %s", tt.method)
 			}
+
 			if tt.captureOK != nil {
 				tt.captureOK(t, reqs[0])
 			}
@@ -500,10 +543,12 @@ func TestGetNetwork_Decode(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New: %v", err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 
 	want := map[string]string{
@@ -516,28 +561,34 @@ func TestGetNetwork_Decode(t *testing.T) {
 	srv.SetResult("GetNetwork", want)
 
 	client := NewClient(sock)
+
 	got, err := client.GetNetwork(context.Background(), "demo")
 	if err != nil {
 		t.Fatalf("GetNetwork error = %v", err)
 	}
+
 	if got == nil {
 		t.Fatalf("GetNetwork returned nil Network")
 	}
 	// Check via json round-trip to allow struct field naming variations.
 	gotJSON, _ := json.Marshal(got)
+
 	var gotMap map[string]string
+
 	_ = json.Unmarshal(gotJSON, &gotMap)
 	for k, v := range want {
 		// allow lower/upper case key variants
 		if gotMap[k] != v && gotMap["Name"] != v && gotMap["CIDR"] != v {
 			// Try case-insensitive lookup.
 			found := false
+
 			for gk, gv := range gotMap {
 				if (gk == k || gk == "Name" || gk == "CIDR" || gk == "Gateway" || gk == "PoolStart" || gk == "PoolEnd") && gv == v {
 					found = true
 					break
 				}
 			}
+
 			if !found {
 				t.Errorf("GetNetwork field %q = %q, want %q (gotMap %v)", k, gotMap[k], v, gotMap)
 			}
@@ -556,25 +607,31 @@ func TestGetPort_Decode(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New: %v", err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 
 	srv.SetResult("GetPort", map[string]string{"name": "machine-0", "network": "demo", "mac": "c6:e5:50:1c:ec:ab"})
 
 	client := NewClient(sock)
+
 	got, err := client.GetPort(context.Background(), "machine-0")
 	if err != nil {
 		t.Fatalf("GetPort error = %v", err)
 	}
+
 	if got == nil {
 		t.Fatalf("GetPort nil")
 	}
 	// Verify at least name matches
 	gotJSON, _ := json.Marshal(got)
+
 	var m map[string]string
+
 	_ = json.Unmarshal(gotJSON, &m)
 	if m["name"] == "" && m["Name"] == "" {
 		t.Errorf("GetPort missing name in decoded %v", m)
@@ -586,19 +643,23 @@ func TestAllocateIP_Decode(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New: %v", err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 
 	srv.SetResult("AllocateIP", "192.168.124.55")
 
 	client := NewClient(sock)
+
 	ip, err := client.AllocateIP(context.Background(), "demo", "c6:e5:50:1c:ec:01")
 	if err != nil {
 		t.Fatalf("AllocateIP error = %v", err)
 	}
+
 	if ip != "192.168.124.55" {
 		t.Errorf("AllocateIP = %q, want 192.168.124.55", ip)
 	}
@@ -610,6 +671,7 @@ func TestAllocateIP_Decode(t *testing.T) {
 // guessed apart.
 func TestAllocateIP_UnexpectedResultShapeFailsLoudly(t *testing.T) {
 	t.Parallel()
+
 	tests := []struct {
 		name   string
 		result any
@@ -623,18 +685,22 @@ func TestAllocateIP_UnexpectedResultShapeFailsLoudly(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			sock := filepath.Join(dir, "control.sock")
+
 			srv, err := fake.New(sock)
 			if err != nil {
 				t.Fatalf("fake.New: %v", err)
 			}
+
 			t.Cleanup(func() { _ = srv.Close() })
 			srv.SetResult("AllocateIP", tt.result)
 
 			client := NewClient(sock)
+
 			ip, err := client.AllocateIP(context.Background(), "demo", "c6:e5:50:1c:ec:01")
 			if err == nil {
 				t.Fatalf("AllocateIP with result %#v succeeded (%q), want ErrInternal", tt.result, ip)
 			}
+
 			if !errors.Is(err, ErrInternal) {
 				t.Errorf("AllocateIP error = %v, want errors.Is(err, ErrInternal)", err)
 			}
@@ -647,10 +713,12 @@ func TestIdempotentCreate_SameParamsSucceeds(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New: %v", err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 
 	// Server will always succeed for CreateNetwork (idempotent no-op)
@@ -659,13 +727,16 @@ func TestIdempotentCreate_SameParamsSucceeds(t *testing.T) {
 	})
 
 	client := NewClient(sock)
+
 	ctx := context.Background()
 	if err := client.CreateNetwork(ctx, "demo", "192.168.124.0/24", "192.168.124.1", "192.168.124.20", "192.168.124.200"); err != nil {
 		t.Fatalf("first CreateNetwork: %v", err)
 	}
+
 	if err := client.CreateNetwork(ctx, "demo", "192.168.124.0/24", "192.168.124.1", "192.168.124.20", "192.168.124.200"); err != nil {
 		t.Fatalf("second identical CreateNetwork should be idempotent success, got %v", err)
 	}
+
 	if srv.RequestCount() != 2 {
 		t.Errorf("RequestCount = %d, want 2", srv.RequestCount())
 	}
@@ -676,13 +747,16 @@ func TestIdempotentCreate_DifferingParamsReturnsConflict(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New: %v", err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 
 	var calls int
+
 	srv.Handle("CreateNetwork", func(params json.RawMessage) (any, *fake.RPCError) {
 		calls++
 		if calls == 1 {
@@ -690,20 +764,24 @@ func TestIdempotentCreate_DifferingParamsReturnsConflict(t *testing.T) {
 		}
 		// second call with differing CIDR → conflict
 		var p map[string]string
+
 		_ = json.Unmarshal(params, &p)
 		// If same as first, succeed; else conflict. For test we always return conflict on second.
 		return nil, &fake.RPCError{Code: "conflict", Message: "network already exists with different params"}
 	})
 
 	client := NewClient(sock)
+
 	ctx := context.Background()
 	if err := client.CreateNetwork(ctx, "demo", "192.168.124.0/24", "192.168.124.1", "192.168.124.20", "192.168.124.200"); err != nil {
 		t.Fatalf("first CreateNetwork: %v", err)
 	}
+
 	err = client.CreateNetwork(ctx, "demo", "10.0.0.0/24", "10.0.0.1", "10.0.0.20", "10.0.0.200")
 	if err == nil {
 		t.Fatalf("second CreateNetwork with differing params expected conflict, got nil")
 	}
+
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected ErrConflict, got %v", err)
 	}
@@ -721,6 +799,7 @@ func TestBackoffRetryWhenSocketAbsent(t *testing.T) {
 	// Start server after a short delay to exercise backoff.
 	go func() {
 		time.Sleep(120 * time.Millisecond)
+
 		srv, err := fake.New(sock)
 		if err != nil {
 			t.Errorf("delayed fake.New: %v", err)
@@ -735,6 +814,7 @@ func TestBackoffRetryWhenSocketAbsent(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+
 	_, err := client.GetNetwork(ctx, "demo")
 	if err != nil {
 		t.Fatalf("GetNetwork with delayed socket expected success via backoff, got %v", err)
@@ -750,8 +830,10 @@ func TestBackoffRetryExhausted(t *testing.T) {
 	// Ensure socket does not exist.
 
 	client := NewClient(sock)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
 	defer cancel()
+
 	_, err := client.GetNetwork(ctx, "demo")
 	if err == nil {
 		t.Fatalf("expected error when socket never appears, got nil")
@@ -767,10 +849,12 @@ func TestClient_NilContextHandled(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New: %v", err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 	srv.SetResult("DeleteNetwork", nil)
 
@@ -787,14 +871,17 @@ func TestErrorWrappingPreservesSentinel(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New: %v", err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 	srv.SetErrorCode("DeletePort", "not_found")
 
 	client := NewClient(sock)
+
 	err = client.DeletePort(context.Background(), "ghost")
 	if err == nil {
 		t.Fatalf("expected error")
@@ -802,6 +889,7 @@ func TestErrorWrappingPreservesSentinel(t *testing.T) {
 	// Wrap once and check Is still
 	wrapped := errors.Join(err, errors.New("extra"))
 	_ = wrapped
+
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("direct errors.Is failed")
 	}
@@ -815,10 +903,12 @@ func TestAllMethods_EachErrorPath(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New: %v", err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 
 	// Make GetNetwork return not_found, GetPort return not_found, etc.
@@ -831,12 +921,15 @@ func TestAllMethods_EachErrorPath(t *testing.T) {
 	if _, err := client.GetNetwork(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetNetwork not_found mapping failed: %v", err)
 	}
+
 	if _, err := client.GetPort(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetPort not_found mapping failed: %v", err)
 	}
+
 	if err := client.DeleteNetwork(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("DeleteNetwork not_found mapping failed: %v", err)
 	}
+
 	if err := client.DeletePort(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("DeletePort not_found mapping failed: %v", err)
 	}
