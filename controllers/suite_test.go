@@ -75,9 +75,11 @@ func TestEnvtestCRDsAndScheme(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helpers.StartEnvTest: %v", err)
 	}
+
 	if envTest.Env == nil {
 		t.Fatalf("helpers.StartEnvTest returned a nil Env")
 	}
+
 	if envTest.Client == nil {
 		t.Fatalf("helpers.StartEnvTest returned a nil Client")
 	}
@@ -91,10 +93,12 @@ func TestEnvtestCRDsAndScheme(t *testing.T) {
 	if err := envTest.Client.Create(ctx, ns); err != nil {
 		t.Fatalf("create test namespace %q: %v", namespace, err)
 	}
+
 	t.Cleanup(func() {
 		// Best-effort; the harness stops the control plane in its own cleanup.
 		cctx, ccancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer ccancel()
+
 		_ = envTest.Client.Delete(cctx, ns)
 	})
 
@@ -123,6 +127,7 @@ func TestEnvtestCRDsAndScheme(t *testing.T) {
 				if got.Spec.Network.CIDR != "192.168.124.0/24" {
 					return fmt.Errorf("spec.network.cidr = %q, want %q", got.Spec.Network.CIDR, "192.168.124.0/24")
 				}
+
 				return nil
 			},
 		},
@@ -142,6 +147,7 @@ func TestEnvtestCRDsAndScheme(t *testing.T) {
 				if got.Spec.CPU != 2 {
 					return fmt.Errorf("spec.cpu = %d, want %d", got.Spec.CPU, 2)
 				}
+
 				return nil
 			},
 		},
@@ -165,6 +171,7 @@ func TestEnvtestCRDsAndScheme(t *testing.T) {
 				if got.Spec.Template.Spec.CPU != 4 {
 					return fmt.Errorf("spec.template.spec.cpu = %d, want %d", got.Spec.Template.Spec.CPU, 4)
 				}
+
 				return nil
 			},
 		},
@@ -183,6 +190,7 @@ func TestEnvtestCRDsAndScheme(t *testing.T) {
 				if got.Spec.Role != "worker" {
 					return fmt.Errorf("spec.role = %q, want %q", got.Spec.Role, "worker")
 				}
+
 				return nil
 			},
 		},
@@ -209,6 +217,7 @@ func TestEnvtestCRDsAndScheme(t *testing.T) {
 				if got.Spec.Replicas != 1 {
 					return fmt.Errorf("spec.replicas = %d, want %d", got.Spec.Replicas, 1)
 				}
+
 				return nil
 			},
 		},
@@ -241,6 +250,7 @@ func assertCRUD(t *testing.T, c client.Client, obj client.Object, verify func(cl
 	if err := c.Get(ctx, key, got); err != nil {
 		t.Fatalf("Get %s: %v", key, err)
 	}
+
 	if err := verify(got); err != nil {
 		t.Fatalf("Get %s round-trip: %v", key, err)
 	}
@@ -283,14 +293,17 @@ type opLog struct {
 func (l *opLog) add(op string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
 	l.ops = append(l.ops, op)
 }
 
 func (l *opLog) snapshot() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
 	out := make([]string, len(l.ops))
 	copy(out, l.ops)
+
 	return out
 }
 
@@ -299,11 +312,13 @@ func (l *opLog) snapshot() []string {
 func (l *opLog) firstIndex(op string, from int) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
 	for i := from; i < len(l.ops); i++ {
 		if l.ops[i] == op {
 			return i
 		}
 	}
+
 	return -1
 }
 
@@ -366,6 +381,7 @@ func registerK8netdOpHandlers(srv *fake.Server, ops *opLog) {
 			return nil, nil
 		})
 	}
+
 	srv.Handle("AllocateIP", func(json.RawMessage) (any, *fake.RPCError) {
 		ops.add("AllocateIP")
 		return testPoolStart, nil
@@ -394,6 +410,7 @@ func startEnvtestK8netdSuite(t *testing.T) *envtestK8netdSuite {
 	if err != nil {
 		t.Fatalf("helpers.StartEnvTest: %v", err)
 	}
+
 	installCAPICoreCRDs(t, envTest.Env.Config)
 
 	c, err := client.New(envTest.Env.Config, client.Options{Scheme: newScheme()})
@@ -442,16 +459,20 @@ func startEnvtestK8netdSuite(t *testing.T) *envtestK8netdSuite {
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
 	}
+
 	if err := clusterRec.SetupWithManager(mgr); err != nil {
 		t.Fatalf("setup cluster controller: %v", err)
 	}
+
 	if err := machineRec.SetupWithManager(mgr); err != nil {
 		t.Fatalf("setup machine controller: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+
 	startErr := make(chan error, 1)
 	go func() { startErr <- mgr.Start(ctx) }()
+
 	select {
 	case <-mgr.Elected():
 	case err := <-startErr:
@@ -461,8 +482,10 @@ func startEnvtestK8netdSuite(t *testing.T) *envtestK8netdSuite {
 		cancel()
 		t.Fatal("manager did not become elected within 60s")
 	}
+
 	t.Cleanup(func() {
 		cancel()
+
 		select {
 		case err := <-startErr:
 			if err != nil && !errors.Is(err, context.Canceled) {
@@ -480,25 +503,31 @@ func startEnvtestK8netdSuite(t *testing.T) *envtestK8netdSuite {
 // desc when it never does.
 func eventuallyF(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
 	t.Helper()
+
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
 		}
+
 		time.Sleep(100 * time.Millisecond)
 	}
+
 	t.Fatalf("timed out after %s waiting for %s", timeout, desc)
 }
 
 // firstRequestOf returns the first captured request of method.
 func firstRequestOf(t *testing.T, srv *fake.Server, method string) fake.CapturedRequest {
 	t.Helper()
+
 	for _, req := range srv.Requests() {
 		if req.Method == method {
 			return req
 		}
 	}
+
 	t.Fatalf("no %q request captured; captured: %v", method, srv.Requests())
+
 	return fake.CapturedRequest{}
 }
 
@@ -506,25 +535,32 @@ func firstRequestOf(t *testing.T, srv *fake.Server, method string) fake.Captured
 // conflict because the running controller updates the status concurrently.
 func armMachineFinalizer(t *testing.T, c client.Client, key client.ObjectKey) {
 	t.Helper()
+
 	for range 20 {
 		hm := &infrastructurev1alpha1.HypervisorMachine{}
 		if err := c.Get(t.Context(), key, hm); err != nil {
 			t.Fatalf("get HypervisorMachine to arm finalizer: %v", err)
 		}
+
 		if controllerutil.ContainsFinalizer(hm, machineDeleteFinalizer) {
 			return
 		}
+
 		hm.Finalizers = append(hm.Finalizers, machineDeleteFinalizer)
+
 		err := c.Update(t.Context(), hm)
 		if err == nil {
 			return
 		}
+
 		if apierrors.IsConflict(err) {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
+
 		t.Fatalf("arm machine finalizer: %v", err)
 	}
+
 	t.Fatal("could not arm machine finalizer after 20 attempts (persistent conflict)")
 }
 
@@ -549,11 +585,14 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 			if countMethod(s.k8netdSrv.Requests(), "CreateNetwork") == 0 {
 				return false
 			}
+
 			hc := &infrastructurev1alpha1.HypervisorCluster{}
 			if err := s.client.Get(t.Context(), lc.key(), hc); err != nil {
 				return false
 			}
+
 			cond := findCondition(hc, clusterv1.InfrastructureReadyCondition)
+
 			return hc.Status.Ready && cond != nil && cond.Status == metav1.ConditionTrue
 		})
 
@@ -561,16 +600,20 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 		if reqs[0].Method != "CreateNetwork" {
 			t.Errorf("first k8netd call = %q, want CreateNetwork before anything else", reqs[0].Method)
 		}
+
 		p := decodeCreateNetworkParams(t, firstRequestOf(t, s.k8netdSrv, "CreateNetwork"))
 		if p.Name != lc.name {
 			t.Errorf("CreateNetwork name = %q, want cluster name %q", p.Name, lc.name)
 		}
+
 		if p.CIDR != testCIDR {
 			t.Errorf("CreateNetwork cidr = %q, want %q", p.CIDR, testCIDR)
 		}
+
 		if p.Gateway != testGateway {
 			t.Errorf("CreateNetwork gateway = %q, want %q", p.Gateway, testGateway)
 		}
+
 		if p.PoolStart != defaultPoolStart || p.PoolEnd != defaultPoolEnd {
 			t.Errorf("CreateNetwork pool = (%q, %q), want constants (%q, %q)",
 				p.PoolStart, p.PoolEnd, defaultPoolStart, defaultPoolEnd)
@@ -588,9 +631,11 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 		if err := s.client.Get(t.Context(), lc.key(), hc); err != nil {
 			t.Fatalf("get HypervisorCluster: %v", err)
 		}
+
 		if hc.Annotations == nil {
 			hc.Annotations = map[string]string{}
 		}
+
 		hc.Annotations["suite.cluster.x-k8s.io/rerun"] = "1"
 		if err := s.client.Update(t.Context(), hc); err != nil {
 			t.Fatalf("poke re-reconcile: %v", err)
@@ -602,33 +647,42 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 			if got := countMethod(s.k8netdSrv.Requests(), "CreateNetwork"); got != before {
 				t.Fatalf("CreateNetwork calls after re-reconcile = %d, want still %d", got, before)
 			}
+
 			time.Sleep(100 * time.Millisecond)
 		}
 	})
 
 	var lm *linkedMachine
+
 	t.Run("machine reconcile issues port lifecycle before VM start and publishes IP", func(t *testing.T) {
 		lm = newLinkedMachine(t, s.client, lc, "suite-machine", true)
 		armMachineFinalizer(t, s.client, client.ObjectKeyFromObject(lm.hm))
 
 		key := client.ObjectKeyFromObject(lm.hm)
+
 		eventuallyF(t, 120*time.Second, "machine provisioned: port lifecycle + VM start + status IP", func() bool {
 			ops := s.ops.snapshot()
+
 			hasPort := slices.Contains(ops, "AllocateIP")
 			if !hasPort {
 				return false
 			}
+
 			hm := &infrastructurev1alpha1.HypervisorMachine{}
 			if err := s.client.Get(t.Context(), key, hm); err != nil {
 				return false
 			}
+
 			ip := ""
+
 			for _, addr := range hm.Status.Addresses {
 				if addr.Type == clusterv1.MachineInternalIP {
 					ip = addr.Address
 				}
 			}
+
 			cond := findMachineCondition(hm, vmProvisionedCondition)
+
 			return ip == testPoolStart && hm.Status.ProviderID != nil &&
 				hm.Status.Ready && cond != nil && cond.Status == metav1.ConditionTrue
 		})
@@ -641,12 +695,15 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 					return i
 				}
 			}
+
 			return -1
 		}
+
 		cp, ap, ai, vr := idx("CreatePort"), idx("AttachPort"), idx("AllocateIP"), idx("VM.EnsureRunning")
 		if cp < 0 || ap < 0 || ai < 0 || vr < 0 {
 			t.Fatalf("incomplete op trace: %v", ops)
 		}
+
 		if !(cp < ap && ap < ai && ai < vr) {
 			t.Errorf("op order = [CreatePort:%d AttachPort:%d AllocateIP:%d EnsureRunning:%d], want strictly increasing",
 				cp, ap, ai, vr)
@@ -659,11 +716,14 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 			Network string `json:"network"`
 			MAC     string `json:"mac"`
 		}
+
 		var attach attachParams
+
 		attachReq := firstRequestOf(t, s.k8netdSrv, "AttachPort")
 		if err := json.Unmarshal(attachReq.Params, &attach); err != nil {
 			t.Fatalf("unmarshal AttachPort params: %v", err)
 		}
+
 		wantAttachMAC := mac.Derive(lc.name, lm.name)
 		if attach.Port != lm.name || attach.Network != lc.name || attach.MAC != wantAttachMAC {
 			t.Errorf(
@@ -682,11 +742,14 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 			Network string `json:"network"`
 			MAC     string `json:"mac"`
 		}
+
 		var alloc allocParams
+
 		allocReq := firstRequestOf(t, s.k8netdSrv, "AllocateIP")
 		if err := json.Unmarshal(allocReq.Params, &alloc); err != nil {
 			t.Fatalf("unmarshal AllocateIP params: %v", err)
 		}
+
 		wantMAC := mac.Derive(lc.name, lm.name)
 		if alloc.Network != lc.name || alloc.MAC != wantMAC {
 			t.Errorf("AllocateIP = (%q, %q), want (%q, %q)", alloc.Network, alloc.MAC, lc.name, wantMAC)
@@ -697,12 +760,15 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 		if lm == nil {
 			t.Fatal("machine provision subtest did not run; cannot test deletion")
 		}
+
 		mark := len(s.ops.snapshot())
 
 		if err := s.client.Delete(t.Context(), lm.hm); err != nil {
 			t.Fatalf("delete HypervisorMachine: %v", err)
 		}
+
 		key := client.ObjectKeyFromObject(lm.hm)
+
 		eventuallyF(t, 90*time.Second, "HypervisorMachine reclaimed after teardown", func() bool {
 			err := s.client.Get(t.Context(), key, &infrastructurev1alpha1.HypervisorMachine{})
 			return apierrors.IsNotFound(err)
@@ -712,10 +778,12 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 		sd := s.ops.firstIndex("VM.Shutdown", mark)
 		st := s.ops.firstIndex("VM.Stop", mark)
 		dp := s.ops.firstIndex("DetachPort", mark)
+
 		dpo := s.ops.firstIndex("DeletePort", mark)
 		if sd < 0 || st < 0 || dp < 0 || dpo < 0 {
 			t.Fatalf("teardown ops missing after mark %d: trace %v", mark, s.ops.snapshot())
 		}
+
 		if !(st > sd && dp > st && dpo > dp) {
 			t.Errorf(
 				"teardown order after mark %d = [Shutdown:%d Stop:%d DetachPort:%d DeletePort:%d], want Stop>Shutdown, DetachPort>Stop, DeletePort>DetachPort",
@@ -736,22 +804,27 @@ func TestEnvtestSuiteControllersWithFakeK8Netd(t *testing.T) {
 		if err := s.client.Get(t.Context(), lc.key(), hc); err != nil {
 			t.Fatalf("Get HypervisorCluster: %v", err)
 		}
+
 		if len(hc.Finalizers) == 0 {
 			t.Fatal("cluster finalizer not set; cannot exercise delete flow")
 		}
+
 		if err := s.client.Delete(t.Context(), hc); err != nil {
 			t.Fatalf("Delete HypervisorCluster: %v", err)
 		}
+
 		eventuallyF(t, 90*time.Second, "HypervisorCluster reclaimed", func() bool {
 			err := s.client.Get(t.Context(), lc.key(), &infrastructurev1alpha1.HypervisorCluster{})
 			return apierrors.IsNotFound(err)
 		})
 
 		reqs := s.k8netdSrv.Requests()
+
 		after := countMethod(reqs, "DeleteNetwork")
 		if after != before+1 {
 			t.Fatalf("DeleteNetwork calls = %d, want %d (exactly one teardown call)", after, before+1)
 		}
+
 		if s.ops.firstIndex("DeleteNetwork", mark) < 0 {
 			t.Errorf("DeleteNetwork not recorded after delete mark %d", mark)
 		}
@@ -766,5 +839,6 @@ func findMachineCondition(hm *infrastructurev1alpha1.HypervisorMachine, t string
 			return &hm.Status.Conditions[i]
 		}
 	}
+
 	return nil
 }

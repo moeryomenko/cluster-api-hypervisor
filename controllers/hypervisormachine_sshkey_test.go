@@ -46,7 +46,9 @@ import (
 // config, standing in for a cluster template that ships no key.
 func clearConfigSSHPublicKey(t *testing.T, c client.Client, lm *linkedMachine) {
 	t.Helper()
+
 	cfg := lm.config.DeepCopy()
+
 	cfg.Spec.SSHPublicKey = ""
 	if err := c.Update(t.Context(), cfg); err != nil {
 		t.Fatalf("clear spec.sshPublicKey on %q: %v", cfg.Name, err)
@@ -57,10 +59,12 @@ func clearConfigSSHPublicKey(t *testing.T, c client.Client, lm *linkedMachine) {
 // in for the build-dir key mounted into the provider container.
 func writeSSHKeyFile(t *testing.T, content string) string {
 	t.Helper()
+
 	path := filepath.Join(t.TempDir(), "ssh-lab.pub")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write ssh key file: %v", err)
 	}
+
 	return path
 }
 
@@ -74,6 +78,7 @@ func TestMachineSSHKeyResolutionOrder(t *testing.T) {
 	lm := newLinkedMachine(t, c, lc, "node-1", true)
 
 	const fileKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIfile-key-must-lose"
+
 	fx.r.Config.SSHPublicKeyFile = writeSSHKeyFile(t, fileKey+"\n")
 
 	if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lm.hm)}); err != nil {
@@ -83,6 +88,7 @@ func TestMachineSSHKeyResolutionOrder(t *testing.T) {
 	if got := len(fx.render.calls); got != 1 {
 		t.Fatalf("CIDATA render called %d times, want 1", got)
 	}
+
 	if got := fx.render.calls[0].SSHPublicKey; got != testSSHPublicKey {
 		t.Errorf("render ssh public key = %q, want the spec key %q", got, testSSHPublicKey)
 	}
@@ -104,6 +110,7 @@ func TestMachineSSHKeyFileMissingNamesEnvVar(t *testing.T) {
 	if err == nil {
 		t.Fatal("Reconcile succeeded with a missing ssh key file, want an error")
 	}
+
 	if !strings.Contains(err.Error(), "HYPERVISOR_SSH_PUBLIC_KEY_FILE") {
 		t.Errorf("Reconcile error %v does not name HYPERVISOR_SSH_PUBLIC_KEY_FILE", err)
 	}
@@ -124,6 +131,7 @@ func TestMachineSSHKeyUnsetEnvKeepsFailureNamingEnvVar(t *testing.T) {
 	if err == nil {
 		t.Fatal("Reconcile succeeded with no resolvable ssh key, want an error")
 	}
+
 	if !strings.Contains(err.Error(), "HYPERVISOR_SSH_PUBLIC_KEY_FILE") {
 		t.Errorf("Reconcile error %v does not name HYPERVISOR_SSH_PUBLIC_KEY_FILE", err)
 	}
@@ -140,6 +148,7 @@ func TestMachineSSHRendersWithFileKey(t *testing.T) {
 	clearConfigSSHPublicKey(t, c, lm)
 
 	const fileKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIfile-key-wins"
+
 	fx.r.Config.SSHPublicKeyFile = writeSSHKeyFile(t, "  "+fileKey+"  \n")
 
 	if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lm.hm)}); err != nil {
@@ -149,6 +158,7 @@ func TestMachineSSHRendersWithFileKey(t *testing.T) {
 	if got := len(fx.render.calls); got != 1 {
 		t.Fatalf("CIDATA render called %d times, want 1", got)
 	}
+
 	if got := fx.render.calls[0].SSHPublicKey; got != fileKey {
 		t.Errorf("render ssh public key = %q, want the trimmed file key %q", got, fileKey)
 	}

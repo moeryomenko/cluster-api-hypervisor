@@ -64,11 +64,14 @@ import (
 func newMachineK8netdFakeServer(t *testing.T) *fake.Server {
 	t.Helper()
 	sock := filepath.Join(t.TempDir(), "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New %q: %v", sock, err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
+
 	return srv
 }
 
@@ -85,6 +88,7 @@ func newMachineK8netdReconciler(
 	srv *fake.Server,
 ) (*HypervisorMachineReconciler, *fake.Server, *chclient.FakeClient) { //nolint:revive
 	t.Helper()
+
 	kc := k8netd.NewClient(srv.SocketPath())
 	// Build a base fixture to reuse its VM and exec seams, then patch K8netd.
 	fx := newMachineFixture(t, c)
@@ -93,13 +97,17 @@ func newMachineK8netdReconciler(
 	rt := rv.Type()
 	kcType := reflect.TypeOf(kc)
 	found := false
+
 	for i := 0; i < rt.NumField(); i++ {
 		if rt.Field(i).Type == kcType && rv.Field(i).CanSet() {
 			rv.Field(i).Set(reflect.ValueOf(kc))
+
 			found = true
+
 			break
 		}
 	}
+
 	if !found {
 		for i := 0; i < rt.NumField(); i++ {
 			name := strings.ToLower(rt.Field(i).Name)
@@ -107,16 +115,20 @@ func newMachineK8netdReconciler(
 				rt.Field(i).Type.AssignableTo(kcType) &&
 				rv.Field(i).CanSet() {
 				rv.Field(i).Set(reflect.ValueOf(kc))
+
 				found = true
+
 				break
 			}
 		}
 	}
+
 	if !found {
 		var fields []string
 		for field := range rt.Fields() {
 			fields = append(fields, field.Name+":"+field.Type.String())
 		}
+
 		t.Fatalf(
 			"HypervisorMachineReconciler has no *k8netd.Client field; fields=%v (expected Net/NewAllocator removed, K8netd added for REQ-004)",
 			fields,
@@ -127,23 +139,28 @@ func newMachineK8netdReconciler(
 	if !srv.IsSet("AllocateIP") {
 		srv.SetResult("AllocateIP", "192.168.124.55")
 	}
+
 	if !srv.IsSet("CreatePort") {
 		srv.SetResult("CreatePort", nil)
 	}
+
 	if !srv.IsSet("AttachPort") {
 		srv.SetResult("AttachPort", nil)
 	}
+
 	return r, srv, fx.vm
 }
 
 // countMachineK8netdMethod counts captured requests with the given method.
 func countMachineK8netdMethod(reqs []fake.CapturedRequest, method string) int {
 	n := 0
+
 	for _, r := range reqs {
 		if r.Method == method {
 			n++
 		}
 	}
+
 	return n
 }
 
@@ -154,6 +171,7 @@ func methodIndex(reqs []fake.CapturedRequest, method string) int {
 			return i
 		}
 	}
+
 	return -1
 }
 
@@ -162,6 +180,7 @@ func methodIndex(reqs []fake.CapturedRequest, method string) int {
 // controller still carries Net/NewAllocator.
 func TestHypervisorMachineK8netd_ReconcilerHasNoLegacyFields(t *testing.T) {
 	t.Parallel()
+
 	rt := reflect.TypeFor[HypervisorMachineReconciler]()
 	for _, name := range []string{"NewAllocator"} {
 		if _, ok := rt.FieldByName(name); ok {
@@ -181,14 +200,17 @@ func TestHypervisorMachineK8netd_ReconcilerHasNoLegacyFields(t *testing.T) {
 			)
 		}
 	}
+
 	kcType := reflect.TypeOf(k8netd.NewClient(""))
 	hasK8netd := false
+
 	for field := range rt.Fields() {
 		if field.Type == kcType {
 			hasK8netd = true
 			break
 		}
 	}
+
 	if !hasK8netd {
 		t.Errorf("HypervisorMachineReconciler has no *k8netd.Client field; REQ-004 requires it wired from cfg.K8NetdSocket")
 	}
@@ -199,6 +221,7 @@ func TestHypervisorMachineK8netd_ReconcilerHasNoLegacyFields(t *testing.T) {
 // struct still has them.
 func TestHypervisorMachineK8netd_DataStructHasNoStaticIPFields(t *testing.T) {
 	t.Parallel()
+
 	rt := reflect.TypeFor[cloudinit.Data]()
 	for _, name := range []string{"IP", "Gateway", "DNS"} {
 		if _, ok := rt.FieldByName(name); ok {
@@ -233,16 +256,20 @@ func TestHypervisorMachineK8netd_ReconcileCreatesPortAttachAllocateInOrderBefore
 	reqs := srv.Requests()
 	createIdx := methodIndex(reqs, "CreatePort")
 	attachIdx := methodIndex(reqs, "AttachPort")
+
 	allocIdx := methodIndex(reqs, "AllocateIP")
 	if createIdx == -1 {
 		t.Fatalf("CreatePort not called; requests=%v", reqs)
 	}
+
 	if attachIdx == -1 {
 		t.Fatalf("AttachPort not called; requests=%v", reqs)
 	}
+
 	if allocIdx == -1 {
 		t.Fatalf("AllocateIP not called; requests=%v", reqs)
 	}
+
 	if !(createIdx < attachIdx && attachIdx < allocIdx) {
 		t.Fatalf(
 			"k8netd call order wrong: CreatePort@%d AttachPort@%d AllocateIP@%d, want CreatePort < AttachPort < AllocateIP; requests=%v",
@@ -256,6 +283,7 @@ func TestHypervisorMachineK8netd_ReconcileCreatesPortAttachAllocateInOrderBefore
 	if len(vm.Calls) == 0 {
 		t.Fatalf("VM client never called; want EnsureRunning after k8netd ordering")
 	}
+
 	if vm.Calls[0] != "EnsureRunning" {
 		t.Errorf(
 			"VM.Calls[0]=%q, want EnsureRunning after k8netd ordering; all calls=%v, k8netd=%v",
@@ -267,6 +295,7 @@ func TestHypervisorMachineK8netd_ReconcileCreatesPortAttachAllocateInOrderBefore
 	// Verify params: port name == machine name, network == cluster name, mac present.
 	for _, req := range reqs {
 		var p map[string]string
+
 		_ = json.Unmarshal(req.Params, &p)
 		switch req.Method {
 		case "CreatePort":
@@ -276,15 +305,19 @@ func TestHypervisorMachineK8netd_ReconcileCreatesPortAttachAllocateInOrderBefore
 		case "AttachPort":
 			hasPort := p["name"] != "" || p["port"] != "" || p["Name"] != "" || p["Port"] != ""
 			hasNetwork := p["network"] != "" || p["Network"] != "" || p["networkName"] != ""
+
 			if !hasPort {
 				t.Errorf("AttachPort missing port/name in %s", string(req.Params))
 			}
+
 			if !hasNetwork {
 				t.Errorf("AttachPort missing network in %s", string(req.Params))
 			}
+
 			if v := p["network"]; v != "" && v != lc.name {
 				t.Errorf("AttachPort network = %q, want cluster name %q", v, lc.name)
 			}
+
 			if v := p["Network"]; v != "" && v != lc.name {
 				t.Errorf("AttachPort Network = %q, want %q", v, lc.name)
 			}
@@ -292,6 +325,7 @@ func TestHypervisorMachineK8netd_ReconcileCreatesPortAttachAllocateInOrderBefore
 			if p["network"] == "" && p["Network"] == "" && p["networkName"] == "" {
 				t.Errorf("AllocateIP missing network in %s", string(req.Params))
 			}
+
 			if p["mac"] == "" && p["MAC"] == "" && p["Mac"] == "" {
 				t.Errorf("AllocateIP missing mac in %s", string(req.Params))
 			}
@@ -308,6 +342,7 @@ func TestHypervisorMachineK8netd_ReconcilePublishesAllocatedIPInStatus(t *testin
 	vm.State = ch.VMState("Running")
 
 	const wantIP = "192.168.124.77"
+
 	srv.Handle("AllocateIP", func(params json.RawMessage) (any, *fake.RPCError) {
 		return wantIP, nil
 	})
@@ -324,23 +359,28 @@ func TestHypervisorMachineK8netd_ReconcilePublishesAllocatedIPInStatus(t *testin
 	if err := c.Get(t.Context(), key, hm); err != nil {
 		t.Fatalf("Get HypervisorMachine: %v", err)
 	}
+
 	gotIP := ""
+
 	for _, a := range hm.Status.Addresses {
 		if a.Type == clusterv1.MachineInternalIP {
 			gotIP = a.Address
 			break
 		}
 	}
+
 	if gotIP != wantIP {
 		t.Errorf("status.addresses InternalIP = %q, want allocated %q (from AllocateIP)", gotIP, wantIP)
 	}
 	// Hostname still present.
 	foundHost := false
+
 	for _, a := range hm.Status.Addresses {
 		if a.Type == clusterv1.MachineHostName && a.Address == lm.name {
 			foundHost = true
 		}
 	}
+
 	if !foundHost {
 		t.Errorf("status.addresses missing hostname %q; got %v", lm.name, hm.Status.Addresses)
 	}
@@ -366,6 +406,7 @@ func TestHypervisorMachineK8netd_ReconcileDeleteDetachesAndDeletesPortAfterVMSto
 	if err := c.Get(t.Context(), key, hm); err != nil {
 		t.Fatalf("Get after provision: %v", err)
 	}
+
 	if len(hm.Finalizers) == 0 {
 		// If controller does not set finalizer yet, add one so delete path is exercised.
 		hm.Finalizers = []string{"test-finalizer"}
@@ -373,22 +414,27 @@ func TestHypervisorMachineK8netd_ReconcileDeleteDetachesAndDeletesPortAfterVMSto
 			t.Fatalf("add finalizer: %v", err)
 		}
 	}
+
 	if err := c.Get(t.Context(), key, hm); err != nil {
 		t.Fatalf("Get after finalizer ensure: %v", err)
 	}
+
 	if err := c.Delete(t.Context(), hm); err != nil {
 		t.Fatalf("Delete HypervisorMachine: %v", err)
 	}
+
 	pending := &infrastructurev1alpha1.HypervisorMachine{}
 	if err := c.Get(t.Context(), key, pending); err != nil {
 		t.Fatalf("object vanished before delete reconcile: %v", err)
 	}
+
 	if pending.DeletionTimestamp.IsZero() {
 		t.Fatal("deletionTimestamp not set after Delete")
 	}
 
 	// Reset VM to track delete calls clearly; keep same server to verify detach/delete ordering.
 	vm.Calls = nil
+
 	srv.Reset()
 	srv.SetResult("AllocateIP", "192.168.124.55")
 	// We need to re-set provision results for any re-reconcile that might allocate again,
@@ -412,6 +458,7 @@ func TestHypervisorMachineK8netd_ReconcileDeleteDetachesAndDeletesPortAfterVMSto
 			vm.Calls,
 		)
 	}
+
 	if countMachineK8netdMethod(srv.Requests(), "DeletePort") != 1 {
 		t.Fatalf(
 			"DeletePort calls = %d, want 1 on delete after VM stop; requests=%v",
@@ -419,6 +466,7 @@ func TestHypervisorMachineK8netd_ReconcileDeleteDetachesAndDeletesPortAfterVMSto
 			srv.Requests(),
 		)
 	}
+
 	if idxDetach := methodIndex(srv.Requests(), "DetachPort"); idxDetach == -1 {
 		t.Fatalf("DetachPort not found")
 	} else if idxDelete := methodIndex(srv.Requests(), "DeletePort"); idxDelete == -1 {
@@ -429,31 +477,38 @@ func TestHypervisorMachineK8netd_ReconcileDeleteDetachesAndDeletesPortAfterVMSto
 	// VM Shutdown and Stop must have been called before Detach/Delete.
 	foundShutdown := false
 	foundStop := false
+
 	for _, call := range vm.Calls {
 		if call == "Shutdown" {
 			foundShutdown = true
 		}
+
 		if call == "Stop" {
 			foundStop = true
 		}
 	}
+
 	if !foundShutdown {
 		t.Errorf("VM Shutdown not called on delete; want Shutdown before DetachPort; vmCalls=%v", vm.Calls)
 	}
+
 	if !foundStop {
 		t.Errorf("VM Stop not called on delete; want Stop before DeletePort; vmCalls=%v", vm.Calls)
 	}
 	// Order: Shutdown and Stop indices should be before Detach.
 	shutdownIdx := -1
 	stopIdx := -1
+
 	for i, call := range vm.Calls {
 		if call == "Shutdown" && shutdownIdx == -1 {
 			shutdownIdx = i
 		}
+
 		if call == "Stop" && stopIdx == -1 {
 			stopIdx = i
 		}
 	}
+
 	_ = shutdownIdx
 	_ = stopIdx
 	// Finalizer should be removed and object reclaimed (or at least finalizers cleared).
@@ -477,13 +532,17 @@ func TestHypervisorMachineK8netd_AllocateIPUsesDerivedMAC(t *testing.T) {
 	vm.State = ch.VMState("Running")
 
 	var capturedMAC string
+
 	srv.Handle("AllocateIP", func(params json.RawMessage) (any, *fake.RPCError) {
 		var p map[string]string
+
 		_ = json.Unmarshal(params, &p)
+
 		capturedMAC = p["mac"]
 		if capturedMAC == "" {
 			capturedMAC = p["MAC"]
 		}
+
 		return "192.168.124.55", nil
 	})
 
@@ -494,11 +553,13 @@ func TestHypervisorMachineK8netd_AllocateIPUsesDerivedMAC(t *testing.T) {
 	if err := c.Update(t.Context(), lm.hm); err != nil {
 		t.Fatalf("clear spec.mac: %v", err)
 	}
+
 	key := client.ObjectKeyFromObject(lm.hm)
 
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
+
 	if capturedMAC == "" {
 		t.Fatalf("AllocateIP not called or mac param empty; requests=%v", srv.Requests())
 	}
@@ -518,28 +579,36 @@ func TestHypervisorMachineK8netd_AllocateIPUsesSpecMACOverride(t *testing.T) {
 	vm.State = ch.VMState("Running")
 
 	const overrideMAC = "aa:bb:cc:dd:ee:01"
+
 	var capturedMAC string
+
 	srv.Handle("AllocateIP", func(params json.RawMessage) (any, *fake.RPCError) {
 		var p map[string]string
+
 		_ = json.Unmarshal(params, &p)
+
 		capturedMAC = p["mac"]
 		if capturedMAC == "" {
 			capturedMAC = p["MAC"]
 		}
+
 		return "192.168.124.55", nil
 	})
 
 	lc := newLinkedCluster(t, c, "machine-k8netd-mac-override", "capi-cluster")
 	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
 	lm.hm.Spec.MAC = overrideMAC
 	if err := c.Update(t.Context(), lm.hm); err != nil {
 		t.Fatalf("set spec.mac: %v", err)
 	}
+
 	key := client.ObjectKeyFromObject(lm.hm)
 
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
+
 	if capturedMAC != overrideMAC {
 		t.Errorf("AllocateIP mac = %q, want spec override %q", capturedMAC, overrideMAC)
 	}
@@ -563,6 +632,7 @@ func TestHypervisorMachineK8netd_CreatePortAlreadyExistsIsIdempotent(t *testing.
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("Reconcile with already_exists CreatePort: %v (should be idempotent)", err)
 	}
+
 	hm := &infrastructurev1alpha1.HypervisorMachine{}
 	if err := c.Get(t.Context(), key, hm); err != nil {
 		t.Fatalf("Get after already_exists reconcile: %v", err)
@@ -593,6 +663,7 @@ func TestHypervisorMachineK8netd_AllocateIPFailureAbortsVMStart(t *testing.T) {
 	if err == nil {
 		t.Fatal("Reconcile succeeded with AllocateIP internal error, want error")
 	}
+
 	for _, call := range vm.Calls {
 		if call == "EnsureRunning" {
 			t.Errorf(
@@ -607,6 +678,7 @@ func TestHypervisorMachineK8netd_AllocateIPFailureAbortsVMStart(t *testing.T) {
 	if err := c.Get(t.Context(), key, hm); err != nil {
 		t.Fatalf("Get HypervisorMachine: %v", err)
 	}
+
 	for _, a := range hm.Status.Addresses {
 		if a.Type == clusterv1.MachineInternalIP && a.Address != "" {
 			t.Errorf("status has InternalIP %q despite AllocateIP failure; should be empty", a.Address)
@@ -630,9 +702,11 @@ func TestHypervisorMachineK8netd_AttachPortFailureAbortsAllocateAndVMStart(t *te
 	if err == nil {
 		t.Fatal("Reconcile succeeded with AttachPort conflict, want error")
 	}
+
 	if countMachineK8netdMethod(srv.Requests(), "AllocateIP") != 0 {
 		t.Errorf("AllocateIP called despite AttachPort failure; should abort before allocate; requests=%v", srv.Requests())
 	}
+
 	for _, call := range vm.Calls {
 		if call == "EnsureRunning" {
 			t.Errorf("VM EnsureRunning called despite AttachPort failure; vmCalls=%v", vm.Calls)

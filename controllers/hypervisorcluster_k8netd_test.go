@@ -80,11 +80,14 @@ type k8netdDeleteNetworkParams struct {
 func newK8netdFakeServer(t *testing.T) *fake.Server {
 	t.Helper()
 	sock := filepath.Join(t.TempDir(), "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New %q: %v", sock, err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
+
 	return srv
 }
 
@@ -94,6 +97,7 @@ func newK8netdFakeServer(t *testing.T) *fake.Server {
 // after). If the field is absent the helper fails the test (RED).
 func newK8netdReconciler(t *testing.T, c client.Client, srv *fake.Server) *HypervisorClusterReconciler {
 	t.Helper()
+
 	kc := k8netd.NewClient(srv.SocketPath())
 	r := &HypervisorClusterReconciler{
 		Client:   c,
@@ -108,10 +112,13 @@ func newK8netdReconciler(t *testing.T, c client.Client, srv *fake.Server) *Hyper
 	for i := 0; i < rt.NumField(); i++ {
 		if rt.Field(i).Type == kcType && rv.Field(i).CanSet() {
 			rv.Field(i).Set(reflect.ValueOf(kc))
+
 			found = true
+
 			break
 		}
 	}
+
 	if !found {
 		// Fallback: any field whose name contains k8netd/k8snet that is assignable.
 		for i := 0; i < rt.NumField(); i++ {
@@ -120,53 +127,65 @@ func newK8netdReconciler(t *testing.T, c client.Client, srv *fake.Server) *Hyper
 				rt.Field(i).Type.AssignableTo(kcType) &&
 				rv.Field(i).CanSet() {
 				rv.Field(i).Set(reflect.ValueOf(kc))
+
 				found = true
+
 				break
 			}
 		}
 	}
+
 	if !found {
 		// Explicit name candidates for better error message.
 		candidates := []string{"K8netd", "K8Netd", "K8netdClient", "K8NetdClient", "K8sNetd", "Client"}
 		for _, n := range candidates {
 			if f := rv.FieldByName(n); f.IsValid() && f.CanSet() && f.Type() == kcType {
 				f.Set(reflect.ValueOf(kc))
+
 				found = true
+
 				break
 			}
 		}
 	}
+
 	if !found {
 		var fields []string
 		for field := range rt.Fields() {
 			fields = append(fields, field.Name+":"+field.Type.String())
 		}
+
 		t.Fatalf(
 			"HypervisorClusterReconciler has no *k8netd.Client field; fields=%v (expected Net/Nft/Dnsmasq/NewAllocator removed, K8netd added)",
 			fields,
 		)
 	}
+
 	return r
 }
 
 // decodeCreateNetworkParams decodes the first CreateNetwork request's params.
 func decodeCreateNetworkParams(t *testing.T, req fake.CapturedRequest) k8netdCreateNetworkParams {
 	t.Helper()
+
 	var p k8netdCreateNetworkParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		t.Fatalf("unmarshal CreateNetwork params %s: %v", string(req.Params), err)
 	}
+
 	return p
 }
 
 // countMethod counts requests with the given method.
 func countMethod(reqs []fake.CapturedRequest, method string) int {
 	n := 0
+
 	for _, r := range reqs {
 		if r.Method == method {
 			n++
 		}
 	}
+
 	return n
 }
 
@@ -175,7 +194,9 @@ func countMethod(reqs []fake.CapturedRequest, method string) int {
 // Net/Nft/Dnsmasq/NewAllocator.
 func TestHypervisorClusterK8netd_ReconcilerHasNoLegacyFields(t *testing.T) {
 	t.Parallel()
+
 	rt := reflect.TypeFor[HypervisorClusterReconciler]()
+
 	legacy := []string{"Net", "Nft", "Dnsmasq", "NewAllocator"}
 	for _, name := range legacy {
 		if _, ok := rt.FieldByName(name); ok {
@@ -188,12 +209,14 @@ func TestHypervisorClusterK8netd_ReconcilerHasNoLegacyFields(t *testing.T) {
 	// Also assert a k8netd client field exists.
 	kcType := reflect.TypeOf(k8netd.NewClient(""))
 	hasK8netd := false
+
 	for field := range rt.Fields() {
 		if field.Type == kcType {
 			hasK8netd = true
 			break
 		}
 	}
+
 	if !hasK8netd {
 		t.Errorf("HypervisorClusterReconciler has no *k8netd.Client field; REQ-003 requires it wired from cfg.K8NetdSocket")
 	}
@@ -220,6 +243,7 @@ func TestHypervisorClusterK8netd_ReconcileNormal_CreatesNetworkBeforeReady(t *te
 	if len(reqs) == 0 || reqs[0].Method != "CreateNetwork" {
 		t.Fatalf("first k8netd call = %q, want CreateNetwork before marking ready", reqs[0].Method)
 	}
+
 	p := decodeCreateNetworkParams(t, reqs[0])
 	if p.Name != lc.name {
 		t.Errorf("CreateNetwork name = %q, want cluster name %q", p.Name, lc.name)
@@ -229,9 +253,11 @@ func TestHypervisorClusterK8netd_ReconcileNormal_CreatesNetworkBeforeReady(t *te
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	if !hc.Status.Ready {
 		t.Error("status.ready = false after successful CreateNetwork, want true")
 	}
+
 	cond := findCondition(hc, clusterv1.InfrastructureReadyCondition)
 	if cond == nil || cond.Status != metav1.ConditionTrue {
 		t.Errorf("InfrastructureReady condition = %v, want True after CreateNetwork", cond)
@@ -258,7 +284,9 @@ func TestHypervisorClusterK8netd_ReconcileNormal_NetworkParamMapping(t *testing.
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	hc.Spec.Network.CIDR = "10.20.0.0/16"
+
 	hc.Spec.Network.Gateway = "10.20.0.1"
 	if err := c.Update(t.Context(), hc); err != nil {
 		t.Fatalf("Update HypervisorCluster network: %v", err)
@@ -272,17 +300,21 @@ func TestHypervisorClusterK8netd_ReconcileNormal_NetworkParamMapping(t *testing.
 	if countMethod(reqs, "CreateNetwork") != 1 {
 		t.Fatalf("CreateNetwork calls = %d, want 1", countMethod(reqs, "CreateNetwork"))
 	}
+
 	var createReq fake.CapturedRequest
+
 	for _, rq := range reqs {
 		if rq.Method == "CreateNetwork" {
 			createReq = rq
 			break
 		}
 	}
+
 	p := decodeCreateNetworkParams(t, createReq)
 	if p.CIDR != "10.20.0.0/16" {
 		t.Errorf("CreateNetwork cidr = %q, want %q from hc.Spec.Network.CIDR", p.CIDR, "10.20.0.0/16")
 	}
+
 	if p.Gateway != "10.20.0.1" {
 		t.Errorf("CreateNetwork gateway = %q, want %q from hc.Spec.Network.Gateway", p.Gateway, "10.20.0.1")
 	}
@@ -290,9 +322,11 @@ func TestHypervisorClusterK8netd_ReconcileNormal_NetworkParamMapping(t *testing.
 	if p.PoolStart != defaultPoolStart {
 		t.Errorf("CreateNetwork poolStart = %q, want pool constant %q", p.PoolStart, defaultPoolStart)
 	}
+
 	if p.PoolEnd != defaultPoolEnd {
 		t.Errorf("CreateNetwork poolEnd = %q, want pool constant %q", p.PoolEnd, defaultPoolEnd)
 	}
+
 	if p.PoolStart != "192.168.124.20" || p.PoolEnd != "192.168.124.200" {
 		t.Errorf("pool bounds = (%q, %q), want (192.168.124.20, 192.168.124.200)", p.PoolStart, p.PoolEnd)
 	}
@@ -310,6 +344,7 @@ func TestHypervisorClusterK8netd_ReconcileNormal_IdempotentNoDuplicateCreate(t *
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 		t.Fatalf("first Reconcile error: %v", err)
 	}
+
 	firstCount := countMethod(srv.Requests(), "CreateNetwork")
 	if firstCount != 1 {
 		t.Fatalf("first Reconcile CreateNetwork calls = %d, want 1", firstCount)
@@ -319,6 +354,7 @@ func TestHypervisorClusterK8netd_ReconcileNormal_IdempotentNoDuplicateCreate(t *
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 		t.Fatalf("second Reconcile error: %v", err)
 	}
+
 	secondCount := countMethod(srv.Requests(), "CreateNetwork")
 	if secondCount != 1 {
 		t.Errorf("second Reconcile CreateNetwork calls = %d, want still 1 (no duplicate create on re-reconcile)", secondCount)
@@ -328,6 +364,7 @@ func TestHypervisorClusterK8netd_ReconcileNormal_IdempotentNoDuplicateCreate(t *
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	if !hc.Status.Ready {
 		t.Error("status.ready = false after idempotent re-reconcile, want true")
 	}
@@ -342,11 +379,13 @@ func TestHypervisorClusterK8netd_ReconcileNormal_AlreadyExistsIsIdempotent(t *te
 	// First call will succeed, second will return already_exists — handler
 	// covers both by returning already_exists on the second invocation.
 	call := 0
+
 	srv.Handle("CreateNetwork", func(params json.RawMessage) (any, *fake.RPCError) {
 		call++
 		if call > 1 {
 			return nil, &fake.RPCError{Code: "already_exists", Message: "already_exists"}
 		}
+
 		return nil, nil
 	})
 	r := newK8netdReconciler(t, c, srv)
@@ -358,13 +397,16 @@ func TestHypervisorClusterK8netd_ReconcileNormal_AlreadyExistsIsIdempotent(t *te
 	}
 	// Reset handler to already_exists for second call if controller retries.
 	srv.SetError("CreateNetwork", "already_exists", "already_exists")
+
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 		t.Fatalf("second Reconcile with already_exists error: %v (should be treated as success)", err)
 	}
+
 	hc := &infrastructurev1alpha1.HypervisorCluster{}
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	if !hc.Status.Ready {
 		t.Error("status.ready = false after already_exists, want true (idempotent)")
 	}
@@ -388,6 +430,7 @@ func TestHypervisorClusterK8netd_ReconcileDelete_DeletesNetworkBeforeFinalizerRe
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	if len(hc.Finalizers) == 0 {
 		t.Fatal("finalizer not set after provision; cannot test delete order")
 	}
@@ -396,10 +439,12 @@ func TestHypervisorClusterK8netd_ReconcileDelete_DeletesNetworkBeforeFinalizerRe
 	if err := c.Delete(t.Context(), hc); err != nil {
 		t.Fatalf("Delete HypervisorCluster: %v", err)
 	}
+
 	pending := &infrastructurev1alpha1.HypervisorCluster{}
 	if err := c.Get(t.Context(), lc.key(), pending); err != nil {
 		t.Fatalf("object vanished before teardown reconcile: %v", err)
 	}
+
 	if pending.DeletionTimestamp.IsZero() {
 		t.Fatal("deletionTimestamp not set after Delete")
 	}
@@ -413,23 +458,29 @@ func TestHypervisorClusterK8netd_ReconcileDelete_DeletesNetworkBeforeFinalizerRe
 
 	reqs := srv.Requests()
 	deleteReqs := 0
+
 	var deleteReq fake.CapturedRequest
+
 	for _, rq := range reqs {
 		if rq.Method == "DeleteNetwork" {
 			deleteReqs++
 			deleteReq = rq
 		}
 	}
+
 	if deleteReqs != 1 {
 		t.Fatalf("DeleteNetwork calls = %d, want 1 (methods %v)", deleteReqs, reqs)
 	}
+
 	if beforeDeleteCount != 0 {
 		t.Errorf("DeleteNetwork called before teardown, want only on delete reconcile")
 	}
+
 	var p k8netdDeleteNetworkParams
 	if err := json.Unmarshal(deleteReq.Params, &p); err != nil {
 		t.Fatalf("unmarshal DeleteNetwork params: %v", err)
 	}
+
 	if p.Name != lc.name {
 		t.Errorf("DeleteNetwork name = %q, want cluster name %q", p.Name, lc.name)
 	}
@@ -453,16 +504,20 @@ func TestHypervisorClusterK8netd_ReconcileDelete_IdempotentNoDuplicateDelete(t *
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 		t.Fatalf("provision Reconcile error: %v", err)
 	}
+
 	hc := &infrastructurev1alpha1.HypervisorCluster{}
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	if err := c.Delete(t.Context(), hc); err != nil {
 		t.Fatalf("Delete HypervisorCluster: %v", err)
 	}
+
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 		t.Fatalf("teardown Reconcile error: %v", err)
 	}
+
 	afterTeardown := countMethod(srv.Requests(), "DeleteNetwork")
 	if afterTeardown != 1 {
 		t.Fatalf("DeleteNetwork calls after teardown = %d, want 1", afterTeardown)
@@ -471,6 +526,7 @@ func TestHypervisorClusterK8netd_ReconcileDelete_IdempotentNoDuplicateDelete(t *
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 		t.Fatalf("reconcile after deletion error: %v", err)
 	}
+
 	afterMissing := countMethod(srv.Requests(), "DeleteNetwork")
 	if afterMissing != 1 {
 		t.Errorf("DeleteNetwork calls after missing-object reconcile = %d, want still 1 (no duplicate delete)", afterMissing)
@@ -490,18 +546,22 @@ func TestHypervisorClusterK8netd_ReconcileDelete_NotFoundIsIdempotent(t *testing
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 		t.Fatalf("provision Reconcile error: %v", err)
 	}
+
 	hc := &infrastructurev1alpha1.HypervisorCluster{}
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	if err := c.Delete(t.Context(), hc); err != nil {
 		t.Fatalf("Delete HypervisorCluster: %v", err)
 	}
 	// Fake returns not_found for DeleteNetwork — controller should treat as success.
 	srv.SetError("DeleteNetwork", "not_found", "not_found")
+
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 		t.Fatalf("teardown Reconcile with not_found error: %v (should be idempotent)", err)
 	}
+
 	if err := c.Get(t.Context(), lc.key(), &infrastructurev1alpha1.HypervisorCluster{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("Get after not_found teardown = %v, want NotFound (finalizer should be removed)", err)
 	}
@@ -522,13 +582,16 @@ func TestHypervisorClusterK8netd_ReconcileNormal_ErrorLeavesNotReady(t *testing.
 	if err == nil {
 		t.Fatal("Reconcile succeeded with CreateNetwork internal error, want error")
 	}
+
 	hc := &infrastructurev1alpha1.HypervisorCluster{}
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	if hc.Status.Ready {
 		t.Error("status.ready = true after CreateNetwork error, want false")
 	}
+
 	if cond := findCondition(hc, clusterv1.InfrastructureReadyCondition); cond != nil &&
 		cond.Status == metav1.ConditionTrue {
 		t.Errorf("InfrastructureReady condition = True after CreateNetwork error, want not True")
@@ -560,6 +623,7 @@ func TestHypervisorClusterK8netd_ReconcileControlPlaneEndpointStillReconciles(t 
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	const wantHost = "127.0.0.1"
 	if hc.Status.ControlPlaneEndpoint.Host != wantHost {
 		t.Errorf(
@@ -568,9 +632,11 @@ func TestHypervisorClusterK8netd_ReconcileControlPlaneEndpointStillReconciles(t 
 			wantHost,
 		)
 	}
+
 	if hc.Status.ControlPlaneEndpoint.Port != testCPPort {
 		t.Errorf("controlPlaneEndpoint.port = %d, want %d", hc.Status.ControlPlaneEndpoint.Port, testCPPort)
 	}
+
 	if !hc.Status.Ready {
 		t.Error("status.ready = false after endpoint reconcile, want true")
 	}
@@ -588,13 +654,16 @@ func TestHypervisorClusterK8netd_ReconcileControlPlaneEndpointStillReconciles(t 
 		lc2 := newLinkedCluster(t, c, "hc-k8netd-ep2", "capi-cluster")
 		newControlPlane(t, c, lc2, false)
 		newControlPlaneMachine(t, c, lc2, testCPIP)
+
 		if _, err := r2.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc2.key()}); err != nil {
 			t.Fatalf("Reconcile error: %v", err)
 		}
+
 		hc2 := &infrastructurev1alpha1.HypervisorCluster{}
 		if err := c.Get(t.Context(), lc2.key(), hc2); err != nil {
 			t.Fatalf("Get HypervisorCluster: %v", err)
 		}
+
 		if hc2.Status.ControlPlaneEndpoint.Host != "" {
 			t.Errorf(
 				"controlPlaneEndpoint.host = %q with uninitialized control plane, want empty",

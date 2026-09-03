@@ -54,10 +54,12 @@ type recordingVMFactory struct {
 func (f *recordingVMFactory) newVMClient(socketDir, binary string) chclient.Client {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	f.dirs = append(f.dirs, socketDir)
 	f.binaries = append(f.binaries, binary)
 	fake := &chclient.FakeClient{}
 	f.fakes = append(f.fakes, fake)
+
 	return fake
 }
 
@@ -66,6 +68,7 @@ func (f *recordingVMFactory) newVMClient(socketDir, binary string) chclient.Clie
 func (f *recordingVMFactory) snapshot() (dirs, binaries []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
 	return slices.Clone(f.dirs), slices.Clone(f.binaries)
 }
 
@@ -87,6 +90,7 @@ func TestMachineVMClientFactoryPerMachineSocketDirs(t *testing.T) {
 	fx.reconcileMachine(t, lmB.hm)
 
 	dirs, binaries := factory.snapshot()
+
 	wantDirs := []string{
 		filepath.Join(testSocketDir, lmA.name),
 		filepath.Join(testSocketDir, lmB.name),
@@ -94,12 +98,15 @@ func TestMachineVMClientFactoryPerMachineSocketDirs(t *testing.T) {
 	if !slices.Equal(dirs, wantDirs) {
 		t.Errorf("factory socket dirs = %v, want %v", dirs, wantDirs)
 	}
+
 	if dirs[0] == dirs[1] {
 		t.Errorf("both machines constructed clients over the same dir %q", dirs[0])
 	}
+
 	if factory.fakes[0] == factory.fakes[1] {
 		t.Error("both machines received the same client instance, want distinct clients per machine")
 	}
+
 	for _, binary := range binaries {
 		if binary != fx.r.Config.CHBinary {
 			t.Errorf("factory binary = %q, want the provider config value %q", binary, fx.r.Config.CHBinary)
@@ -128,6 +135,7 @@ func TestMachineVMClientCachedAcrossReconciles(t *testing.T) {
 	if len(dirs) != 1 {
 		t.Fatalf("factory constructions across two reconciles = %d (%v), want exactly 1", len(dirs), dirs)
 	}
+
 	if wantDir := filepath.Join(testSocketDir, lm.name); dirs[0] != wantDir {
 		t.Errorf("factory socket dir = %q, want %q", dirs[0], wantDir)
 	}
@@ -155,6 +163,7 @@ func TestMachineDeleteEvictsCachedVMClient(t *testing.T) {
 	fx.r.NewVMClient = factory.newVMClient
 
 	fx.reconcileMachine(t, lmA.hm)
+
 	if _, ok := fx.r.vmClients.Load(lmA.name); !ok {
 		t.Fatal("no cache entry after the provisioning reconcile, want the client cached")
 	}
@@ -174,6 +183,7 @@ func TestMachineDeleteEvictsCachedVMClient(t *testing.T) {
 	if fresh == chclient.Client(factory.fakes[0]) {
 		t.Error("vmClientFor after delete returned the evicted instance, want a freshly built client")
 	}
+
 	dirs, _ := factory.snapshot()
 	if len(dirs) != 2 {
 		t.Fatalf("factory constructions after delete = %d (%v), want 2", len(dirs), dirs)
@@ -196,10 +206,13 @@ func TestMachineDeleteStopsOwnVMClient(t *testing.T) {
 		lmA.name: {},
 		lmB.name: {},
 	}
+
 	var mu sync.Mutex
+
 	fx.r.NewVMClient = func(socketDir, _ string) chclient.Client {
 		mu.Lock()
 		defer mu.Unlock()
+
 		return clients[filepath.Base(socketDir)]
 	}
 
@@ -207,9 +220,11 @@ func TestMachineDeleteStopsOwnVMClient(t *testing.T) {
 	fx.reconcileMachine(t, lmA.hm)
 
 	assertMachineReclaimed(t, c, lmA.hm)
+
 	if calls := clients[lmA.name].Calls; !slices.Equal(calls, []string{"Shutdown", "Stop"}) {
 		t.Errorf("deleted machine's client calls = %v, want [Shutdown Stop]", calls)
 	}
+
 	if calls := clients[lmB.name].Calls; len(calls) != 0 {
 		t.Errorf("other machine's client was touched during deletion: %v", calls)
 	}

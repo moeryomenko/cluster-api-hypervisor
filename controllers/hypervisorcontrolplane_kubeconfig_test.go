@@ -59,11 +59,14 @@ func setHMPublishedPorts(
 	ports ...infrastructurev1alpha1.MachinePublishedPort,
 ) {
 	t.Helper()
+
 	key := client.ObjectKeyFromObject(hm)
+
 	fresh := &infrastructurev1alpha1.HypervisorMachine{}
 	if err := c.Get(t.Context(), key, fresh); err != nil {
 		t.Fatalf("Get HypervisorMachine %s: %v", key, err)
 	}
+
 	fresh.Status.PublishedPorts = ports
 	if err := c.Status().Update(t.Context(), fresh); err != nil {
 		t.Fatalf("set HypervisorMachine %s publishedPorts: %v", key, err)
@@ -103,6 +106,7 @@ func TestControlPlaneKubeconfigServerURLFromPublishedAllocation(t *testing.T) {
 	fx, lc, lcp := newKubeconfigAllocationFixture(t, c, "cp-kubeconfig-allocation")
 
 	const allocatedHostPort = int32(26443)
+
 	hm := newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
 	setHMPublishedPorts(t, c, hm, infrastructurev1alpha1.MachinePublishedPort{
 		VMPort:   6443,
@@ -112,11 +116,14 @@ func TestControlPlaneKubeconfigServerURLFromPublishedAllocation(t *testing.T) {
 	fx.reconcileControlPlane(t, lcp.cp)
 
 	secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
+
 	data, ok := secret.Data[kubeconfigSecretDataKey]
 	if !ok {
 		t.Fatalf("kubeconfig Secret has no %q data key (keys %v)", kubeconfigSecretDataKey, secret.Data)
 	}
+
 	doc := parseKubeconfig(t, data)
+
 	wantServer := "https://host.containers.internal:26443"
 	if len(doc.Clusters) != 1 || doc.Clusters[0].Cluster.Server != wantServer {
 		t.Errorf("kubeconfig server = %+v, want %q (from the recorded 6443 allocation)", doc.Clusters, wantServer)
@@ -141,6 +148,7 @@ func TestControlPlaneKubeconfigUpdatesInPlaceWhenAllocationChanges(t *testing.T)
 
 	secretKey := kubeconfigSecretKey(lc.name, lc.namespace)
 	first := wantKubeconfigSecret(t, c, secretKey)
+
 	firstDoc := parseKubeconfig(t, first.Data[kubeconfigSecretDataKey])
 	if len(firstDoc.Clusters) != 1 || firstDoc.Clusters[0].Cluster.Server != "https://host.containers.internal:26443" {
 		t.Fatalf("initial kubeconfig server = %+v, want https://host.containers.internal:26443", firstDoc.Clusters)
@@ -157,8 +165,10 @@ func TestControlPlaneKubeconfigUpdatesInPlaceWhenAllocationChanges(t *testing.T)
 	if got := countSecretsNamed(t, c, lc.namespace, lc.name+"-kubeconfig"); got != 1 {
 		t.Fatalf("kubeconfig Secrets after re-allocation = %d, want exactly 1 (updated in place)", got)
 	}
+
 	second := wantKubeconfigSecret(t, c, secretKey)
 	secondDoc := parseKubeconfig(t, second.Data[kubeconfigSecretDataKey])
+
 	wantServer := "https://host.containers.internal:26555"
 	if len(secondDoc.Clusters) != 1 || secondDoc.Clusters[0].Cluster.Server != wantServer {
 		t.Errorf(
@@ -185,6 +195,7 @@ func TestControlPlaneKubeconfigWaitsForPublishedAllocation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
+
 	wantRequeue(t, res)
 
 	if got := len(fx.health.calls); got != 0 {
@@ -205,6 +216,7 @@ func TestControlPlaneHealthProbeUsesAllocatedHostPort(t *testing.T) {
 	fx, _, lcp := newKubeconfigAllocationFixture(t, c, "cp-probe-allocation")
 
 	const allocatedHostPort = int32(30123)
+
 	hm := newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
 	setHMPublishedPorts(t, c, hm, infrastructurev1alpha1.MachinePublishedPort{
 		VMPort:   6443,
@@ -216,6 +228,7 @@ func TestControlPlaneHealthProbeUsesAllocatedHostPort(t *testing.T) {
 	if len(fx.health.calls) == 0 {
 		t.Fatal("apiserver healthz seam never called")
 	}
+
 	call := fx.health.calls[0]
 	if call.host != "127.0.0.1" || call.port != allocatedHostPort {
 		t.Errorf(
@@ -225,6 +238,7 @@ func TestControlPlaneHealthProbeUsesAllocatedHostPort(t *testing.T) {
 			allocatedHostPort,
 		)
 	}
+
 	if call.host == testCPIP {
 		t.Errorf("healthz polled the VM internal IP %q, which has no host route", call.host)
 	}
@@ -243,23 +257,28 @@ func TestControlPlaneEndpointResolutionIgnoresWorkerMachines(t *testing.T) {
 	// the cp machine.
 	lm := newLinkedMachine(t, c, lc, "worker-0", false)
 	workerMachineKey := client.ObjectKey{Namespace: lm.machine.Namespace, Name: lm.machine.Name}
+
 	workerMachine := &clusterv1.Machine{}
 	if err := c.Get(t.Context(), workerMachineKey, workerMachine); err != nil {
 		t.Fatalf("get worker Machine: %v", err)
 	}
+
 	if workerMachine.Labels == nil {
 		workerMachine.Labels = map[string]string{}
 	}
+
 	workerMachine.Labels[clusterv1.ClusterNameLabel] = lc.name
 	if err := c.Update(t.Context(), workerMachine); err != nil {
 		t.Fatalf("label worker Machine: %v", err)
 	}
+
 	setHMPublishedPorts(t, c, lm.hm, infrastructurev1alpha1.MachinePublishedPort{
 		VMPort:   6443,
 		HostPort: 39999,
 	})
 
 	const cpAllocatedHostPort = int32(26443)
+
 	hm := newControlPlaneInfraMachine(t, c, lcp, lcp.name+"-0", testCPIP)
 	setHMPublishedPorts(t, c, hm, infrastructurev1alpha1.MachinePublishedPort{
 		VMPort:   6443,
@@ -270,6 +289,7 @@ func TestControlPlaneEndpointResolutionIgnoresWorkerMachines(t *testing.T) {
 
 	secret := wantKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
 	doc := parseKubeconfig(t, secret.Data[kubeconfigSecretDataKey])
+
 	wantServer := "https://host.containers.internal:26443"
 	if len(doc.Clusters) != 1 || doc.Clusters[0].Cluster.Server != wantServer {
 		t.Errorf("kubeconfig server = %+v, want %q (worker allocation 39999 must be ignored)", doc.Clusters, wantServer)

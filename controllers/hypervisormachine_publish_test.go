@@ -74,14 +74,18 @@ func newLinkedControlPlaneMachine(
 	}
 
 	fresh := &clusterv1.Machine{}
+
 	key := client.ObjectKey{Namespace: lm.machine.Namespace, Name: lm.machine.Name}
 	if err := c.Get(t.Context(), key, fresh); err != nil {
 		t.Fatalf("get CAPI Machine %q: %v", lm.machine.Name, err)
 	}
+
 	if fresh.Labels == nil {
 		fresh.Labels = map[string]string{}
 	}
+
 	fresh.Labels[clusterv1.ClusterNameLabel] = lc.name
+
 	fresh.Labels[clusterv1.MachineControlPlaneLabel] = ""
 	if err := c.Update(t.Context(), fresh); err != nil {
 		t.Fatalf("set control-plane role label on Machine %q: %v", fresh.Name, err)
@@ -101,19 +105,25 @@ type publishPortParams struct {
 // snapshot function yielding the captured calls in order.
 func installPublishRecorder(t *testing.T, srv *fake.Server) func() []publishPortParams {
 	t.Helper()
+
 	var calls []publishPortParams
+
 	srv.Handle("PublishPort", func(params json.RawMessage) (any, *fake.RPCError) {
 		var p publishPortParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, &fake.RPCError{Code: "invalid_params", Message: err.Error()}
 		}
+
 		calls = append(calls, p)
+
 		host := int32(20022)
 		if p.VMPort == 6443 {
 			host = 26443
 		}
+
 		return map[string]int32{"host_port": host}, nil
 	})
+
 	return func() []publishPortParams { return calls }
 }
 
@@ -137,6 +147,7 @@ func TestHypervisorMachineK8netd_ControlPlanePublishesTwoPortsAfterAttach(t *tes
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
+
 	if got := len(publishCalls()); got != 2 {
 		t.Fatalf("recorder saw %d PublishPort invocations, want 2; requests=%v", got, srv.Requests())
 	}
@@ -151,10 +162,12 @@ func TestHypervisorMachineK8netd_ControlPlanePublishesTwoPortsAfterAttach(t *tes
 	if attachIdx == -1 {
 		t.Fatalf("AttachPort not called; requests=%v", reqs)
 	}
+
 	for i, req := range reqs {
 		if req.Method != "PublishPort" {
 			continue
 		}
+
 		if i < attachIdx {
 			t.Errorf("PublishPort@%d fired before AttachPort@%d; want publication after attach", i, attachIdx)
 		}
@@ -163,30 +176,38 @@ func TestHypervisorMachineK8netd_ControlPlanePublishesTwoPortsAfterAttach(t *tes
 	// Exact param sets: one 6443 call and one 22 call, both naming the
 	// machine's port, each carrying exactly the two canonical keys.
 	wantByVMPort := map[int32]bool{6443: false, 22: false}
+
 	for _, req := range reqs {
 		if req.Method != "PublishPort" {
 			continue
 		}
+
 		var keys map[string]json.RawMessage
 		if err := json.Unmarshal(req.Params, &keys); err != nil {
 			t.Fatalf("unmarshal PublishPort params %s: %v", string(req.Params), err)
 		}
+
 		if len(keys) != 2 {
 			t.Errorf("PublishPort params carry %d keys (%s), want exactly port and vm_port", len(keys), string(req.Params))
 		}
+
 		var p publishPortParams
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			t.Fatalf("unmarshal typed PublishPort params %s: %v", string(req.Params), err)
 		}
+
 		if p.Port != lm.name {
 			t.Errorf("PublishPort port = %q, want machine name %q", p.Port, lm.name)
 		}
+
 		if _, known := wantByVMPort[p.VMPort]; !known {
 			t.Errorf("PublishPort vm_port = %d, want only 6443 and 22; requests=%v", p.VMPort, reqs)
 			continue
 		}
+
 		wantByVMPort[p.VMPort] = true
 	}
+
 	for vmPort, seen := range wantByVMPort {
 		if !seen {
 			t.Errorf("no PublishPort call for vm_port %d; requests=%v", vmPort, reqs)
@@ -198,14 +219,17 @@ func TestHypervisorMachineK8netd_ControlPlanePublishesTwoPortsAfterAttach(t *tes
 	if err := c.Get(t.Context(), key, hm); err != nil {
 		t.Fatalf("Get HypervisorMachine: %v", err)
 	}
+
 	got := map[int32]int32{}
 	for _, pp := range hm.Status.PublishedPorts {
 		got[pp.VMPort] = pp.HostPort
 	}
+
 	want := map[int32]int32{6443: 26443, 22: 20022}
 	if len(got) != len(want) {
 		t.Fatalf("status.publishedPorts = %+v, want entries for exactly %v", hm.Status.PublishedPorts, want)
 	}
+
 	for vmPort, wantHost := range want {
 		if gotHost, ok := got[vmPort]; !ok || gotHost != wantHost {
 			t.Errorf("status.publishedPorts[%d] = %d (present %v), want %d", vmPort, gotHost, ok, wantHost)
@@ -230,6 +254,7 @@ func TestHypervisorMachineK8netd_ControlPlanePublishIdempotentAcrossReconciles(t
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("first Reconcile error: %v", err)
 	}
+
 	firstStatus := &infrastructurev1alpha1.HypervisorMachine{}
 	if err := c.Get(t.Context(), key, firstStatus); err != nil {
 		t.Fatalf("Get after first reconcile: %v", err)
@@ -242,6 +267,7 @@ func TestHypervisorMachineK8netd_ControlPlanePublishIdempotentAcrossReconciles(t
 	if got := countMachineK8netdMethod(srv.Requests(), "PublishPort"); got != 2 {
 		t.Errorf("PublishPort calls across two reconciles = %d, want still 2 (idempotent)", got)
 	}
+
 	if got := len(publishCalls()); got != 2 {
 		t.Errorf("recorder saw %d PublishPort invocations across two reconciles, want 2", got)
 	}
@@ -250,20 +276,24 @@ func TestHypervisorMachineK8netd_ControlPlanePublishIdempotentAcrossReconciles(t
 	if err := c.Get(t.Context(), key, hm); err != nil {
 		t.Fatalf("Get after second reconcile: %v", err)
 	}
+
 	if len(hm.Status.PublishedPorts) != len(firstStatus.Status.PublishedPorts) {
 		t.Errorf(
 			"status.publishedPorts changed across reconciles: %d -> %d entries",
 			len(firstStatus.Status.PublishedPorts), len(hm.Status.PublishedPorts),
 		)
 	}
+
 	for _, before := range firstStatus.Status.PublishedPorts {
 		found := false
+
 		for _, after := range hm.Status.PublishedPorts {
 			if after.VMPort == before.VMPort && after.HostPort == before.HostPort {
 				found = true
 				break
 			}
 		}
+
 		if !found {
 			t.Errorf("allocation for vm_port %d changed or vanished across reconciles: %+v -> %+v",
 				before.VMPort, firstStatus.Status.PublishedPorts, hm.Status.PublishedPorts)
@@ -293,10 +323,12 @@ func TestHypervisorMachineK8netd_WorkerMachinePublishesNothing(t *testing.T) {
 	if got := countMachineK8netdMethod(srv.Requests(), "PublishPort"); got != 0 {
 		t.Errorf("worker machine issued %d PublishPort calls, want 0; requests=%v", got, srv.Requests())
 	}
+
 	hm := &infrastructurev1alpha1.HypervisorMachine{}
 	if err := c.Get(t.Context(), key, hm); err != nil {
 		t.Fatalf("Get HypervisorMachine: %v", err)
 	}
+
 	if len(hm.Status.PublishedPorts) != 0 {
 		t.Errorf("worker status.publishedPorts = %+v, want empty", hm.Status.PublishedPorts)
 	}

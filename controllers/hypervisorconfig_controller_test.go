@@ -151,6 +151,7 @@ func fixtureClusterPKI() pki.ClusterPKI {
 // keys the conventional cluster PKI Secret must carry.
 func fixturePKISecretData() map[string][]byte {
 	pk := fixtureClusterPKI()
+
 	return map[string][]byte{
 		"CA":                pk.CA,
 		"CAKey":             pk.CAKey,
@@ -212,6 +213,7 @@ func (b *recordingBuildTree) build(
 	if b.err != nil {
 		return nil, b.err
 	}
+
 	if role == testConfigRoleControlPlane {
 		return confexttree.BuildControlPlane(
 			clusterName,
@@ -227,6 +229,7 @@ func (b *recordingBuildTree) build(
 			encryptionConfig,
 		)
 	}
+
 	return confexttree.BuildWorker(clusterName, cpIP, nodeName, pk, kubeletCert, kubeletKey, kubeconfigs["kubelet"])
 }
 
@@ -251,6 +254,7 @@ func (g *recordingGenPKI) gen(cpIP, cpName string) (pki.ClusterPKI, error) {
 	if g.err != nil {
 		return pki.ClusterPKI{}, g.err
 	}
+
 	return g.pk, nil
 }
 
@@ -276,6 +280,7 @@ func (g *recordingGenKubeletCert) gen(pk pki.ClusterPKI, nodeName string) ([]byt
 	if g.err != nil {
 		return nil, nil, g.err
 	}
+
 	return g.cert, g.key, nil
 }
 
@@ -311,6 +316,7 @@ func (r *recordingRenderKubeconfig) render(
 	if r.err != nil {
 		return nil, r.err
 	}
+
 	return []byte("server: " + serverURL + "\nuser: " + user + "\n"), nil
 }
 
@@ -386,6 +392,7 @@ func newLinkedConfig(
 	if controlPlane {
 		labels[clusterv1.MachineControlPlaneLabel] = ""
 	}
+
 	machine := &clusterv1.Machine{
 		ObjectMeta: metav1.ObjectMeta{Name: machineName, Namespace: lc.namespace, Labels: labels},
 		Spec: clusterv1.MachineSpec{
@@ -430,6 +437,7 @@ func newLinkedConfig(
 	if mutate != nil {
 		mutate(cfg)
 	}
+
 	if err := c.Create(ctx, cfg); err != nil {
 		t.Fatalf("create HypervisorConfig: %v", err)
 	}
@@ -452,6 +460,7 @@ func newLinkedConfig(
 	if err := c.Create(ctx, hm); err != nil {
 		t.Fatalf("create HypervisorMachine: %v", err)
 	}
+
 	if machineIP != "" {
 		hm.Status.Addresses = []clusterv1.MachineAddress{{Type: clusterv1.MachineInternalIP, Address: machineIP}}
 		if err := c.Status().Update(ctx, hm); err != nil {
@@ -474,10 +483,12 @@ func ensureControlPlaneMachineIP(t *testing.T, c client.Client, lc *linkedCluste
 	machineName := lc.name + "-cp-0"
 
 	machine := &clusterv1.Machine{}
+
 	err := c.Get(ctx, client.ObjectKey{Namespace: lc.namespace, Name: machineName}, machine)
 	if err == nil {
 		return
 	}
+
 	if !apierrors.IsNotFound(err) {
 		t.Fatalf("get control-plane Machine %q: %v", machineName, err)
 	}
@@ -486,6 +497,7 @@ func ensureControlPlaneMachineIP(t *testing.T, c client.Client, lc *linkedCluste
 		clusterv1.ClusterNameLabel:         lc.name,
 		clusterv1.MachineControlPlaneLabel: "",
 	}
+
 	machine = &clusterv1.Machine{
 		ObjectMeta: metav1.ObjectMeta{Name: machineName, Namespace: lc.namespace, Labels: labels},
 		Spec: clusterv1.MachineSpec{
@@ -526,6 +538,7 @@ func ensureControlPlaneMachineIP(t *testing.T, c client.Client, lc *linkedCluste
 	if err := c.Create(ctx, hm); err != nil {
 		t.Fatalf("create control-plane HypervisorMachine %q: %v", machineName, err)
 	}
+
 	hm.Status.Addresses = []clusterv1.MachineAddress{{Type: clusterv1.MachineInternalIP, Address: testCPIP}}
 	if err := c.Status().Update(ctx, hm); err != nil {
 		t.Fatalf("set control-plane HypervisorMachine addresses: %v", err)
@@ -536,6 +549,7 @@ func ensureControlPlaneMachineIP(t *testing.T, c client.Client, lc *linkedCluste
 // error.
 func (fx *configFixture) reconcileConfig(t *testing.T, cfg *bootstrapv1alpha1.HypervisorConfig) {
 	t.Helper()
+
 	if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cfg)}); err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
@@ -548,10 +562,12 @@ func getConfig(
 	cfg *bootstrapv1alpha1.HypervisorConfig,
 ) *bootstrapv1alpha1.HypervisorConfig {
 	t.Helper()
+
 	got := &bootstrapv1alpha1.HypervisorConfig{}
 	if err := c.Get(t.Context(), client.ObjectKeyFromObject(cfg), got); err != nil {
 		t.Fatalf("Get HypervisorConfig: %v", err)
 	}
+
 	return got
 }
 
@@ -559,24 +575,29 @@ func getConfig(
 // the config's status, failing when status.dataSecretName is not set.
 func configDataSecretKey(t *testing.T, c client.Client, cfg *bootstrapv1alpha1.HypervisorConfig) client.ObjectKey {
 	t.Helper()
+
 	got := getConfig(t, c, cfg)
 	if got.Status.DataSecretName == nil || *got.Status.DataSecretName == "" {
 		t.Fatalf("status.dataSecretName not set after reconcile (status %+v)", got.Status)
 	}
+
 	return client.ObjectKey{Namespace: cfg.Namespace, Name: *got.Status.DataSecretName}
 }
 
 // dataSecretBlob returns the raw tree.json bytes of the named Secret.
 func dataSecretBlob(t *testing.T, c client.Client, key client.ObjectKey) []byte {
 	t.Helper()
+
 	secret := &corev1.Secret{}
 	if err := c.Get(t.Context(), key, secret); err != nil {
 		t.Fatalf("Get Secret %s: %v", key, err)
 	}
+
 	blob, ok := secret.Data["tree.json"]
 	if !ok {
 		t.Fatalf("Secret %s has no tree.json key (have %v)", key, secret.Data)
 	}
+
 	return blob
 }
 
@@ -585,18 +606,22 @@ func dataSecretBlob(t *testing.T, c client.Client, key client.ObjectKey) []byte 
 func configSecretTree(t *testing.T, c client.Client, key client.ObjectKey) map[string][]byte {
 	t.Helper()
 	blob := dataSecretBlob(t, c, key)
+
 	encoded := map[string]string{}
 	if err := json.Unmarshal(blob, &encoded); err != nil {
 		t.Fatalf("decode tree.json blob: %v", err)
 	}
+
 	tree := make(map[string][]byte, len(encoded))
 	for path, content := range encoded {
 		raw, err := base64.StdEncoding.DecodeString(content)
 		if err != nil {
 			t.Fatalf("decode tree.json entry %q: %v", path, err)
 		}
+
 		tree[path] = raw
 	}
+
 	return tree
 }
 
@@ -607,6 +632,7 @@ func configCondition(cfg *bootstrapv1alpha1.HypervisorConfig, t string) *metav1.
 			return &cfg.Status.Conditions[i]
 		}
 	}
+
 	return nil
 }
 
@@ -614,12 +640,15 @@ func configCondition(cfg *bootstrapv1alpha1.HypervisorConfig, t string) *metav1.
 // ready with both failureReason and failureMessage set.
 func assertConfigFailure(t *testing.T, cfg *bootstrapv1alpha1.HypervisorConfig) {
 	t.Helper()
+
 	if cfg.Status.Ready {
 		t.Error("status.ready = true after failed reconcile, want false")
 	}
+
 	if cfg.Status.FailureReason == "" {
 		t.Error("status.failureReason empty after failed reconcile")
 	}
+
 	if cfg.Status.FailureMessage == "" {
 		t.Error("status.failureMessage empty after failed reconcile")
 	}
@@ -628,10 +657,12 @@ func assertConfigFailure(t *testing.T, cfg *bootstrapv1alpha1.HypervisorConfig) 
 // countSecrets returns the number of Secrets in the namespace.
 func countSecrets(t *testing.T, c client.Client, namespace string) int {
 	t.Helper()
+
 	list := &corev1.SecretList{}
 	if err := c.List(t.Context(), list, client.InNamespace(namespace)); err != nil {
 		t.Fatalf("List Secrets in %q: %v", namespace, err)
 	}
+
 	return len(list.Items)
 }
 
@@ -639,16 +670,20 @@ func countSecrets(t *testing.T, c client.Client, namespace string) int {
 // namespace.
 func countSecretsNamed(t *testing.T, c client.Client, namespace, name string) int {
 	t.Helper()
+
 	list := &corev1.SecretList{}
 	if err := c.List(t.Context(), list, client.InNamespace(namespace)); err != nil {
 		t.Fatalf("List Secrets in %q: %v", namespace, err)
 	}
+
 	n := 0
+
 	for _, s := range list.Items {
 		if s.Name == name {
 			n++
 		}
 	}
+
 	return n
 }
 
@@ -657,6 +692,7 @@ func countSecretsNamed(t *testing.T, c client.Client, namespace, name string) in
 // control plane reports initialized.
 func setClusterEndpoint(t *testing.T, c client.Client, lc *linkedCluster, host string, port int32) {
 	t.Helper()
+
 	lc.hc.Status.ControlPlaneEndpoint = clusterv1.APIEndpoint{Host: host, Port: port}
 	if err := c.Status().Update(t.Context(), lc.hc); err != nil {
 		t.Fatalf("set HypervisorCluster controlPlaneEndpoint: %v", err)
@@ -712,9 +748,11 @@ func workerTreeKeys(nodeName string) []string {
 // wantTreeKeys fails the test unless the tree has exactly the expected keys.
 func wantTreeKeys(t *testing.T, tree map[string][]byte, want []string) {
 	t.Helper()
+
 	if len(tree) != len(want) {
 		t.Errorf("tree has %d keys, want %d (tree keys %v)", len(tree), len(want), treeKeysOf(tree))
 	}
+
 	for _, key := range want {
 		if _, ok := tree[key]; !ok {
 			t.Errorf("tree missing key %q", key)
@@ -728,6 +766,7 @@ func treeKeysOf(tree map[string][]byte) []string {
 	for key := range tree {
 		keys = append(keys, key)
 	}
+
 	return keys
 }
 
@@ -735,16 +774,20 @@ func treeKeysOf(tree map[string][]byte) []string {
 // cover exactly the expected server URL and user pairs, in any order.
 func wantRenderCalls(t *testing.T, calls []renderKubeconfigCall, wantURL string, wantUsers ...string) {
 	t.Helper()
+
 	if len(calls) != len(wantUsers) {
 		t.Fatalf("RenderKubeconfig called %d times, want %d (calls %+v)", len(calls), len(wantUsers), calls)
 	}
+
 	seen := make(map[string]bool, len(calls))
 	for _, call := range calls {
 		if call.serverURL != wantURL {
 			t.Errorf("RenderKubeconfig server URL = %q, want %q", call.serverURL, wantURL)
 		}
+
 		seen[call.user] = true
 	}
+
 	for _, wantUser := range wantUsers {
 		if !seen[wantUser] {
 			t.Errorf("RenderKubeconfig never called with user %q (calls %+v)", wantUser, calls)
@@ -773,6 +816,7 @@ func TestConfigRoleDetection(t *testing.T) {
 		if len(fx.build.calls) != 1 {
 			t.Fatalf("BuildTree called %d times, want 1", len(fx.build.calls))
 		}
+
 		call := fx.build.calls[0]
 		if call.role != testConfigRoleControlPlane || call.cpIP != testCPIP || call.nodeName != "cp-1" {
 			t.Errorf("BuildTree call = role %q cpIP %q nodeName %q, want role %q cpIP %q nodeName %q",
@@ -788,6 +832,7 @@ func TestConfigRoleDetection(t *testing.T) {
 
 		tree := configSecretTree(t, c, configDataSecretKey(t, c, lcfg.cfg))
 		wantTreeKeys(t, tree, workerTreeKeys("worker-1"))
+
 		for key := range tree {
 			if strings.HasPrefix(key, "z-etcd") || strings.HasPrefix(key, "z-kubernetes-cp") {
 				t.Errorf("worker tree leaks control-plane key %q", key)
@@ -825,6 +870,7 @@ func TestConfigRoleDetection(t *testing.T) {
 
 		tree := configSecretTree(t, c, configDataSecretKey(t, c, lcfg.cfg))
 		wantTreeKeys(t, tree, workerTreeKeys("labeled-cp"))
+
 		if len(fx.build.calls) != 1 || fx.build.calls[0].role != testConfigRoleWorker {
 			t.Errorf(
 				"BuildTree role = %q, want the explicit worker role (calls %d)",
@@ -843,6 +889,7 @@ func TestConfigRoleDetection(t *testing.T) {
 
 		tree := configSecretTree(t, c, configDataSecretKey(t, c, lcfg.cfg))
 		wantTreeKeys(t, tree, controlPlaneTreeKeys("custom-node"))
+
 		if len(fx.build.calls) != 1 || fx.build.calls[0].nodeName != "custom-node" {
 			t.Errorf("BuildTree nodeName = %q, want custom-node", nodeNameOfBuildCalls(fx.build))
 		}
@@ -855,6 +902,7 @@ func roleOfBuildCalls(b *recordingBuildTree) string {
 	if len(b.calls) == 0 {
 		return ""
 	}
+
 	return b.calls[0].role
 }
 
@@ -864,6 +912,7 @@ func nodeNameOfBuildCalls(b *recordingBuildTree) string {
 	if len(b.calls) == 0 {
 		return ""
 	}
+
 	return b.calls[0].nodeName
 }
 
@@ -885,19 +934,23 @@ func TestConfigSecretWrittenWithTreeBlob(t *testing.T) {
 	if cfg.Status.DataSecretName == nil || *cfg.Status.DataSecretName == "" {
 		t.Fatalf("status.dataSecretName not set (status %+v)", cfg.Status)
 	}
+
 	wantSecretName := lcfg.name + "-data"
 	if *cfg.Status.DataSecretName != wantSecretName {
 		t.Errorf("status.dataSecretName = %q, want %q", *cfg.Status.DataSecretName, wantSecretName)
 	}
 
 	key := client.ObjectKey{Namespace: lc.namespace, Name: *cfg.Status.DataSecretName}
+
 	secret := &corev1.Secret{}
 	if err := c.Get(t.Context(), key, secret); err != nil {
 		t.Fatalf("Get data Secret %s: %v", key, err)
 	}
+
 	if len(secret.Data) != 1 {
 		t.Errorf("data Secret has %d keys, want exactly one (tree.json): %v", len(secret.Data), secret.Data)
 	}
+
 	if _, ok := secret.Data["tree.json"]; !ok {
 		t.Fatalf("data Secret missing tree.json key (have %v)", secret.Data)
 	}
@@ -909,11 +962,13 @@ func TestConfigSecretWrittenWithTreeBlob(t *testing.T) {
 	if !strings.Contains(etcdConf, testCPIP) {
 		t.Errorf("etcd.conf.yml does not carry the control-plane IP %q", testCPIP)
 	}
+
 	if !strings.Contains(etcdConf, "cp-1") {
 		t.Error("etcd.conf.yml does not carry the node name cp-1")
 	}
 
 	extRel := string(tree["z-etcd/etc/extension-release.d/extension-release.z-etcd"])
+
 	wantExtRel := "ID=fedora\nVERSION_ID=44\nKERNEL_VERSION=7.1\nEXTENSION=z-etcd\n"
 	if extRel != wantExtRel {
 		t.Errorf("z-etcd extension-release = %q, want %q", extRel, wantExtRel)
@@ -939,10 +994,12 @@ func TestConfigReadyAndDataSecretAvailable(t *testing.T) {
 	if !cfg.Status.Ready {
 		t.Error("status.ready = false after successful reconcile, want true")
 	}
+
 	cond := configCondition(cfg, configDataSecretAvailableCondition)
 	if cond == nil {
 		t.Fatalf("condition %q missing from status.conditions: %v", configDataSecretAvailableCondition, cfg.Status.Conditions)
 	}
+
 	if cond.Status != metav1.ConditionTrue {
 		t.Errorf("condition %q status = %q, want %q", configDataSecretAvailableCondition, cond.Status, metav1.ConditionTrue)
 	}
@@ -963,8 +1020,10 @@ func TestConfigIdempotentReconcile(t *testing.T) {
 	if first.Status.DataSecretName == nil {
 		t.Fatal("status.dataSecretName not set after first reconcile")
 	}
+
 	firstKey := *first.Status.DataSecretName
 	firstBlob := dataSecretBlob(t, c, client.ObjectKey{Namespace: lc.namespace, Name: firstKey})
+
 	firstCount := countSecrets(t, c, lc.namespace)
 	if firstCount == 0 {
 		t.Fatal("no Secret after first reconcile")
@@ -976,9 +1035,11 @@ func TestConfigIdempotentReconcile(t *testing.T) {
 	if second.Status.DataSecretName == nil || *second.Status.DataSecretName != firstKey {
 		t.Errorf("status.dataSecretName changed across reconciles: %q -> %v", firstKey, second.Status.DataSecretName)
 	}
+
 	if got := countSecrets(t, c, lc.namespace); got != firstCount {
 		t.Errorf("Secret count changed across reconciles: %d -> %d", firstCount, got)
 	}
+
 	if got := dataSecretBlob(t, c, client.ObjectKey{Namespace: lc.namespace, Name: firstKey}); !bytes.Equal(
 		got,
 		firstBlob,
@@ -1004,19 +1065,23 @@ func TestConfigClusterPKISecretCreatedOnce(t *testing.T) {
 	if len(fx.genPKI.calls) != 1 {
 		t.Fatalf("GenerateClusterPKI called %d times, want 1", len(fx.genPKI.calls))
 	}
+
 	if call := fx.genPKI.calls[0]; call.cpIP != testCPIP || call.cpName != "cp-1" {
 		t.Errorf("GenerateClusterPKI(%q, %q), want (%q, %q)", call.cpIP, call.cpName, testCPIP, "cp-1")
 	}
 
 	pkiKey := client.ObjectKey{Namespace: lc.namespace, Name: lc.name + "-pki"}
+
 	secret := &corev1.Secret{}
 	if err := c.Get(t.Context(), pkiKey, secret); err != nil {
 		t.Fatalf("Get cluster PKI Secret %s: %v", pkiKey, err)
 	}
+
 	wantData := fixturePKISecretData()
 	if len(secret.Data) != len(wantData) {
 		t.Errorf("cluster PKI Secret has %d keys, want %d: %v", len(secret.Data), len(wantData), secret.Data)
 	}
+
 	for key, want := range wantData {
 		if got, ok := secret.Data[key]; !ok || !bytes.Equal(got, want) {
 			t.Errorf("cluster PKI Secret data[%q] = %q (present %v), want %q", key, got, ok, want)
@@ -1026,6 +1091,7 @@ func TestConfigClusterPKISecretCreatedOnce(t *testing.T) {
 	if len(fx.genCert.calls) != 1 || fx.genCert.calls[0].nodeName != "cp-1" {
 		t.Errorf("GenerateKubeletCert calls = %+v, want one call for node cp-1", fx.genCert.calls)
 	}
+
 	if !reflect.DeepEqual(fx.genCert.calls[0].pk, fixtureClusterPKI()) {
 		t.Error("GenerateKubeletCert did not receive the stored cluster PKI")
 	}
@@ -1035,6 +1101,7 @@ func TestConfigClusterPKISecretCreatedOnce(t *testing.T) {
 	if len(fx.genPKI.calls) != 1 {
 		t.Errorf("GenerateClusterPKI called %d times across two reconciles, want 1", len(fx.genPKI.calls))
 	}
+
 	if got := countSecretsNamed(t, c, lc.namespace, lc.name+"-pki"); got != 1 {
 		t.Errorf("cluster PKI Secrets = %d, want exactly 1", got)
 	}
@@ -1051,6 +1118,7 @@ func TestConfigFailureSurfaces(t *testing.T) {
 	t.Run("missing owning machine", func(t *testing.T) {
 		fx := newConfigFixture(t, c)
 		lc := newLinkedCluster(t, c, "cfg-fail-owner", "capi-cluster")
+
 		cfg := &bootstrapv1alpha1.HypervisorConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: "orphan-config", Namespace: lc.namespace},
 			Spec: bootstrapv1alpha1.HypervisorConfigSpec{
@@ -1064,9 +1132,11 @@ func TestConfigFailureSurfaces(t *testing.T) {
 		_, _ = fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cfg)})
 
 		assertConfigFailure(t, getConfig(t, c, cfg))
+
 		if got := countSecrets(t, c, lc.namespace); got != 0 {
 			t.Errorf("missing-machine reconcile created %d Secrets, want 0", got)
 		}
+
 		assertSeamsUntouched(t, fx)
 	})
 
@@ -1078,9 +1148,11 @@ func TestConfigFailureSurfaces(t *testing.T) {
 		_, _ = fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(lcfg.cfg)})
 
 		assertConfigFailure(t, getConfig(t, c, lcfg.cfg))
+
 		if got := countSecrets(t, c, lc.namespace); got != 0 {
 			t.Errorf("missing-cluster reconcile created %d Secrets, want 0", got)
 		}
+
 		assertSeamsUntouched(t, fx)
 	})
 
@@ -1115,11 +1187,13 @@ func TestConfigFailureSurfaces(t *testing.T) {
 		if err == nil {
 			t.Fatal("Reconcile succeeded with a failing tree build, want an error")
 		}
+
 		if !errors.Is(err, errBuild) {
 			t.Errorf("Reconcile error %v does not wrap %v", err, errBuild)
 		}
 
 		assertConfigFailure(t, getConfig(t, c, lcfg.cfg))
+
 		if got := countSecrets(t, c, lc.namespace); got != 0 {
 			t.Errorf("failed reconcile created %d Secrets, want 0", got)
 		}
@@ -1136,11 +1210,13 @@ func TestConfigFailureSurfaces(t *testing.T) {
 		if err == nil {
 			t.Fatal("Reconcile succeeded with a failing PKI generator, want an error")
 		}
+
 		if !errors.Is(err, errPKI) {
 			t.Errorf("Reconcile error %v does not wrap %v", err, errPKI)
 		}
 
 		assertConfigFailure(t, getConfig(t, c, lcfg.cfg))
+
 		if got := countSecrets(t, c, lc.namespace); got != 0 {
 			t.Errorf("failed reconcile created %d Secrets, want 0", got)
 		}
@@ -1151,6 +1227,7 @@ func TestConfigFailureSurfaces(t *testing.T) {
 // before any rendering seam ran.
 func assertSeamsUntouched(t *testing.T, fx *configFixture) {
 	t.Helper()
+
 	if len(fx.build.calls) != 0 || len(fx.genPKI.calls) != 0 || len(fx.genCert.calls) != 0 || len(fx.render.calls) != 0 {
 		t.Errorf("resolution failure still touched the rendering seams: build %d, genPKI %d, genCert %d, render %d",
 			len(fx.build.calls), len(fx.genPKI.calls), len(fx.genCert.calls), len(fx.render.calls))
@@ -1172,6 +1249,7 @@ func TestConfigKubeconfigServerURL(t *testing.T) {
 		fx.reconcileConfig(t, lcfg.cfg)
 
 		wantURL := fmt.Sprintf("https://%s:%d", testCPIP, testCPPort)
+
 		tree := configSecretTree(t, c, configDataSecretKey(t, c, lcfg.cfg))
 		for _, path := range []string{
 			"z-kubernetes-cp/etc/kubernetes/admin.kubeconfig",
@@ -1196,6 +1274,7 @@ func TestConfigKubeconfigServerURL(t *testing.T) {
 
 		wantURL := fmt.Sprintf("https://%s:%d", testCPIP, testCPPort)
 		tree := configSecretTree(t, c, configDataSecretKey(t, c, lcfg.cfg))
+
 		content := string(tree["z-kubelet-worker-1/etc/kubernetes/kubelet.conf"])
 		if !strings.Contains(content, wantURL) {
 			t.Errorf("worker kubelet.conf does not contain %q: %q", wantURL, content)
@@ -1246,14 +1325,17 @@ func configStatusInitialization(
 	cfg *bootstrapv1alpha1.HypervisorConfig,
 ) *bootstrapInitializationContract {
 	t.Helper()
+
 	raw, err := json.Marshal(cfg.Status)
 	if err != nil {
 		t.Fatalf("Marshal config status: %v", err)
 	}
+
 	contract := &bootstrapInitializationContract{}
 	if err := json.Unmarshal(raw, contract); err != nil {
 		t.Fatalf("Unmarshal config status into bootstrap contract: %v", err)
 	}
+
 	return contract
 }
 
@@ -1262,12 +1344,15 @@ func configStatusInitialization(
 // dataSecretName set to wantName.
 func assertInitializationCreated(t *testing.T, contract *bootstrapInitializationContract, wantName string) {
 	t.Helper()
+
 	if contract == nil || contract.Initialization == nil {
 		t.Fatal("status.initialization block absent; CAPI's machine controller would keep the Machine WaitingForDataSecret")
 	}
+
 	if contract.Initialization.DataSecretCreated == nil || !*contract.Initialization.DataSecretCreated {
 		t.Error("status.initialization.dataSecretCreated != true after the data Secret was rendered")
 	}
+
 	if contract.Initialization.DataSecretName == nil || *contract.Initialization.DataSecretName != wantName {
 		t.Errorf(
 			"status.initialization.dataSecretName = %v, want %q",
@@ -1283,9 +1368,11 @@ func assertInitializationCreated(t *testing.T, contract *bootstrapInitialization
 // the Secret exists.
 func assertInitializationNotCreated(t *testing.T, contract *bootstrapInitializationContract) {
 	t.Helper()
+
 	if contract == nil || contract.Initialization == nil {
 		return
 	}
+
 	if contract.Initialization.DataSecretCreated != nil && *contract.Initialization.DataSecretCreated {
 		t.Error("status.initialization.dataSecretCreated = true before the data Secret exists")
 	}
@@ -1306,6 +1393,7 @@ func (f *failingSecretCreateClient) Create(ctx context.Context, obj client.Objec
 	if secret, ok := obj.(*corev1.Secret); ok && secret.Name == f.secretName {
 		return f.err
 	}
+
 	return f.Client.Create(ctx, obj, opts...)
 }
 
@@ -1314,6 +1402,7 @@ func isBoolKind(t reflect.Type) bool {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+
 	return t.Kind() == reflect.Bool
 }
 
@@ -1322,6 +1411,7 @@ func isStringKind(t reflect.Type) bool {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+
 	return t.Kind() == reflect.String
 }
 
@@ -1339,6 +1429,7 @@ func TestConfigStatusInitializationJSONContract(t *testing.T) {
 	if err := json.Unmarshal([]byte(doc), &status); err != nil {
 		t.Fatalf("Unmarshal contract document: %v", err)
 	}
+
 	raw, err := json.Marshal(&status)
 	if err != nil {
 		t.Fatalf("Marshal status: %v", err)
@@ -1348,10 +1439,12 @@ func TestConfigStatusInitializationJSONContract(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("Unmarshal marshaled status: %v", err)
 	}
+
 	initRaw, ok := out["initialization"]
 	if !ok {
 		t.Fatalf("status JSON lacks the initialization block CAPI reads: %s", raw)
 	}
+
 	var init map[string]json.RawMessage
 	if err := json.Unmarshal(initRaw, &init); err != nil {
 		t.Fatalf("Unmarshal initialization block: %v", err)
@@ -1361,6 +1454,7 @@ func TestConfigStatusInitializationJSONContract(t *testing.T) {
 	if err := json.Unmarshal(init["dataSecretCreated"], &created); err != nil {
 		t.Fatalf("initialization.dataSecretCreated is not a JSON boolean: %s", initRaw)
 	}
+
 	if !created {
 		t.Error("initialization.dataSecretCreated = false after round trip, want true")
 	}
@@ -1369,6 +1463,7 @@ func TestConfigStatusInitializationJSONContract(t *testing.T) {
 	if err := json.Unmarshal(init["dataSecretName"], &name); err != nil {
 		t.Fatalf("initialization.dataSecretName is not a JSON string: %s", initRaw)
 	}
+
 	if name != "cp-1-config-data" {
 		t.Errorf("initialization.dataSecretName = %q, want %q", name, "cp-1-config-data")
 	}
@@ -1384,12 +1479,14 @@ func TestConfigStatusInitializationJSONContract(t *testing.T) {
 // reference implementation's *bool.
 func TestConfigStatusInitializationFieldShape(t *testing.T) {
 	statusType := reflect.TypeFor[bootstrapv1alpha1.HypervisorConfigStatus]()
+
 	field, ok := statusType.FieldByName("Initialization")
 	if !ok {
 		t.Fatal(
 			"HypervisorConfigStatus has no Initialization field; add the CAPI v1beta2 bootstrap-contract initialization status",
 		)
 	}
+
 	if got, _, _ := strings.Cut(field.Tag.Get("json"), ","); got != "initialization" {
 		t.Errorf("Initialization json tag = %q, want %q", got, "initialization")
 	}
@@ -1398,6 +1495,7 @@ func TestConfigStatusInitializationFieldShape(t *testing.T) {
 	for initType.Kind() == reflect.Pointer {
 		initType = initType.Elem()
 	}
+
 	if initType.Kind() != reflect.Struct {
 		t.Fatalf("Initialization type %s is not a struct", field.Type)
 	}
@@ -1406,9 +1504,11 @@ func TestConfigStatusInitializationFieldShape(t *testing.T) {
 	if !ok {
 		t.Fatal("Initialization type has no DataSecretCreated field")
 	}
+
 	if got, _, _ := strings.Cut(created.Tag.Get("json"), ","); got != "dataSecretCreated" {
 		t.Errorf("DataSecretCreated json tag = %q, want %q", got, "dataSecretCreated")
 	}
+
 	if !isBoolKind(created.Type) {
 		t.Errorf("DataSecretCreated type %s is not bool-kind", created.Type)
 	}
@@ -1417,9 +1517,11 @@ func TestConfigStatusInitializationFieldShape(t *testing.T) {
 	if !ok {
 		t.Fatal("Initialization type has no DataSecretName field")
 	}
+
 	if got, _, _ := strings.Cut(name.Tag.Get("json"), ","); got != "dataSecretName" {
 		t.Errorf("DataSecretName json tag = %q, want %q", got, "dataSecretName")
 	}
+
 	if !isStringKind(name.Type) {
 		t.Errorf("DataSecretName type %s is not string-kind", name.Type)
 	}
@@ -1450,6 +1552,7 @@ func TestConfigInitializationNotSetBeforeSecret(t *testing.T) {
 	c := mustReconcileClient(t)
 	fx := newConfigFixture(t, c)
 	lc := newLinkedCluster(t, c, "config-init-notset", "capi-cluster")
+
 	cfg := &bootstrapv1alpha1.HypervisorConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "orphan-config", Namespace: lc.namespace},
 		Spec: bootstrapv1alpha1.HypervisorConfigSpec{
@@ -1503,6 +1606,7 @@ func TestConfigInitializationSecretCreateFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("Reconcile succeeded with a failing data Secret create, want an error")
 	}
+
 	if !errors.Is(err, errCreate) {
 		t.Errorf("Reconcile error %v does not wrap %v", err, errCreate)
 	}

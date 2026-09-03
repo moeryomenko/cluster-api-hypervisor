@@ -136,6 +136,7 @@ func (r *HypervisorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
+
 		return ctrl.Result{}, fmt.Errorf("get HypervisorConfig %q: %w", req.NamespacedName, err)
 	}
 
@@ -143,6 +144,7 @@ func (r *HypervisorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
 	if machine == nil {
 		return r.recordFailure(ctx, cfg, "MachineNotFound", "owning Machine not found")
 	}
@@ -151,6 +153,7 @@ func (r *HypervisorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
 	if cluster == nil {
 		return r.recordFailure(
 			ctx,
@@ -193,6 +196,7 @@ func (r *HypervisorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	serverURL := fmt.Sprintf("https://%s:%d", cpIP, cpPort)
+
 	kubeconfigs, err := r.renderKubeconfigs(role, serverURL, nodeName, pk, kubeletCert, kubeletKey)
 	if err != nil {
 		return r.recordFailureError(ctx, cfg, "KubeconfigRenderFailed", err)
@@ -239,9 +243,11 @@ func (r *HypervisorConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		DataSecretName:    dataSecretName,
 	}
 	markDataSecretAvailable(cfg, metav1.ConditionTrue, "BootstrapDataRendered", "bootstrap data Secret rendered")
+
 	if err := r.Status().Update(ctx, cfg); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update HypervisorConfig status: %w", err)
 	}
+
 	log.Info("rendered bootstrap data Secret", "config", cfg.Name, "secret", dataSecretName, "role", role)
 
 	return ctrl.Result{}, nil
@@ -259,9 +265,11 @@ func (r *HypervisorConfigReconciler) recordFailure(
 	cfg.Status.FailureReason = reason
 	cfg.Status.FailureMessage = message
 	markDataSecretAvailable(cfg, metav1.ConditionFalse, reason, message)
+
 	if err := r.Status().Update(ctx, cfg); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update HypervisorConfig failure status: %w", err)
 	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -277,6 +285,7 @@ func (r *HypervisorConfigReconciler) recordFailureError(
 	if _, statusErr := r.recordFailure(ctx, cfg, reason, err.Error()); statusErr != nil {
 		return ctrl.Result{}, errors.Join(err, fmt.Errorf("record config failure status: %w", statusErr))
 	}
+
 	return ctrl.Result{}, err
 }
 
@@ -291,19 +300,24 @@ func (r *HypervisorConfigReconciler) owningMachine(
 		if ref.Kind != "Machine" {
 			continue
 		}
+
 		gv, err := schema.ParseGroupVersion(ref.APIVersion)
 		if err != nil || gv.Group != clusterv1.GroupVersion.Group {
 			continue
 		}
+
 		machine := &clusterv1.Machine{}
 		if err := r.Get(ctx, client.ObjectKey{Namespace: cfg.Namespace, Name: ref.Name}, machine); err != nil {
 			if apierrors.IsNotFound(err) {
 				return nil, nil
 			}
+
 			return nil, fmt.Errorf("get owner Machine %q: %w", ref.Name, err)
 		}
+
 		return machine, nil
 	}
+
 	return nil, nil
 }
 
@@ -317,13 +331,16 @@ func (r *HypervisorConfigReconciler) linkedCluster(
 	if machine.Spec.ClusterName == "" {
 		return nil, nil
 	}
+
 	cluster := &clusterv1.Cluster{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: machine.Namespace, Name: machine.Spec.ClusterName}, cluster); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
+
 		return nil, fmt.Errorf("get linked Cluster %q: %w", machine.Spec.ClusterName, err)
 	}
+
 	return cluster, nil
 }
 
@@ -343,9 +360,11 @@ func (r *HypervisorConfigReconciler) controlPlaneAddress(
 		if err != nil {
 			return "", 0, err
 		}
+
 		if !ok {
 			return "", 0, fmt.Errorf("control-plane machine %q has no internal IP", machine.Name)
 		}
+
 		return ip, defaultControlPlanePort, nil
 	}
 
@@ -358,9 +377,11 @@ func (r *HypervisorConfigReconciler) controlPlaneAddress(
 	if err != nil {
 		return "", 0, err
 	}
+
 	if !ok {
 		return "", 0, fmt.Errorf("Cluster %q has no control-plane machine with an internal IP", cluster.Name)
 	}
+
 	return cpIP, defaultControlPlanePort, nil
 }
 
@@ -373,6 +394,7 @@ func (r *HypervisorConfigReconciler) controlPlaneMachineInternalIP(
 	cluster *clusterv1.Cluster,
 ) (string, bool, error) {
 	machines := &clusterv1.MachineList{}
+
 	selector := client.MatchingLabels{
 		clusterv1.ClusterNameLabel:         cluster.Name,
 		clusterv1.MachineControlPlaneLabel: "",
@@ -380,15 +402,18 @@ func (r *HypervisorConfigReconciler) controlPlaneMachineInternalIP(
 	if err := r.List(ctx, machines, client.InNamespace(cluster.Namespace), selector); err != nil {
 		return "", false, fmt.Errorf("list control-plane machines: %w", err)
 	}
+
 	for i := range machines.Items {
 		ip, ok, err := r.machineInternalIP(ctx, &machines.Items[i])
 		if err != nil {
 			return "", false, err
 		}
+
 		if ok {
 			return ip, true, nil
 		}
 	}
+
 	return "", false, nil
 }
 
@@ -407,11 +432,13 @@ func (r *HypervisorConfigReconciler) machineInternalIP(
 	// convention; the contract-versioned reference carries no namespace, so
 	// the machine's own namespace names the infrastructure object.
 	hm := &infrastructurev1alpha1.HypervisorMachine{}
+
 	key := client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}
 	if err := r.Get(ctx, key, hm); err != nil {
 		if apierrors.IsNotFound(err) {
 			return "", false, nil
 		}
+
 		return "", false, fmt.Errorf("get infrastructure machine %q: %w", key, err)
 	}
 
@@ -420,6 +447,7 @@ func (r *HypervisorConfigReconciler) machineInternalIP(
 			return addr.Address, true, nil
 		}
 	}
+
 	return "", false, nil
 }
 
@@ -433,12 +461,14 @@ func (r *HypervisorConfigReconciler) clusterPKI(
 	cpIP, cpName string,
 ) (pki.ClusterPKI, bool, error) {
 	pkiKey := client.ObjectKey{Namespace: cfg.Namespace, Name: cfg.Spec.ClusterName + "-pki"}
+
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, pkiKey, secret); err == nil {
 		pk, err := decodeClusterPKI(secret.Data)
 		if err != nil {
 			return pki.ClusterPKI{}, false, fmt.Errorf("read stored cluster PKI Secret %q: %w", pkiKey, err)
 		}
+
 		return pk, false, nil
 	} else if !apierrors.IsNotFound(err) {
 		return pki.ClusterPKI{}, false, fmt.Errorf("get cluster PKI Secret %q: %w", pkiKey, err)
@@ -448,6 +478,7 @@ func (r *HypervisorConfigReconciler) clusterPKI(
 	if err != nil {
 		return pki.ClusterPKI{}, false, fmt.Errorf("generate cluster PKI: %w", err)
 	}
+
 	return pk, true, nil
 }
 
@@ -465,6 +496,7 @@ func (r *HypervisorConfigReconciler) persistPKISecret(
 	if err := r.Create(ctx, secret); err != nil {
 		return fmt.Errorf("create cluster PKI Secret %q: %w", client.ObjectKeyFromObject(secret), err)
 	}
+
 	return nil
 }
 
@@ -485,14 +517,17 @@ func (r *HypervisorConfigReconciler) renderKubeconfigs(
 		if err != nil {
 			return nil, fmt.Errorf("render %s kubeconfig: %w", user, err)
 		}
+
 		return out, nil
 	}
 
 	kubeconfigs := make(map[string][]byte, 4)
+
 	kubelet, err := render("system:node:"+nodeName, kubeletCert, kubeletKey)
 	if err != nil {
 		return nil, err
 	}
+
 	kubeconfigs["kubelet"] = kubelet
 
 	if role != configRoleControlPlane {
@@ -511,6 +546,7 @@ func (r *HypervisorConfigReconciler) renderKubeconfigs(
 		if err != nil {
 			return nil, err
 		}
+
 		kubeconfigs[kc.name] = out
 	}
 
@@ -528,6 +564,7 @@ func (r *HypervisorConfigReconciler) persistDataSecret(
 ) error {
 	key := client.ObjectKey{Namespace: cfg.Namespace, Name: name}
 	secret := &corev1.Secret{}
+
 	err := r.Get(ctx, key, secret)
 	switch {
 	case apierrors.IsNotFound(err):
@@ -538,6 +575,7 @@ func (r *HypervisorConfigReconciler) persistDataSecret(
 		if err := r.Create(ctx, secret); err != nil {
 			return fmt.Errorf("create data Secret %q: %w", key, err)
 		}
+
 		return nil
 	case err != nil:
 		return fmt.Errorf("get data Secret %q: %w", key, err)
@@ -547,6 +585,7 @@ func (r *HypervisorConfigReconciler) persistDataSecret(
 	if err := r.Update(ctx, secret); err != nil {
 		return fmt.Errorf("update data Secret %q: %w", key, err)
 	}
+
 	return nil
 }
 
@@ -557,10 +596,12 @@ func encodeTreeBlob(tree map[string][]byte) ([]byte, error) {
 	for path, content := range tree {
 		encoded[path] = base64.StdEncoding.EncodeToString(content)
 	}
+
 	blob, err := json.Marshal(encoded)
 	if err != nil {
 		return nil, fmt.Errorf("marshal tree blob: %w", err)
 	}
+
 	return blob, nil
 }
 
@@ -601,18 +642,23 @@ func decodeClusterPKI(data map[string][]byte) (pki.ClusterPKI, error) {
 		{"ServiceAccount", &pk.ServiceAccount},
 		{"ServiceAccountKey", &pk.ServiceAccountKey},
 	}
+
 	var missing []string
+
 	for _, field := range fields {
 		value, ok := data[field.key]
 		if !ok {
 			missing = append(missing, field.key)
 			continue
 		}
+
 		*field.dst = value
 	}
+
 	if len(missing) > 0 {
 		return pki.ClusterPKI{}, fmt.Errorf("cluster PKI Secret missing data keys %v", missing)
 	}
+
 	return pk, nil
 }
 
@@ -674,7 +720,9 @@ func (r *HypervisorConfigReconciler) machineToHypervisorConfig(
 	if err := r.List(ctx, configs, client.InNamespace(machine.Namespace)); err != nil {
 		return nil
 	}
+
 	requests := make([]reconcile.Request, 0)
+
 	for i := range configs.Items {
 		for _, ref := range configs.Items[i].OwnerReferences {
 			if ref.Kind == "Machine" && ref.Name == machine.Name {
@@ -683,5 +731,6 @@ func (r *HypervisorConfigReconciler) machineToHypervisorConfig(
 			}
 		}
 	}
+
 	return requests
 }
