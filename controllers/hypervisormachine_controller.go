@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,7 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/chclient"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/confexttree"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
 )
@@ -72,6 +74,12 @@ const (
 	// publishes for control-plane machines next to the apiserver port
 	// (controlPlaneAPIServerPort).
 	controlPlaneSSHPort int32 = 22
+
+	// controlPlaneEtcdClientPort is the VM-side etcd client port the machine
+	// controller publishes for control-plane machines: the etcd snapshot
+	// captured before a version-driven replacement flows through this
+	// published loopback endpoint (the VM internal IP has no host route).
+	controlPlaneEtcdClientPort int32 = 2379
 
 	// cidataDiskSize is the size of the pre-created CIDATA disk image in
 	// bytes (4 MiB, matching the create-cloudinit.sh precedent of 8192
@@ -156,6 +164,7 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
+
 		return ctrl.Result{}, fmt.Errorf("get HypervisorMachine %q: %w", req.NamespacedName, err)
 	}
 
@@ -170,6 +179,7 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
 	if !ok {
 		log.Info("no owning Machine, waiting for the owner link")
 		return ctrl.Result{}, nil
@@ -179,6 +189,7 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
 	if cluster == nil {
 		log.Info("linked Cluster not found, waiting for the Cluster link")
 		return ctrl.Result{}, nil
@@ -188,10 +199,36 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
 	if hc == nil {
 		log.Info("linked HypervisorCluster not found, waiting for the infrastructure link")
 		return ctrl.Result{}, nil
 	}
+
+	// The boot image resolves from the owning Machine's version and the
+	// infrastructure cluster's image map before anything is provisioned, so
+	// a version without a registered image fails closed instead of booting
+	// the wrong Kubernetes version during an upgrade. The previously
+	// recorded image is kept so a root disk converted from a different
+	// image is rebuilt even at the right size.
+	previousImage := hm.Status.Image
+
+	baseImage, err := r.resolveBaseImage(hc, machine)
+	if err != nil {
+		r.Recorder.Eventf(
+			hm,
+			corev1.EventTypeWarning,
+			"FailedProvision",
+			"failed to resolve base image for %q: %v",
+			hm.Name,
+			err,
+		)
+
+		return ctrl.Result{}, err
+	}
+
+	hm.Status.Version = machine.Spec.Version
+	hm.Status.Image = baseImage
 
 	// The MAC is derived once per reconcile and shared by the identity step
 	// (k8netd AllocateIP) and the VM lifecycle step (vhost-user net config),
@@ -202,7 +239,7 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileRootDisk(ctx, hm); err != nil {
+	if err := r.reconcileRootDisk(ctx, hm, baseImage, previousImage); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -234,7 +271,9 @@ func (r *HypervisorMachineReconciler) vmClientFor(
 	if cached, ok := r.vmClients.Load(hm.Name); ok {
 		return cached.(chclient.Client)
 	}
+
 	socketDir := filepath.Join(r.Config.SocketDir, hm.Name)
+
 	var vm chclient.Client
 	if r.NewVMClient != nil {
 		vm = r.NewVMClient(socketDir, r.Config.CHBinary)
@@ -245,6 +284,7 @@ func (r *HypervisorMachineReconciler) vmClientFor(
 	// a client for the same machine at once, the loser's instance is
 	// discarded and both callers share the winner's.
 	actual, _ := r.vmClients.LoadOrStore(hm.Name, vm)
+
 	return actual.(chclient.Client)
 }
 
@@ -270,6 +310,7 @@ func (r *HypervisorMachineReconciler) reconcileDelete(
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to shut down VM for %q: %v", hm.Name, err)
 		return ctrl.Result{}, fmt.Errorf("shut down VM for %q: %w", hm.Name, err)
 	}
+
 	if err := vm.Stop(ctx); err != nil && !errors.Is(err, chclient.ErrNotFound) {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to stop VM for %q: %v", hm.Name, err)
 		return ctrl.Result{}, fmt.Errorf("stop VM for %q: %w", hm.Name, err)
@@ -286,6 +327,7 @@ func (r *HypervisorMachineReconciler) reconcileDelete(
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to detach port %q: %v", portName, err)
 		return ctrl.Result{}, fmt.Errorf("detach port %q: %w", portName, err)
 	}
+
 	if err := r.K8Netd.DeletePort(ctx, portName); err != nil && !errors.Is(err, k8netd.ErrNotFound) {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to delete port %q: %v", portName, err)
 		return ctrl.Result{}, fmt.Errorf("delete port %q: %w", portName, err)
@@ -353,18 +395,23 @@ func (r *HypervisorMachineReconciler) getOwnerMachine(
 		if ref.Kind != "Machine" {
 			continue
 		}
+
 		gv, err := schema.ParseGroupVersion(ref.APIVersion)
 		if err != nil || gv.Group != clusterv1.GroupVersion.Group {
 			continue
 		}
+
 		machine := &clusterv1.Machine{}
+
 		key := client.ObjectKey{Namespace: hm.Namespace, Name: ref.Name}
 		if err := r.Get(ctx, key, machine); err != nil {
 			if apierrors.IsNotFound(err) {
 				continue
 			}
+
 			return nil, false, fmt.Errorf("get owner Machine %q: %w", key, err)
 		}
+
 		return machine, true, nil
 	}
 
@@ -375,11 +422,13 @@ func (r *HypervisorMachineReconciler) getOwnerMachine(
 	if err := r.List(ctx, machines, client.InNamespace(hm.Namespace)); err != nil {
 		return nil, false, fmt.Errorf("list Machines in %q: %w", hm.Namespace, err)
 	}
+
 	for i := range machines.Items {
 		ref := machines.Items[i].Spec.InfrastructureRef
 		if !ref.IsDefined() || ref.Kind != "HypervisorMachine" || ref.Name != hm.Name {
 			continue
 		}
+
 		return &machines.Items[i], true, nil
 	}
 
@@ -396,14 +445,18 @@ func (r *HypervisorMachineReconciler) getLinkedCluster(
 	if machine.Spec.ClusterName == "" {
 		return nil, nil
 	}
+
 	cluster := &clusterv1.Cluster{}
+
 	key := client.ObjectKey{Namespace: machine.Namespace, Name: machine.Spec.ClusterName}
 	if err := r.Get(ctx, key, cluster); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
+
 		return nil, fmt.Errorf("get linked Cluster %q: %w", key, err)
 	}
+
 	return cluster, nil
 }
 
@@ -420,14 +473,18 @@ func linkedHypervisorCluster(
 	if !ref.IsDefined() || ref.Kind != "HypervisorCluster" || ref.Name == "" {
 		return nil, nil
 	}
+
 	hc := &infrastructurev1alpha1.HypervisorCluster{}
+
 	key := client.ObjectKey{Namespace: cluster.Namespace, Name: ref.Name}
 	if err := c.Get(ctx, key, hc); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
+
 		return nil, fmt.Errorf("get linked HypervisorCluster %q: %w", key, err)
 	}
+
 	return hc, nil
 }
 
@@ -446,6 +503,7 @@ func (r *HypervisorMachineReconciler) effectiveMAC(
 	if hm.Spec.MAC != "" {
 		return hm.Spec.MAC
 	}
+
 	return r.DeriveMAC(machine.Spec.ClusterName, machine.Name)
 }
 
@@ -503,6 +561,7 @@ func (r *HypervisorMachineReconciler) reconcileIdentity(
 			machine.Name,
 			err,
 		)
+
 		return "", fmt.Errorf("allocate IP for %q: %w", machine.Name, err)
 	}
 
@@ -530,10 +589,11 @@ func (r *HypervisorMachineReconciler) publishControlPlaneEndpoints(
 		return nil
 	}
 
-	for _, vmPort := range []int32{controlPlaneAPIServerPort, controlPlaneSSHPort} {
+	for _, vmPort := range []int32{controlPlaneAPIServerPort, controlPlaneSSHPort, controlPlaneEtcdClientPort} {
 		if _, ok := publishedHostPort(hm.Status.PublishedPorts, vmPort); ok {
 			continue
 		}
+
 		hostPort, err := r.K8Netd.PublishPort(ctx, hm.Name, vmPort)
 		if err != nil {
 			r.Recorder.Eventf(
@@ -545,8 +605,10 @@ func (r *HypervisorMachineReconciler) publishControlPlaneEndpoints(
 				hm.Name,
 				err,
 			)
+
 			return fmt.Errorf("publish vm_port %d for %q: %w", vmPort, hm.Name, err)
 		}
+
 		hm.Status.PublishedPorts = upsertPublishedPort(hm.Status.PublishedPorts, infrastructurev1alpha1.MachinePublishedPort{
 			VMPort:   vmPort,
 			HostPort: hostPort,
@@ -572,6 +634,7 @@ func publishedHostPort(ports []infrastructurev1alpha1.MachinePublishedPort, vmPo
 			return p.HostPort, true
 		}
 	}
+
 	return 0, false
 }
 
@@ -587,6 +650,7 @@ func upsertPublishedPort(
 			return ports
 		}
 	}
+
 	return append(ports, allocation)
 }
 
@@ -605,7 +669,34 @@ func (r *HypervisorMachineReconciler) recordAddresses(
 	if err := r.Status().Update(ctx, hm); err != nil {
 		return fmt.Errorf("update HypervisorMachine status: %w", err)
 	}
+
 	return nil
+}
+
+// resolveBaseImage resolves the host path of the base image the machine's VM
+// boots: the image the infrastructure cluster's image map registers for the
+// owning Machine's spec.version. A Machine without a version keeps booting
+// the provider's default base image (pre-upgrade behavior); a Machine with a
+// version that has no registered image is an error, so an upgrade can never
+// silently boot the wrong Kubernetes version.
+func (r *HypervisorMachineReconciler) resolveBaseImage(
+	hc *infrastructurev1alpha1.HypervisorCluster,
+	machine *clusterv1.Machine,
+) (string, error) {
+	if machine.Spec.Version == "" {
+		return r.Config.BaseImage, nil
+	}
+
+	for _, image := range hc.Spec.Images {
+		if image.Version == machine.Spec.Version {
+			return image.Path, nil
+		}
+	}
+
+	return "", fmt.Errorf(
+		"no base image registered for Kubernetes version %q on HypervisorCluster %q",
+		machine.Spec.Version, hc.Name,
+	)
 }
 
 // reconcileRootDisk ensures <vm-disks>/<name>-root.qcow2 exists at the spec
@@ -618,28 +709,34 @@ func (r *HypervisorMachineReconciler) recordAddresses(
 func (r *HypervisorMachineReconciler) reconcileRootDisk(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
+	baseImage, previousImage string,
 ) error {
 	diskPath := filepath.Join(r.Config.VMDiskDir, hm.Name+"-root.qcow2")
 
 	wantSize := int64(hm.Spec.Disk) * 1024 * 1024
+
 	size, err := r.rootDiskSize(ctx, diskPath)
-	if err == nil && size == wantSize {
+	if err == nil && size == wantSize && (previousImage == "" || previousImage == baseImage) {
 		return nil
 	}
+
 	if errors.Is(err, errQemuImgInfoParse) {
 		return fmt.Errorf("root disk size probe for %q: %w", diskPath, err)
 	}
 
-	out, err := r.QemuImg(ctx, "qemu-img", "convert", "-O", "qcow2", r.Config.BaseImage, diskPath)
+	out, err := r.QemuImg(ctx, "qemu-img", "convert", "-O", "qcow2", baseImage, diskPath)
 	if err != nil {
 		err = wrapQemuImgErr(err, out)
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to convert root disk %q: %v", diskPath, err)
+
 		return fmt.Errorf("convert root disk %q: %w", diskPath, err)
 	}
+
 	out, err = r.QemuImg(ctx, "qemu-img", "resize", diskPath, fmt.Sprintf("%dM", hm.Spec.Disk))
 	if err != nil {
 		err = wrapQemuImgErr(err, out)
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to resize root disk %q: %v", diskPath, err)
+
 		return fmt.Errorf("resize root disk %q: %w", diskPath, err)
 	}
 
@@ -653,6 +750,7 @@ func wrapQemuImgErr(err error, out []byte) error {
 	if msg := strings.TrimSpace(string(out)); msg != "" {
 		return fmt.Errorf("%w: %s", err, msg)
 	}
+
 	return err
 }
 
@@ -674,20 +772,24 @@ func (r *HypervisorMachineReconciler) rootDiskSize(ctx context.Context, diskPath
 	if err != nil {
 		return 0, err
 	}
+
 	var info struct {
 		VirtualSize int64 `json:"virtual-size"`
 	}
 	if err := json.Unmarshal(out, &info); err != nil {
 		return 0, fmt.Errorf("%w for %q: %v", errQemuImgInfoParse, diskPath, err)
 	}
+
 	return info.VirtualSize, nil
 }
 
 // reconcileConfextDataDisk reads the bootstrap Secret named by the linked
 // bootstrap config's status, decodes the tree.json blob into the confext
-// tree, materializes the tree through the confext packager, and packages each
-// confext into a .raw squashfs image under the configured VM disk directory.
-// A machine with no bootstrap data skips packaging without error.
+// tree, merges the etcd restore tree when the bootstrap config stages an
+// etcd snapshot (a replacement control-plane Machine), materializes the tree
+// through the confext packager, and packages each confext into a .raw
+// squashfs image under the configured VM disk directory. A machine with no
+// bootstrap data skips packaging without error.
 func (r *HypervisorMachineReconciler) reconcileConfextDataDisk(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
@@ -699,11 +801,13 @@ func (r *HypervisorMachineReconciler) reconcileConfextDataDisk(
 	}
 
 	secret := &corev1.Secret{}
+
 	secretKey := client.ObjectKey{Namespace: machine.Namespace, Name: secretName}
 	if err := r.Get(ctx, secretKey, secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
+
 		return fmt.Errorf("get bootstrap Secret %q: %w", secretKey, err)
 	}
 
@@ -712,9 +816,18 @@ func (r *HypervisorMachineReconciler) reconcileConfextDataDisk(
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to decode confext tree: %v", err)
 		return fmt.Errorf("decode confext tree for %q: %w", machine.Name, err)
 	}
+
 	if len(tree) == 0 {
 		return nil
 	}
+
+	restoreTree, err := r.etcdRestoreTree(ctx, machine)
+	if err != nil {
+		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render etcd restore tree: %v", err)
+		return fmt.Errorf("render etcd restore tree for %q: %w", machine.Name, err)
+	}
+
+	maps.Copy(tree, restoreTree)
 
 	stagingDir := filepath.Join(r.Config.VMDiskDir, machine.Name+"-confext-staging")
 	outDir := filepath.Join(r.Config.VMDiskDir, machine.Name+"-data")
@@ -723,12 +836,52 @@ func (r *HypervisorMachineReconciler) reconcileConfextDataDisk(
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to materialize confext tree: %v", err)
 		return fmt.Errorf("materialize confext tree for %q: %w", machine.Name, err)
 	}
+
 	if _, err := r.Confext.BuildRaws(ctx, stagingDir, outDir); err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to build confext raws: %v", err)
 		return fmt.Errorf("build confext raws for %q: %w", machine.Name, err)
 	}
 
 	return nil
+}
+
+// etcdRestoreTree renders the z-etcd-restore confext tree when the machine's
+// bootstrap config stages an etcd snapshot (a replacement control-plane
+// Machine): the snapshot bytes are read from the recorded host path and
+// carried into the tree verbatim. A config without a snapshot path yields an
+// empty map; a snapshot file that is missing or unreadable is an error, since
+// booting the replacement without the snapshot would silently wipe the
+// workload cluster's state.
+func (r *HypervisorMachineReconciler) etcdRestoreTree(
+	ctx context.Context,
+	machine *clusterv1.Machine,
+) (map[string][]byte, error) {
+	ref := machine.Spec.Bootstrap.ConfigRef
+	if !ref.IsDefined() || ref.Kind != "HypervisorConfig" || ref.Name == "" {
+		return nil, nil
+	}
+
+	config := &bootstrapv1alpha1.HypervisorConfig{}
+
+	key := client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}
+	if err := r.Get(ctx, key, config); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+
+		return nil, fmt.Errorf("get bootstrap config %q: %w", key, err)
+	}
+
+	if config.Spec.EtcdSnapshotHostPath == "" {
+		return nil, nil
+	}
+
+	snapshot, err := os.ReadFile(config.Spec.EtcdSnapshotHostPath)
+	if err != nil {
+		return nil, fmt.Errorf("read etcd snapshot %q: %w", config.Spec.EtcdSnapshotHostPath, err)
+	}
+
+	return confexttree.BuildEtcdRestore(snapshot)
 }
 
 // decodeConfextTree decodes the tree.json blob of the bootstrap Secret into
@@ -754,6 +907,7 @@ func decodeConfextTree(secret *corev1.Secret) (map[string][]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode tree path %q: %w", path, err)
 		}
+
 		tree[path] = decoded
 	}
 
@@ -781,10 +935,12 @@ func (r *HypervisorMachineReconciler) resolveSSHPublicKey(
 			config.Name,
 		)
 	}
+
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read ssh public key file %q (HYPERVISOR_SSH_PUBLIC_KEY_FILE): %w", path, err)
 	}
+
 	key := strings.TrimSpace(string(content))
 	if key == "" {
 		return "", fmt.Errorf("ssh public key file %q (HYPERVISOR_SSH_PUBLIC_KEY_FILE) is empty", path)
@@ -812,11 +968,13 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 	}
 
 	config := &bootstrapv1alpha1.HypervisorConfig{}
+
 	key := client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}
 	if err := r.Get(ctx, key, config); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
+
 		return fmt.Errorf("get bootstrap config %q: %w", key, err)
 	}
 
@@ -825,6 +983,7 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render cloud-init data: %v", err)
 		return fmt.Errorf("render cloud-init data for %q: %w", machine.Name, err)
 	}
+
 	parts, err := r.RenderCloudInit(cloudinit.Data{
 		InstanceID:   machine.Name,
 		Hostname:     machine.Name,
@@ -844,6 +1003,7 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 			machine.Name,
 			err,
 		)
+
 		return fmt.Errorf("build CIDATA disk for %q: %w", machine.Name, err)
 	}
 
@@ -867,6 +1027,7 @@ func (r *HypervisorMachineReconciler) buildCIDATADisk(
 	if err := os.MkdirAll(partsDir, 0o755); err != nil {
 		return fmt.Errorf("create CIDATA parts dir %q: %w", partsDir, err)
 	}
+
 	for name, content := range parts {
 		if err := os.WriteFile(filepath.Join(partsDir, name), content, 0o644); err != nil {
 			return fmt.Errorf("write CIDATA part %q: %w", name, err)
@@ -886,16 +1047,20 @@ func (r *HypervisorMachineReconciler) buildCIDATADisk(
 	if err != nil {
 		return fmt.Errorf("create CIDATA disk %q: %w", diskPath, err)
 	}
+
 	if err := f.Truncate(cidataDiskSize); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("size CIDATA disk %q: %w", diskPath, err)
 	}
+
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close CIDATA disk %q: %w", diskPath, err)
 	}
+
 	if _, err := r.QemuImg(ctx, "mkdosfs", "-F", "16", "-s", "1", "-n", "CIDATA", diskPath); err != nil {
 		return fmt.Errorf("format CIDATA disk %q: %w", diskPath, err)
 	}
+
 	for _, name := range []string{"user-data", "meta-data", "network-config"} {
 		src := filepath.Join(partsDir, name)
 		if _, err := r.QemuImg(ctx, "mcopy", "-i", diskPath, src, "::"+name); err != nil {
@@ -936,8 +1101,10 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 			hm.Name,
 			err,
 		)
+
 		return fmt.Errorf("render vhost-user net config for %q: %w", hm.Name, err)
 	}
+
 	vm := r.vmClientFor(hm)
 	vm.SetNetConfig(netConfig)
 
@@ -952,6 +1119,7 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to stat CIDATA disk for %q: %v", hm.Name, err)
 		return fmt.Errorf("stat CIDATA disk for %q: %w", hm.Name, err)
 	}
+
 	confextRaws, err := confextRawPaths(r.Config.VMDiskDir, hm.Name)
 	if err != nil {
 		r.Recorder.Eventf(
@@ -962,8 +1130,10 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 			hm.Name,
 			err,
 		)
+
 		return fmt.Errorf("list confext raws for %q: %w", hm.Name, err)
 	}
+
 	diskPaths = append(diskPaths, confextRaws...)
 
 	vm.SetFirmware(r.Config.Firmware)
@@ -983,11 +1153,14 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 		if err != nil {
 			return err
 		}
+
 		if pending {
 			log := ctrl.LoggerFrom(ctx)
 			log.Info("bootstrap data not yet available, deferring VM boot", "machine", machine.Name)
+
 			return nil
 		}
+
 		if err := vm.EnsureRunning(ctx); err != nil {
 			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to boot VM for %q: %v", machine.Name, err)
 			return fmt.Errorf("boot VM for %q: %w", machine.Name, err)
@@ -1001,11 +1174,37 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 		if err := r.Update(ctx, hm); err != nil {
 			return fmt.Errorf("update HypervisorMachine spec.providerID: %w", err)
 		}
+
 		hm.Status.ProviderID = &providerID
 	}
 
 	state, err := vm.Info(ctx)
-	if err == nil && state == ch.VMState("Running") {
+	if err != nil || state != ch.VMState("Running") {
+		// A provisioned machine whose VMM process is gone (provider restart
+		// kills the child VM processes, host reboot, manual kill) must be
+		// booted again from its existing disk: the cluster bootstrap state is
+		// already on disk and the kubelet rejoins on boot. EnsureRunning is
+		// idempotent for VMs that are already up.
+		if bootErr := vm.EnsureRunning(ctx); bootErr != nil {
+			r.Recorder.Eventf(
+				hm,
+				corev1.EventTypeWarning,
+				"FailedProvision",
+				"failed to re-boot VM for %q: %v",
+				hm.Name,
+				bootErr,
+			)
+
+			return fmt.Errorf("re-boot VM for %q: %w", hm.Name, bootErr)
+		}
+
+		state, err = vm.Info(ctx)
+		if err != nil {
+			return fmt.Errorf("info after re-boot for %q: %w", hm.Name, err)
+		}
+	}
+
+	if state == ch.VMState("Running") {
 		markVMProvisioned(hm)
 		hm.Status.Ready = true
 		// The CAPI v1beta2 machine controller gates InfrastructureReady on
@@ -1031,17 +1230,21 @@ func confextRawPaths(vmDisksDir, name string) ([]string, error) {
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
+
 	if err != nil {
 		return nil, fmt.Errorf("read confext data dir for %q: %w", name, err)
 	}
 
 	var paths []string
+
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".raw") {
 			continue
 		}
+
 		paths = append(paths, filepath.Join(vmDisksDir, name+"-data", entry.Name()))
 	}
+
 	return paths, nil
 }
 
@@ -1069,16 +1272,20 @@ func (r *HypervisorMachineReconciler) bootstrapDataSecretName(
 	}
 
 	config := &bootstrapv1alpha1.HypervisorConfig{}
+
 	key := client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}
 	if err := r.Get(ctx, key, config); err != nil {
 		if apierrors.IsNotFound(err) {
 			return "", nil
 		}
+
 		return "", fmt.Errorf("get bootstrap config %q: %w", key, err)
 	}
+
 	if config.Status.DataSecretName == nil {
 		return "", nil
 	}
+
 	return *config.Status.DataSecretName, nil
 }
 
@@ -1098,6 +1305,7 @@ func (r *HypervisorMachineReconciler) bootstrapDataPending(
 	}
 
 	config := &bootstrapv1alpha1.HypervisorConfig{}
+
 	key := client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}
 	if err := r.Get(ctx, key, config); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -1105,8 +1313,10 @@ func (r *HypervisorMachineReconciler) bootstrapDataPending(
 			// ready to boot until the config controller has rendered it.
 			return true, nil
 		}
+
 		return false, fmt.Errorf("get bootstrap config %q: %w", key, err)
 	}
+
 	return config.Status.DataSecretName == nil, nil
 }
 

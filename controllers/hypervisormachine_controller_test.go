@@ -206,6 +206,7 @@ func newRecordingExecRunner() *recordingExecRunner {
 func (f *recordingExecRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	argsCopy := make([]string, len(args))
 	copy(argsCopy, args)
+
 	f.calls = append(f.calls, recordedExecCall{name: name, args: argsCopy})
 	if f.err != nil {
 		return nil, f.err
@@ -227,15 +228,18 @@ func (f *recordingExecRunner) Run(_ context.Context, name string, args ...string
 		if fail, ok := f.fail["mkdosfs"]; ok {
 			return fail.stderr, fail.err
 		}
+
 		img := args[len(args)-1]
 		if _, err := os.Stat(img); err == nil {
 			f.mkdosfsExisted = true
 		} else if f.mkdosfsRequiresTarget {
 			return []byte("mkdosfs: unable to open " + img + ": No such file or directory"), errors.New("exit status 1")
 		}
+
 		if err := os.WriteFile(img, []byte("CIDATA-FAT16"), 0o644); err != nil {
 			return nil, err
 		}
+
 		return f.out, nil
 	case "mcopy":
 		// The CIDATA disk build copies each rendered part into the image with
@@ -245,6 +249,7 @@ func (f *recordingExecRunner) Run(_ context.Context, name string, args ...string
 		if fail, ok := f.fail["mcopy"]; ok {
 			return fail.stderr, fail.err
 		}
+
 		return f.out, nil
 	default:
 		return nil, fmt.Errorf("recordingExecRunner: unexpected binary %q", name)
@@ -262,21 +267,28 @@ func (f *recordingExecRunner) qemuImg(args []string) ([]byte, error) {
 			// the lock error on stderr (CombinedOutput).
 			return []byte("qemu-img: " + disk + ": Failed to lock byte 201"), errors.New("exit status 1")
 		}
+
 		if fail, ok := f.fail["convert"]; ok {
 			return fail.stderr, fail.err
 		}
+
 		f.disks[disk] = 0
+
 		return f.out, nil
 	case "resize":
 		if fail, ok := f.fail["resize"]; ok {
 			return fail.stderr, fail.err
 		}
+
 		disk := args[len(args)-2]
+
 		sizeMiB, err := strconv.ParseInt(strings.TrimSuffix(args[len(args)-1], "M"), 10, 64)
 		if err != nil {
 			return nil, err
 		}
+
 		f.disks[disk] = sizeMiB * 1024 * 1024
+
 		return f.out, nil
 	case "info":
 		disk := args[len(args)-1]
@@ -285,13 +297,16 @@ func (f *recordingExecRunner) qemuImg(args []string) ([]byte, error) {
 			// holds; with -U the size stays readable.
 			return nil, fmt.Errorf("qemu-img: %s: Failed to lock byte 201", disk)
 		}
+
 		if fail, ok := f.fail["info"]; ok {
 			return fail.stderr, fail.err
 		}
+
 		size, ok := f.disks[disk]
 		if !ok {
 			return nil, fmt.Errorf("qemu-img: %s: No such file or directory", disk)
 		}
+
 		return []byte(fmt.Sprintf(`{"virtual-size": %d, "format": "qcow2", "filename": %q}`, size, disk)), nil
 	default:
 		return nil, fmt.Errorf("recordingExecRunner: unexpected qemu-img subcommand %q", args[0])
@@ -402,6 +417,7 @@ func machineBootstrapSecretData(t *testing.T) map[string][]byte {
 	for path, content := range machineBootstrapTree() {
 		encoded[path] = base64.StdEncoding.EncodeToString(content)
 	}
+
 	blob, err := json.Marshal(encoded)
 	if err != nil {
 		t.Fatalf("encode bootstrap tree: %v", err)
@@ -458,6 +474,7 @@ func newLinkedMachine(
 		if err := c.Create(ctx, lm.config); err != nil {
 			t.Fatalf("create HypervisorConfig: %v", err)
 		}
+
 		lm.config.Status.DataSecretName = new(name + "-data")
 		if err := c.Status().Update(ctx, lm.config); err != nil {
 			t.Fatalf("set HypervisorConfig dataSecretName: %v", err)
@@ -500,6 +517,7 @@ func newLinkedMachine(
 			Name:     name + "-config",
 		}
 	}
+
 	if err := c.Create(ctx, lm.machine); err != nil {
 		t.Fatalf("create CAPI Machine: %v", err)
 	}
@@ -565,14 +583,17 @@ func newMachineFixture(t *testing.T, c client.Client) *machineFixture {
 	// fake server so CreatePort/AttachPort succeed and AllocateIP returns
 	// the pool start address.
 	sock := filepath.Join(t.TempDir(), "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New %q: %v", sock, err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
 	srv.SetResult("CreatePort", nil)
 	srv.SetResult("AttachPort", nil)
 	srv.SetResult("AllocateIP", testPoolStart)
+
 	k8Client := k8netd.NewClient(sock)
 
 	r := &HypervisorMachineReconciler{
@@ -633,16 +654,20 @@ func TestMachineIdentityOwnerResolution(t *testing.T) {
 	t.Run("missing object is a no-op", func(t *testing.T) {
 		fx := newMachineFixture(t, c)
 		key := client.ObjectKey{Namespace: lc.namespace, Name: "does-not-exist"}
+
 		res, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
 		if err != nil {
 			t.Fatalf("Reconcile error: %v", err)
 		}
+
 		if res != (ctrl.Result{}) {
 			t.Errorf("Reconcile result = %+v, want empty", res)
 		}
+
 		if len(fx.qemu.calls) != 0 || len(fx.pack.calls) != 0 {
 			t.Errorf("missing-object reconcile touched exec seams: qemu %v, packager %v", fx.qemu.calls, fx.pack.calls)
 		}
+
 		if len(fx.vm.Calls) != 0 {
 			t.Errorf("missing-object reconcile touched the VM client: %v", fx.vm.Calls)
 		}
@@ -650,6 +675,7 @@ func TestMachineIdentityOwnerResolution(t *testing.T) {
 
 	t.Run("machine without an owning Machine is untouched", func(t *testing.T) {
 		fx := newMachineFixture(t, c)
+
 		hm := &infrastructurev1alpha1.HypervisorMachine{
 			ObjectMeta: metav1.ObjectMeta{Name: "orphan", Namespace: lc.namespace},
 			Spec: infrastructurev1alpha1.HypervisorMachineSpec{
@@ -672,9 +698,11 @@ func TestMachineIdentityOwnerResolution(t *testing.T) {
 		if err := c.Get(t.Context(), key, got); err != nil {
 			t.Fatalf("Get HypervisorMachine: %v", err)
 		}
+
 		if len(got.Status.Addresses) != 0 || got.Status.Ready {
 			t.Errorf("orphan machine was provisioned: addresses %v, ready %v", got.Status.Addresses, got.Status.Ready)
 		}
+
 		if len(fx.qemu.calls) != 0 || len(fx.pack.calls) != 0 {
 			t.Errorf("orphan reconcile touched exec seams: qemu %v, packager %v", fx.qemu.calls, fx.pack.calls)
 		}
@@ -682,6 +710,7 @@ func TestMachineIdentityOwnerResolution(t *testing.T) {
 
 	t.Run("machine whose cluster is missing is untouched", func(t *testing.T) {
 		fx := newMachineFixture(t, c)
+
 		machine := &clusterv1.Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "clusterless", Namespace: lc.namespace},
 			Spec: clusterv1.MachineSpec{
@@ -703,6 +732,7 @@ func TestMachineIdentityOwnerResolution(t *testing.T) {
 		if err := c.Create(t.Context(), machine); err != nil {
 			t.Fatalf("create clusterless Machine: %v", err)
 		}
+
 		hm := &infrastructurev1alpha1.HypervisorMachine{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "clusterless",
@@ -736,9 +766,11 @@ func TestMachineIdentityOwnerResolution(t *testing.T) {
 		if err := c.Get(t.Context(), key, got); err != nil {
 			t.Fatalf("Get HypervisorMachine: %v", err)
 		}
+
 		if len(got.Status.Addresses) != 0 {
 			t.Errorf("clusterless machine got addresses %v, want none", got.Status.Addresses)
 		}
+
 		if len(fx.qemu.calls) != 0 {
 			t.Errorf("clusterless reconcile touched the qemu seam: %v", fx.qemu.calls)
 		}
@@ -764,10 +796,12 @@ func TestMachineIdentityMAC(t *testing.T) {
 		if got := len(fx.derive.calls); got != 1 {
 			t.Fatalf("MAC derivation called %d times, want 1", got)
 		}
+
 		if fx.derive.calls[0].cluster != lc.name || fx.derive.calls[0].machine != lm.name {
 			t.Errorf("MAC derivation called with (%q, %q), want (%q, %q)",
 				fx.derive.calls[0].cluster, fx.derive.calls[0].machine, lc.name, lm.name)
 		}
+
 		want := mac.Derive(lc.name, lm.name)
 		if fx.derive.calls[0].derived != want {
 			t.Errorf("derived MAC = %q, want %q", fx.derive.calls[0].derived, want)
@@ -778,6 +812,7 @@ func TestMachineIdentityMAC(t *testing.T) {
 		fx := newMachineFixture(t, c)
 		lc := newLinkedCluster(t, c, "machine-mac-override", "capi-cluster")
 		lm := newLinkedMachine(t, c, lc, "node-1", true)
+
 		lm.hm.Spec.MAC = testMACOverride
 		if err := c.Update(t.Context(), lm.hm); err != nil {
 			t.Fatalf("set spec.mac: %v", err)
@@ -816,6 +851,7 @@ func TestMachineDisksRootDiskQemuImgArgs(t *testing.T) {
 	if got := len(converts); got != 1 {
 		t.Fatalf("qemu-img convert called %d times, want 1", got)
 	}
+
 	wantConvert := []string{"convert", "-O", "qcow2", testBaseImage, diskPath}
 	if !reflect.DeepEqual(converts[0].args, wantConvert) {
 		t.Errorf("convert args = %v, want %v", converts[0].args, wantConvert)
@@ -825,6 +861,7 @@ func TestMachineDisksRootDiskQemuImgArgs(t *testing.T) {
 	if got := len(resizes); got != 1 {
 		t.Fatalf("qemu-img resize called %d times, want 1", got)
 	}
+
 	wantResize := []string{"resize", diskPath, fmt.Sprintf("%dM", testMachineDisk)}
 	if !reflect.DeepEqual(resizes[0].args, wantResize) {
 		t.Errorf("resize args = %v, want %v", resizes[0].args, wantResize)
@@ -837,6 +874,7 @@ func TestMachineDisksRootDiskQemuImgArgs(t *testing.T) {
 	if got := len(infos); got != 1 {
 		t.Fatalf("qemu-img info called %d times, want 1", got)
 	}
+
 	wantInfo := []string{"info", "-U", "--output=json", diskPath}
 	if !reflect.DeepEqual(infos[0].args, wantInfo) {
 		t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
@@ -867,6 +905,7 @@ func TestMachineDisksRootDiskIdempotent(t *testing.T) {
 		if got := len(fx.qemu.qemuCalls("convert")); got != 1 {
 			t.Errorf("qemu-img convert called %d times across two reconciles, want 1", got)
 		}
+
 		if got := len(fx.qemu.qemuCalls("resize")); got != 1 {
 			t.Errorf("qemu-img resize called %d times across two reconciles, want 1", got)
 		}
@@ -898,9 +937,11 @@ func TestMachineDisksRootDiskIdempotent(t *testing.T) {
 		if got := len(fx.qemu.qemuCalls("convert")); got != 1 {
 			t.Errorf("qemu-img convert called %d times, want 1", got)
 		}
+
 		if got := len(fx.qemu.qemuCalls("resize")); got != 1 {
 			t.Errorf("qemu-img resize called %d times, want 1", got)
 		}
+
 		if got := fx.qemu.disks[diskPath]; got != testMachineDisk*1024*1024 {
 			t.Errorf("simulated disk size = %d bytes, want %d", got, testMachineDisk*1024*1024)
 		}
@@ -928,13 +969,16 @@ func TestMachineDisksRootDiskIdempotent(t *testing.T) {
 		if got := len(fx.qemu.qemuCalls("convert")); got != 0 {
 			t.Errorf("qemu-img convert called %d times for a locked correct-size disk, want 0", got)
 		}
+
 		if got := len(fx.qemu.qemuCalls("resize")); got != 0 {
 			t.Errorf("qemu-img resize called %d times for a locked correct-size disk, want 0", got)
 		}
+
 		infos := fx.qemu.qemuCalls("info")
 		if got := len(infos); got != 1 {
 			t.Fatalf("qemu-img info called %d times, want 1", got)
 		}
+
 		wantInfo := []string{"info", "-U", "--output=json", diskPath}
 		if !reflect.DeepEqual(infos[0].args, wantInfo) {
 			t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
@@ -995,6 +1039,7 @@ func TestMachineDisksRootDiskErrorSurfacesStderr(t *testing.T) {
 		if err == nil {
 			t.Fatal("Reconcile succeeded with a failing resize, want the resize error")
 		}
+
 		if !strings.Contains(err.Error(), "No space left on device") {
 			t.Errorf("resize error = %q, want it to include qemu-img stderr %q", err, "No space left on device")
 		}
@@ -1023,6 +1068,7 @@ func TestMachineDisksRootDiskErrorSurfacesStderr(t *testing.T) {
 		if err == nil {
 			t.Fatal("Reconcile succeeded with a failing convert, want the convert error")
 		}
+
 		if !strings.Contains(err.Error(), "Permission denied") {
 			t.Errorf("convert error = %q, want it to include qemu-img stderr %q", err, "Permission denied")
 		}
@@ -1072,6 +1118,7 @@ func TestMachineDisksRootDiskInfoParseError(t *testing.T) {
 			if err == nil {
 				t.Fatal("Reconcile succeeded with unparseable qemu-img info, want the parse error")
 			}
+
 			if !strings.Contains(err.Error(), "parse qemu-img info") {
 				t.Errorf("Reconcile error = %q, want it to include the info parse error", err)
 			}
@@ -1080,6 +1127,7 @@ func TestMachineDisksRootDiskInfoParseError(t *testing.T) {
 			if got := len(fx.qemu.qemuCalls("convert")); got != 0 {
 				t.Errorf("qemu-img convert called %d times, want 0", got)
 			}
+
 			if got := len(fx.qemu.qemuCalls("resize")); got != 0 {
 				t.Errorf("qemu-img resize called %d times, want 0", got)
 			}
@@ -1088,6 +1136,7 @@ func TestMachineDisksRootDiskInfoParseError(t *testing.T) {
 			if got := len(infos); got != 1 {
 				t.Fatalf("qemu-img info called %d times, want 1", got)
 			}
+
 			wantInfo := []string{"info", "-U", "--output=json", diskPath}
 			if !reflect.DeepEqual(infos[0].args, wantInfo) {
 				t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
@@ -1121,21 +1170,27 @@ func TestMachineDisksConfextPackaging(t *testing.T) {
 		if got := len(calls); got != len(wantConfexts) {
 			t.Fatalf("mksquashfs called %d times, want %d: %+v", got, len(wantConfexts), calls)
 		}
+
 		staging, outDir := "", ""
+
 		for i, call := range calls {
 			if call.name != "mksquashfs" || len(call.args) != 4 {
 				t.Fatalf("mksquashfs call %d = %+v, want 4 arguments", i, call)
 			}
+
 			src, dst := call.args[0], call.args[1]
 			if !reflect.DeepEqual(call.args[2:], []string{"-noappend", "-all-root"}) {
 				t.Errorf("mksquashfs flags = %v, want [-noappend -all-root]", call.args[2:])
 			}
+
 			if filepath.Base(src) != wantConfexts[i] {
 				t.Errorf("mksquashfs source = %q, want the %q tree", src, wantConfexts[i])
 			}
+
 			if filepath.Base(dst) != wantConfexts[i]+".raw" {
 				t.Errorf("mksquashfs destination = %q, want %q.raw", dst, wantConfexts[i])
 			}
+
 			if i == 0 {
 				staging, outDir = filepath.Dir(src), filepath.Dir(dst)
 			} else if filepath.Dir(src) != staging || filepath.Dir(dst) != outDir {
@@ -1152,11 +1207,13 @@ func TestMachineDisksConfextPackaging(t *testing.T) {
 		// the exact contents of the bootstrap Secret.
 		for key, content := range machineBootstrapTree() {
 			path := filepath.Join(staging, filepath.FromSlash(key))
+
 			got, err := os.ReadFile(path)
 			if err != nil {
 				t.Errorf("ReadFile(%q) error: %v", path, err)
 				continue
 			}
+
 			if !bytes.Equal(got, content) {
 				t.Errorf("tree file %q = %q, want %q", path, got, content)
 			}
@@ -1180,6 +1237,7 @@ func TestMachineDisksConfextPackaging(t *testing.T) {
 		if err := c.Get(t.Context(), client.ObjectKeyFromObject(lm.hm), hm); err != nil {
 			t.Fatalf("Get HypervisorMachine: %v", err)
 		}
+
 		if ip := statusInternalIP(hm); ip == "" {
 			t.Error("machine without bootstrap data got no internal IP")
 		}
@@ -1204,12 +1262,14 @@ func TestMachineCIDATARenderedWithAllocatedIP(t *testing.T) {
 	if got := len(fx.render.calls); got != 1 {
 		t.Fatalf("CIDATA render called %d times, want 1", got)
 	}
+
 	d := fx.render.calls[0]
 
 	hm := &infrastructurev1alpha1.HypervisorMachine{}
 	if err := c.Get(t.Context(), client.ObjectKeyFromObject(lm.hm), hm); err != nil {
 		t.Fatalf("Get HypervisorMachine: %v", err)
 	}
+
 	ip := statusInternalIP(hm)
 	if ip == "" {
 		t.Fatal("no internal IP recorded in status")
@@ -1219,9 +1279,11 @@ func TestMachineCIDATARenderedWithAllocatedIP(t *testing.T) {
 	if d.Hostname != lm.name {
 		t.Errorf("render hostname = %q, want %q", d.Hostname, lm.name)
 	}
+
 	if d.InstanceID == "" {
 		t.Error("render instance id is empty")
 	}
+
 	if d.SSHPublicKey != testSSHPublicKey {
 		t.Errorf("render ssh public key = %q, want %q", d.SSHPublicKey, testSSHPublicKey)
 	}
@@ -1231,9 +1293,11 @@ func TestMachineCIDATARenderedWithAllocatedIP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cloudinit.Render: %v", err)
 	}
+
 	if networkConfig := string(parts["network-config"]); !strings.Contains(strings.ToLower(networkConfig), "dhcp4") {
 		t.Errorf("network-config should be DHCP (dhcp4:true), got:\n%s", networkConfig)
 	}
+
 	for _, part := range []string{"user-data", "meta-data", "network-config"} {
 		if len(parts[part]) == 0 {
 			t.Errorf("rendered part %q is empty", part)
@@ -1266,10 +1330,12 @@ func TestMachineCIDATADiskBuilt(t *testing.T) {
 		fx.reconcileMachine(t, lm.hm)
 
 		cidataDisk := filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-cidata.img")
+
 		info, err := os.Stat(cidataDisk)
 		if err != nil {
 			t.Fatalf("CIDATA disk %q missing after reconcile: %v", cidataDisk, err)
 		}
+
 		if info.Size() == 0 {
 			t.Errorf("CIDATA disk %q is empty", cidataDisk)
 		}
@@ -1367,6 +1433,7 @@ func TestMachineCIDATADiskContainsRenderedParts(t *testing.T) {
 	if got := len(fx.render.calls); got != 1 {
 		t.Fatalf("CIDATA render called %d times, want 1", got)
 	}
+
 	parts, err := cloudinit.Render(fx.render.calls[0])
 	if err != nil {
 		t.Fatalf("cloudinit.Render: %v", err)
@@ -1374,47 +1441,57 @@ func TestMachineCIDATADiskContainsRenderedParts(t *testing.T) {
 
 	// mkdosfs formats the image with the CIDATA label.
 	var mkdosfsCalls []recordedExecCall
+
 	for _, call := range buildCalls {
 		if call.name == "mkdosfs" {
 			mkdosfsCalls = append(mkdosfsCalls, call)
 		}
 	}
+
 	if len(mkdosfsCalls) != 1 {
 		t.Fatalf("mkdosfs called %d times, want 1: %+v", len(mkdosfsCalls), buildCalls)
 	}
+
 	joined := strings.Join(mkdosfsCalls[0].args, " ")
 	if !strings.Contains(joined, "-F") || !strings.Contains(joined, "16") {
 		t.Errorf("mkdosfs args %v do not format FAT16", mkdosfsCalls[0].args)
 	}
+
 	if !strings.Contains(joined, "CIDATA") {
 		t.Errorf("mkdosfs args %v do not set the CIDATA label", mkdosfsCalls[0].args)
 	}
 
 	// mcopy writes each rendered part into the image under its NoCloud name.
 	copied := map[string]string{} // ::name -> source file
+
 	for _, call := range buildCalls {
 		if call.name != "mcopy" {
 			continue
 		}
+
 		if len(call.args) < 3 {
 			t.Errorf("mcopy call %+v has too few arguments", call.args)
 			continue
 		}
+
 		dst := call.args[len(call.args)-1]
 		src := call.args[len(call.args)-2]
 		copied[dst] = src
 	}
+
 	for _, name := range []string{"user-data", "meta-data", "network-config"} {
 		src, ok := copied["::"+name]
 		if !ok {
 			t.Errorf("mcopy did not write ::%s into the image (copied %v)", name, copied)
 			continue
 		}
+
 		got, err := os.ReadFile(src)
 		if err != nil {
 			t.Errorf("read mcopy source %q: %v", src, err)
 			continue
 		}
+
 		if !bytes.Equal(got, parts[name]) {
 			t.Errorf("::%s content = %q, want the rendered part %q", name, got, parts[name])
 		}
@@ -1468,6 +1545,7 @@ const (
 // any error.
 func (fx *machineFixture) reconcileMachine(t *testing.T, hm *infrastructurev1alpha1.HypervisorMachine) {
 	t.Helper()
+
 	if _, err := fx.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(hm)}); err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
@@ -1480,6 +1558,7 @@ func getMachine(
 	hm *infrastructurev1alpha1.HypervisorMachine,
 ) *infrastructurev1alpha1.HypervisorMachine {
 	t.Helper()
+
 	got := &infrastructurev1alpha1.HypervisorMachine{}
 	if err := c.Get(t.Context(), client.ObjectKeyFromObject(hm), got); err != nil {
 		t.Fatalf("Get HypervisorMachine: %v", err)
@@ -1541,13 +1620,16 @@ func TestMachineVMBootsWithVhostUserNetConfig(t *testing.T) {
 	fx.reconcileMachine(t, lm.hm)
 
 	wantMAC := mac.Derive(lc.name, lm.name)
+
 	wantConfig, err := chclient.VhostUserNetConfig(chclient.VhostUserSocketPath(lm.name), wantMAC)
 	if err != nil {
 		t.Fatalf("VhostUserNetConfig: %v", err)
 	}
+
 	if got := len(fx.vm.NetConfigs); got != 1 {
 		t.Fatalf("SetNetConfig called %d times, want 1 (recorded %v)", got, fx.vm.NetConfigs)
 	}
+
 	if fx.vm.NetConfigs[0] != wantConfig {
 		t.Errorf("net config = %q, want %q", fx.vm.NetConfigs[0], wantConfig)
 	}
@@ -1581,6 +1663,7 @@ func TestMachineVMHandsFirmwareAndDisksToClient(t *testing.T) {
 		if err := os.MkdirAll(dataDir, 0o755); err != nil {
 			t.Fatalf("create confext data dir: %v", err)
 		}
+
 		for _, name := range []string{"b.raw", "a.raw", "ignored.txt"} {
 			if err := os.WriteFile(filepath.Join(dataDir, name), []byte("x"), 0o644); err != nil {
 				t.Fatalf("write confext artifact %s: %v", name, err)
@@ -1593,6 +1676,7 @@ func TestMachineVMHandsFirmwareAndDisksToClient(t *testing.T) {
 		if got := len(fx.vm.Firmwares); got != 1 {
 			t.Fatalf("SetFirmware called %d times, want 1 (recorded %v)", got, fx.vm.Firmwares)
 		}
+
 		if fx.vm.Firmwares[0] != testFirmware {
 			t.Errorf("firmware = %q, want %q", fx.vm.Firmwares[0], testFirmware)
 		}
@@ -1600,6 +1684,7 @@ func TestMachineVMHandsFirmwareAndDisksToClient(t *testing.T) {
 		if got := len(fx.vm.DiskPathSets); got != 1 {
 			t.Fatalf("SetDiskPaths called %d times, want 1 (recorded %v)", got, fx.vm.DiskPathSets)
 		}
+
 		wantDisks := []string{
 			filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-root.qcow2"),
 			filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-cidata.img"),
@@ -1622,6 +1707,7 @@ func TestMachineVMHandsFirmwareAndDisksToClient(t *testing.T) {
 		if err := c.Get(t.Context(), client.ObjectKeyFromObject(lm.secret), secret); err != nil {
 			t.Fatalf("Get bootstrap Secret: %v", err)
 		}
+
 		secret.Data = map[string][]byte{"tree.json": []byte("{}")}
 		if err := c.Update(t.Context(), secret); err != nil {
 			t.Fatalf("empty bootstrap tree: %v", err)
@@ -1633,6 +1719,7 @@ func TestMachineVMHandsFirmwareAndDisksToClient(t *testing.T) {
 		if got := len(fx.vm.DiskPathSets); got != 1 {
 			t.Fatalf("SetDiskPaths called %d times, want 1 (recorded %v)", got, fx.vm.DiskPathSets)
 		}
+
 		wantDisks := []string{
 			filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-root.qcow2"),
 			filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-cidata.img"),
@@ -1653,6 +1740,7 @@ func TestMachineVMHandsFirmwareAndDisksToClient(t *testing.T) {
 		if got := len(fx.vm.DiskPathSets); got != 1 {
 			t.Fatalf("SetDiskPaths called %d times, want 1 (recorded %v)", got, fx.vm.DiskPathSets)
 		}
+
 		wantDisks := []string{
 			filepath.Join(fx.r.Config.VMDiskDir, lm.name+"-root.qcow2"),
 		}
@@ -1678,12 +1766,15 @@ func TestMachineVMHandsCPUAndRAMToClient(t *testing.T) {
 	if got := len(fx.vm.CPUs); got != 1 {
 		t.Fatalf("SetCPU called %d times, want 1 (recorded %v)", got, fx.vm.CPUs)
 	}
+
 	if fx.vm.CPUs[0] != testMachineCPU {
 		t.Errorf("cpu = %d, want spec cpu %d", fx.vm.CPUs[0], testMachineCPU)
 	}
+
 	if got := len(fx.vm.RAMs); got != 1 {
 		t.Fatalf("SetRAM called %d times, want 1 (recorded %v)", got, fx.vm.RAMs)
 	}
+
 	if fx.vm.RAMs[0] != testMachineRAM {
 		t.Errorf("ram = %d, want spec ram %d", fx.vm.RAMs[0], testMachineRAM)
 	}
@@ -1702,6 +1793,7 @@ func TestMachineVMHandlesZeroSpecCPUAndRAM(t *testing.T) {
 
 	hm := getMachine(t, c, lm.hm)
 	hm.Spec.CPU = 0
+
 	hm.Spec.RAM = 0
 	if err := c.Update(t.Context(), hm); err != nil {
 		t.Fatalf("update HypervisorMachine spec: %v", err)
@@ -1713,12 +1805,15 @@ func TestMachineVMHandlesZeroSpecCPUAndRAM(t *testing.T) {
 	if got := len(fx.vm.CPUs); got != 1 {
 		t.Fatalf("SetCPU called %d times, want 1 (recorded %v)", got, fx.vm.CPUs)
 	}
+
 	if fx.vm.CPUs[0] != 0 {
 		t.Errorf("cpu = %d, want the zero spec value passed through", fx.vm.CPUs[0])
 	}
+
 	if got := len(fx.vm.RAMs); got != 1 {
 		t.Fatalf("SetRAM called %d times, want 1 (recorded %v)", got, fx.vm.RAMs)
 	}
+
 	if fx.vm.RAMs[0] != 0 {
 		t.Errorf("ram = %d, want the zero spec value passed through", fx.vm.RAMs[0])
 	}
@@ -1737,13 +1832,16 @@ func TestMachineVMProviderID(t *testing.T) {
 	fx.reconcileMachine(t, lm.hm)
 
 	hm := getMachine(t, c, lm.hm)
+
 	wantProviderID := fmt.Sprintf("hypervisor://%s/%s", lc.name, lm.name)
 	if hm.Status.ProviderID == nil {
 		t.Fatalf("status.providerID = nil, want %q", wantProviderID)
 	}
+
 	if *hm.Status.ProviderID != wantProviderID {
 		t.Errorf("status.providerID = %q, want %q", *hm.Status.ProviderID, wantProviderID)
 	}
+
 	if hm.Spec.ProviderID == nil || *hm.Spec.ProviderID != wantProviderID {
 		t.Errorf("spec.providerID = %v, want %q", hm.Spec.ProviderID, wantProviderID)
 	}
@@ -1751,6 +1849,7 @@ func TestMachineVMProviderID(t *testing.T) {
 	if ip := statusInternalIP(hm); ip == "" {
 		t.Error("status.addresses lost the internal IP")
 	}
+
 	if host := statusHostName(hm); host != lm.name {
 		t.Errorf("status.addresses hostname = %q, want %q", host, lm.name)
 	}
@@ -1768,10 +1867,12 @@ func TestMachineVMProvisionedCondition(t *testing.T) {
 	fx.reconcileMachine(t, lm.hm)
 
 	hm := getMachine(t, c, lm.hm)
+
 	cond := machineCondition(hm, machineVMProvisionedCondition)
 	if cond == nil {
 		t.Fatalf("condition %q missing from status.conditions: %v", machineVMProvisionedCondition, hm.Status.Conditions)
 	}
+
 	if cond.Status != metav1.ConditionTrue {
 		t.Errorf("condition %q status = %q, want %q", machineVMProvisionedCondition, cond.Status, metav1.ConditionTrue)
 	}
@@ -1866,10 +1967,12 @@ func markMachineForDeletion(t *testing.T, c client.Client, hm *infrastructurev1a
 	ctx := t.Context()
 
 	fresh := getMachine(t, c, hm)
+
 	fresh.Finalizers = append(fresh.Finalizers, machineDeleteFinalizer)
 	if err := c.Update(ctx, fresh); err != nil {
 		t.Fatalf("add machine finalizer: %v", err)
 	}
+
 	if err := c.Delete(ctx, fresh); err != nil {
 		t.Fatalf("delete HypervisorMachine: %v", err)
 	}
@@ -1887,13 +1990,16 @@ func assertMachineReclaimed(t *testing.T, c client.Client, hm *infrastructurev1a
 	t.Helper()
 
 	got := &infrastructurev1alpha1.HypervisorMachine{}
+
 	err := c.Get(t.Context(), client.ObjectKeyFromObject(hm), got)
 	if apierrors.IsNotFound(err) {
 		return
 	}
+
 	if err != nil {
 		t.Fatalf("Get HypervisorMachine after teardown: %v", err)
 	}
+
 	t.Errorf("machine not reclaimed after teardown: still present with finalizers %v", got.Finalizers)
 }
 
@@ -1922,6 +2028,7 @@ func writeMachineConfextDisk(t *testing.T, vmDisksDir, name string) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("create confext data dir %q: %v", dir, err)
 	}
+
 	path := filepath.Join(dir, "z-kubelet-node1.raw")
 	if err := os.WriteFile(path, []byte("fixture confext image"), 0o644); err != nil {
 		t.Fatalf("write confext image %q: %v", path, err)
@@ -2003,14 +2110,17 @@ func statusInitializationProvisioned(status any) (provisioned, present bool) {
 	if err != nil {
 		return false, false
 	}
+
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return false, false
 	}
+
 	init, ok := doc["initialization"].(map[string]any)
 	if !ok {
 		return false, false
 	}
+
 	p, ok := init["provisioned"].(bool)
 
 	return p, ok
@@ -2041,12 +2151,14 @@ func TestMachineVMInitializationProvisionedWhenRunning(t *testing.T) {
 		if !hm.Status.Ready {
 			t.Fatalf("precondition failed: status.ready = false after a successful reconcile of a running VM")
 		}
+
 		provisioned, present := statusInitializationProvisioned(hm.Status)
 		if !present {
 			t.Fatal(
 				"status.initialization.provisioned missing with the VM running: the CAPI v1beta2 machine controller waits on this field (InfrastructureReady stays False)",
 			)
 		}
+
 		if !provisioned {
 			t.Error("status.initialization.provisioned = false with the VM running, want true")
 		}
@@ -2064,6 +2176,7 @@ func TestMachineVMInitializationProvisionedWhenRunning(t *testing.T) {
 		if hm.Status.Ready {
 			t.Fatalf("precondition failed: status.ready = true with the VM not running")
 		}
+
 		if provisioned, present := statusInitializationProvisioned(hm.Status); present && provisioned {
 			t.Error("status.initialization.provisioned = true with the VM not running, want unset or false")
 		}
