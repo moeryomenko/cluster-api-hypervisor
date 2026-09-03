@@ -79,6 +79,7 @@ func TestHypervisorMachinePublishedPortsJSONShape(t *testing.T) {
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			t.Fatalf("Unmarshal(%s): %v", raw, err)
 		}
+
 		if len(doc.Status.PublishedPorts) != 2 {
 			t.Fatalf("status.publishedPorts = %s, want 2 entries", string(raw))
 		}
@@ -87,15 +88,18 @@ func TestHypervisorMachinePublishedPortsJSONShape(t *testing.T) {
 			{"vmPort": 6443, "hostPort": 26443},
 			{"vmPort": 22, "hostPort": 20022},
 		}
+
 		for i, entry := range doc.Status.PublishedPorts {
 			if len(entry) != 2 {
 				t.Errorf("publishedPorts[%d] carries %d keys (%s), want exactly vmPort and hostPort", i, len(entry), entry)
 			}
+
 			for _, key := range []string{"vmPort", "hostPort"} {
 				if _, ok := entry[key]; !ok {
 					t.Errorf("publishedPorts[%d] missing key %q (entry %s)", i, key, entry)
 				}
 			}
+
 			var got struct {
 				VMPort   int32 `json:"vmPort"`
 				HostPort int32 `json:"hostPort"`
@@ -103,6 +107,7 @@ func TestHypervisorMachinePublishedPortsJSONShape(t *testing.T) {
 			if err := json.Unmarshal(mustJSON(t, entry), &got); err != nil {
 				t.Fatalf("unmarshal publishedPorts[%d]: %v", i, err)
 			}
+
 			if got.VMPort != want[i]["vmPort"] || got.HostPort != want[i]["hostPort"] {
 				t.Errorf(
 					"publishedPorts[%d] = {vmPort:%d hostPort:%d}, want {vmPort:%d hostPort:%d}",
@@ -122,14 +127,17 @@ func TestHypervisorMachinePublishedPortsJSONShape(t *testing.T) {
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			t.Fatalf("Unmarshal(%s): %v", raw, err)
 		}
+
 		status, ok := doc["status"]
 		if !ok {
 			return // whole status omitted; publishedPorts cannot leak
 		}
+
 		var statusDoc map[string]json.RawMessage
 		if err := json.Unmarshal(status, &statusDoc); err != nil {
 			t.Fatalf("unmarshal status: %v", err)
 		}
+
 		if _, present := statusDoc["publishedPorts"]; present {
 			t.Errorf("empty status serializes publishedPorts (%s), want it omitted", status)
 		}
@@ -145,6 +153,7 @@ func TestHypervisorMachinePublishedPortsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
+
 	var got v1alpha1.HypervisorMachine
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("Unmarshal(%s): %v", raw, err)
@@ -195,9 +204,11 @@ func TestHypervisorMachinePublishedPortsDeepCopyNonAliasing(t *testing.T) {
 			if !ok {
 				t.Fatalf("DeepCopyObject returned %T, want *v1alpha1.HypervisorMachine", obj)
 			}
+
 			if copyObj == original {
 				t.Fatal("DeepCopyObject returned the original pointer")
 			}
+
 			if !reflect.DeepEqual(copyObj, original) {
 				t.Fatalf("DeepCopyObject did not preserve the value:\ncopy:     %#v\noriginal: %#v", copyObj, original)
 			}
@@ -205,6 +216,7 @@ func TestHypervisorMachinePublishedPortsDeepCopyNonAliasing(t *testing.T) {
 			// want is built from literals, so it is independent of the
 			// DeepCopyObject implementation under test.
 			want := machineWithPublishedPorts()
+
 			tt.mutate(copyObj)
 
 			if !reflect.DeepEqual(original, want) {
@@ -217,9 +229,11 @@ func TestHypervisorMachinePublishedPortsDeepCopyNonAliasing(t *testing.T) {
 // mustJSON re-marshals a decoded JSON value.
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
+
 	raw, err := json.Marshal(v)
 	if err != nil {
 		t.Fatalf("marshal %v: %v", v, err)
 	}
+
 	return raw
 }

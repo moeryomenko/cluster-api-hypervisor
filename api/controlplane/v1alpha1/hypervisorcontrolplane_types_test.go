@@ -66,6 +66,7 @@ func cpContractConditions() []metav1.Condition {
 // not a coherent reconciled state.
 func newFullyPopulatedControlPlane() *controlplanev1alpha1.HypervisorControlPlane {
 	version := "v1.32.4"
+
 	return &controlplanev1alpha1.HypervisorControlPlane{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "controlplane.cluster.x-k8s.io/v1alpha1",
@@ -131,9 +132,11 @@ func TestHypervisorControlPlaneGroupVersionKind(t *testing.T) {
 		Version: "v1alpha1",
 		Kind:    "HypervisorControlPlane",
 	}
+
 	if len(gvks) != 1 {
 		t.Fatalf("ObjectKinds returned %d kinds, want 1: %v", len(gvks), gvks)
 	}
+
 	if got := gvks[0]; got != want {
 		t.Errorf("GroupVersionKind = %s, want %s", got, want)
 	}
@@ -146,6 +149,7 @@ func TestHypervisorControlPlaneGroupVersionKind(t *testing.T) {
 // carrying LastTransitionTime.
 func TestHypervisorControlPlaneJSONRoundTrip(t *testing.T) {
 	emptyVersion := ""
+
 	tests := []struct {
 		name string
 		give *controlplanev1alpha1.HypervisorControlPlane
@@ -157,6 +161,7 @@ func TestHypervisorControlPlaneJSONRoundTrip(t *testing.T) {
 			give: func() *controlplanev1alpha1.HypervisorControlPlane {
 				c := newFullyPopulatedControlPlane()
 				c.Status.Version = &emptyVersion
+
 				return c
 			}(),
 		},
@@ -221,6 +226,7 @@ func TestHypervisorControlPlaneJSONOmitEmptyShape(t *testing.T) {
 			if err := json.Unmarshal(raw, &doc); err != nil {
 				t.Fatalf("Unmarshal into document map: %v", err)
 			}
+
 			var spec map[string]json.RawMessage
 			if err := json.Unmarshal(doc["spec"], &spec); err != nil {
 				t.Fatalf("Unmarshal spec: %v", err)
@@ -230,6 +236,7 @@ func TestHypervisorControlPlaneJSONOmitEmptyShape(t *testing.T) {
 			if gotReplicas != tt.wantReplicas {
 				t.Errorf("spec.replicas present = %t, want %t (json: %s)", gotReplicas, tt.wantReplicas, raw)
 			}
+
 			_, gotVersion := spec["version"]
 			if gotVersion != tt.wantVersion {
 				t.Errorf("spec.version present = %t, want %t (json: %s)", gotVersion, tt.wantVersion, raw)
@@ -300,9 +307,11 @@ func TestHypervisorControlPlaneDeepCopyNonAliasing(t *testing.T) {
 			if !ok {
 				t.Fatalf("DeepCopyObject returned %T, want *controlplanev1alpha1.HypervisorControlPlane", obj)
 			}
+
 			if copy == original {
 				t.Fatal("DeepCopyObject returned the original pointer")
 			}
+
 			if !reflect.DeepEqual(copy, original) {
 				t.Fatalf("DeepCopyObject did not preserve the value:\ncopy:     %#v\noriginal: %#v", copy, original)
 			}
@@ -310,6 +319,7 @@ func TestHypervisorControlPlaneDeepCopyNonAliasing(t *testing.T) {
 			// want is built from literals, so it is independent of the
 			// DeepCopyObject implementation under test.
 			want := newFullyPopulatedControlPlane()
+
 			tt.mutate(copy)
 
 			if !reflect.DeepEqual(original, want) {
@@ -338,6 +348,7 @@ func TestHypervisorControlPlaneConditionsContract(t *testing.T) {
 		Reason:             "MachinesNotCreated",
 		Message:            "no control-plane machines exist",
 	}
+
 	tests := []struct {
 		name string
 		give []metav1.Condition
@@ -415,14 +426,18 @@ func TestHypervisorControlPlaneMachineTemplateShapePinned(t *testing.T) {
 				if ok {
 					t.Fatalf("%s unexpectedly has field %s; the v1beta2 contract nests it under Spec", tt.structType, tt.fieldName)
 				}
+
 				return
 			}
+
 			if !ok {
 				t.Fatalf("%s has no field %s", tt.structType, tt.fieldName)
 			}
+
 			if structField.Type != tt.wantType {
 				t.Errorf("%s.%s type = %s, want %s", tt.structType, tt.fieldName, structField.Type, tt.wantType)
 			}
+
 			if got := structField.Tag.Get("json"); got != tt.wantTag {
 				t.Errorf("%s.%s json tag = %q, want %q", tt.structType, tt.fieldName, got, tt.wantTag)
 			}
@@ -442,6 +457,7 @@ func TestHypervisorControlPlaneMachineTemplateShapePinned(t *testing.T) {
 		if !ok {
 			t.Fatal("HypervisorControlPlaneSpec has no MachineTemplate field")
 		}
+
 		if got, want := specField.Tag.Get("json"), "machineTemplate"; got != want {
 			t.Errorf("spec.machineTemplate json tag = %q, want %q (required, no omitempty)", got, want)
 		}
@@ -465,18 +481,22 @@ func TestHypervisorControlPlaneMachineTemplateWireShape(t *testing.T) {
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			t.Fatalf("Unmarshal into document map: %v", err)
 		}
+
 		specRaw, ok := doc["spec"]
 		if !ok {
 			t.Fatalf("spec missing from document (json: %s)", raw)
 		}
+
 		var spec map[string]json.RawMessage
 		if err := json.Unmarshal(specRaw, &spec); err != nil {
 			t.Fatalf("Unmarshal spec: %v", err)
 		}
+
 		mtRaw, ok := spec["machineTemplate"]
 		if !ok {
 			t.Fatalf("spec.machineTemplate missing, want the required key present (json: %s)", raw)
 		}
+
 		if string(mtRaw) != "{}" {
 			t.Errorf(
 				"zero-value spec.machineTemplate = %s, want {} (metadata and spec dropped by omitzero, no infrastructureRef at the old path)",
@@ -488,6 +508,7 @@ func TestHypervisorControlPlaneMachineTemplateWireShape(t *testing.T) {
 		if err := json.Unmarshal(mtRaw, &machineTemplateDoc); err != nil {
 			t.Fatalf("Unmarshal machineTemplate: %v", err)
 		}
+
 		if ref, ok := machineTemplateDoc["infrastructureRef"]; ok {
 			t.Errorf("old flat path machineTemplate.infrastructureRef serialized as %s, want absent", ref)
 		}
@@ -521,6 +542,7 @@ func TestHypervisorControlPlaneMachineTemplateWireShape(t *testing.T) {
 		if ref == nil {
 			t.Fatalf("machineTemplate.spec.infrastructureRef missing (json: %s)", raw)
 		}
+
 		wantKeys := map[string]string{
 			"apiGroup": "infrastructure.cluster.x-k8s.io",
 			"kind":     "HypervisorMachineTemplate",
@@ -531,10 +553,12 @@ func TestHypervisorControlPlaneMachineTemplateWireShape(t *testing.T) {
 			if err := json.Unmarshal(ref[key], &got); err != nil {
 				t.Fatalf("machineTemplate.spec.infrastructureRef.%s: %v", key, err)
 			}
+
 			if got != want {
 				t.Errorf("machineTemplate.spec.infrastructureRef.%s = %q, want %q", key, got, want)
 			}
 		}
+
 		for _, banned := range []string{"apiVersion", "namespace"} {
 			if val, ok := ref[banned]; ok {
 				t.Errorf(
@@ -575,6 +599,7 @@ func TestHypervisorControlPlaneTemplateMachineTemplateParity(t *testing.T) {
 
 	t.Run("inner template reuses the concrete kind's machine template type", func(t *testing.T) {
 		got := reflect.TypeOf(tmpl.Spec.Template.Spec.MachineTemplate)
+
 		want := reflect.TypeOf(controlplanev1alpha1.HypervisorControlPlane{}.Spec.MachineTemplate)
 		if got != want {
 			t.Errorf("template.spec.template.spec.machineTemplate type = %s, want the concrete %s", got, want)
@@ -608,10 +633,12 @@ func TestHypervisorControlPlaneTemplateMachineTemplateParity(t *testing.T) {
 		if ref := doc.Spec.Template.Spec.MachineTemplate.InfrastructureRef; len(ref) != 0 {
 			t.Errorf("template kind old flat path machineTemplate.infrastructureRef serialized as %s, want absent", ref)
 		}
+
 		ref := doc.Spec.Template.Spec.MachineTemplate.Spec.InfrastructureRef
 		if ref == nil {
 			t.Fatalf("template.spec.template.spec.machineTemplate.spec.infrastructureRef missing (json: %s)", raw)
 		}
+
 		var name string
 		if err := json.Unmarshal(ref["name"], &name); err != nil || name != "lab-cp-machine-template" {
 			t.Errorf("template kind infrastructureRef.name = %q (err %v), want lab-cp-machine-template", name, err)

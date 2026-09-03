@@ -53,6 +53,7 @@ func configContractConditions() []metav1.Condition {
 // reconciled state.
 func newFullyPopulatedConfig() *bootstrapv1alpha1.HypervisorConfig {
 	dataSecretName := "lab-cluster-cp-1-bootstrap"
+
 	return &bootstrapv1alpha1.HypervisorConfig{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "bootstrap.cluster.x-k8s.io/v1alpha1",
@@ -101,9 +102,11 @@ func TestHypervisorConfigGroupVersionKind(t *testing.T) {
 		Version: "v1alpha1",
 		Kind:    "HypervisorConfig",
 	}
+
 	if len(gvks) != 1 {
 		t.Fatalf("ObjectKinds returned %d kinds, want 1: %v", len(gvks), gvks)
 	}
+
 	if got := gvks[0]; got != want {
 		t.Errorf("GroupVersionKind = %s, want %s", got, want)
 	}
@@ -115,6 +118,7 @@ func TestHypervisorConfigGroupVersionKind(t *testing.T) {
 // and conditions carrying LastTransitionTime.
 func TestHypervisorConfigJSONRoundTrip(t *testing.T) {
 	emptyDataSecretName := ""
+
 	tests := []struct {
 		name string
 		give *bootstrapv1alpha1.HypervisorConfig
@@ -126,6 +130,7 @@ func TestHypervisorConfigJSONRoundTrip(t *testing.T) {
 			give: func() *bootstrapv1alpha1.HypervisorConfig {
 				c := newFullyPopulatedConfig()
 				c.Status.DataSecretName = &emptyDataSecretName
+
 				return c
 			}(),
 		},
@@ -193,6 +198,7 @@ func TestHypervisorConfigJSONOmitEmptyShape(t *testing.T) {
 			if err := json.Unmarshal(raw, &doc); err != nil {
 				t.Fatalf("Unmarshal into document map: %v", err)
 			}
+
 			var spec map[string]json.RawMessage
 			if err := json.Unmarshal(doc["spec"], &spec); err != nil {
 				t.Fatalf("Unmarshal spec: %v", err)
@@ -202,10 +208,12 @@ func TestHypervisorConfigJSONOmitEmptyShape(t *testing.T) {
 			if gotRole != tt.wantRole {
 				t.Errorf("spec.role present = %t, want %t (json: %s)", gotRole, tt.wantRole, raw)
 			}
+
 			_, gotNode := spec["nodeName"]
 			if gotNode != tt.wantNode {
 				t.Errorf("spec.nodeName present = %t, want %t (json: %s)", gotNode, tt.wantNode, raw)
 			}
+
 			_, gotSSH := spec["sshPublicKey"]
 			if gotSSH != tt.wantSSH {
 				t.Errorf("spec.sshPublicKey present = %t, want %t (json: %s)", gotSSH, tt.wantSSH, raw)
@@ -229,16 +237,19 @@ func TestHypervisorConfigJSONOmitEmptyShape(t *testing.T) {
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			t.Fatalf("Unmarshal into document map: %v", err)
 		}
+
 		statusRaw, ok := doc["status"]
 		if !ok {
 			// The whole status block is omitted; every optional key is
 			// necessarily absent.
 			return
 		}
+
 		var status map[string]json.RawMessage
 		if err := json.Unmarshal(statusRaw, &status); err != nil {
 			t.Fatalf("Unmarshal status: %v", err)
 		}
+
 		for _, key := range []string{"dataSecretName", "failureReason", "failureMessage", "conditions"} {
 			if _, present := status[key]; present {
 				t.Errorf("status.%s present at zero value, want omitted (json: %s)", key, raw)
@@ -297,9 +308,11 @@ func TestHypervisorConfigDeepCopyNonAliasing(t *testing.T) {
 			if !ok {
 				t.Fatalf("DeepCopyObject returned %T, want *bootstrapv1alpha1.HypervisorConfig", obj)
 			}
+
 			if copy == original {
 				t.Fatal("DeepCopyObject returned the original pointer")
 			}
+
 			if !reflect.DeepEqual(copy, original) {
 				t.Fatalf("DeepCopyObject did not preserve the value:\ncopy:     %#v\noriginal: %#v", copy, original)
 			}
@@ -307,6 +320,7 @@ func TestHypervisorConfigDeepCopyNonAliasing(t *testing.T) {
 			// want is built from literals, so it is independent of the
 			// DeepCopyObject implementation under test.
 			want := newFullyPopulatedConfig()
+
 			tt.mutate(copy)
 
 			if !reflect.DeepEqual(original, want) {
@@ -335,6 +349,7 @@ func TestHypervisorConfigConditionsContract(t *testing.T) {
 		Reason:             "ValidationFailed",
 		Message:            "tree files failed validation",
 	}
+
 	tests := []struct {
 		name string
 		give []metav1.Condition

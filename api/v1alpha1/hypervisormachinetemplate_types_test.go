@@ -71,9 +71,11 @@ func TestHypervisorMachineTemplateGroupVersionKind(t *testing.T) {
 		Version: "v1alpha1",
 		Kind:    "HypervisorMachineTemplate",
 	}
+
 	if len(gvks) != 1 {
 		t.Fatalf("ObjectKinds returned %d kinds, want 1: %v", len(gvks), gvks)
 	}
+
 	if got := gvks[0]; got != want {
 		t.Errorf("GroupVersionKind = %s, want %s", got, want)
 	}
@@ -150,6 +152,7 @@ func TestHypervisorMachineTemplateJSONShape(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("Unmarshal into document map: %v", err)
 	}
+
 	var spec map[string]json.RawMessage
 	if err := json.Unmarshal(doc["spec"], &spec); err != nil {
 		t.Fatalf("Unmarshal spec: %v", err)
@@ -163,6 +166,7 @@ func TestHypervisorMachineTemplateJSONShape(t *testing.T) {
 		if err := json.Unmarshal(spec["template"], &template); err != nil {
 			t.Fatalf("Unmarshal spec.template: %v", err)
 		}
+
 		var templateSpec map[string]json.RawMessage
 		if err := json.Unmarshal(template["spec"], &templateSpec); err != nil {
 			t.Fatalf("Unmarshal spec.template.spec: %v", err)
@@ -232,9 +236,11 @@ func TestHypervisorMachineTemplateDeepCopyNonAliasing(t *testing.T) {
 			if !ok {
 				t.Fatalf("DeepCopyObject returned %T, want *v1alpha1.HypervisorMachineTemplate", obj)
 			}
+
 			if copy == original {
 				t.Fatal("DeepCopyObject returned the original pointer")
 			}
+
 			if !reflect.DeepEqual(copy, original) {
 				t.Fatalf("DeepCopyObject did not preserve the value:\ncopy:     %#v\noriginal: %#v", copy, original)
 			}
@@ -242,6 +248,7 @@ func TestHypervisorMachineTemplateDeepCopyNonAliasing(t *testing.T) {
 			// want is built from literals, so it is independent of the
 			// DeepCopyObject implementation under test.
 			want := newFullyPopulatedMachineTemplate()
+
 			tt.mutate(copy)
 
 			if !reflect.DeepEqual(original, want) {

@@ -57,6 +57,7 @@ func machineContractConditions() []metav1.Condition {
 // reconciled state.
 func newFullyPopulatedMachine() *v1alpha1.HypervisorMachine {
 	providerID := "hypervisor://lab-cluster/cp-1"
+
 	return &v1alpha1.HypervisorMachine{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "infrastructure.cluster.x-k8s.io/v1alpha1",
@@ -115,9 +116,11 @@ func TestHypervisorMachineGroupVersionKind(t *testing.T) {
 		Version: "v1alpha1",
 		Kind:    "HypervisorMachine",
 	}
+
 	if len(gvks) != 1 {
 		t.Fatalf("ObjectKinds returned %d kinds, want 1: %v", len(gvks), gvks)
 	}
+
 	if got := gvks[0]; got != want {
 		t.Errorf("GroupVersionKind = %s, want %s", got, want)
 	}
@@ -129,6 +132,7 @@ func TestHypervisorMachineGroupVersionKind(t *testing.T) {
 // pointer and conditions carrying LastTransitionTime.
 func TestHypervisorMachineJSONRoundTrip(t *testing.T) {
 	emptyProviderID := ""
+
 	tests := []struct {
 		name string
 		give *v1alpha1.HypervisorMachine
@@ -140,6 +144,7 @@ func TestHypervisorMachineJSONRoundTrip(t *testing.T) {
 			give: func() *v1alpha1.HypervisorMachine {
 				m := newFullyPopulatedMachine()
 				m.Status.ProviderID = &emptyProviderID
+
 				return m
 			}(),
 		},
@@ -191,6 +196,7 @@ func TestHypervisorMachineJSONFieldPresence(t *testing.T) {
 				m := newFullyPopulatedMachine()
 				m.Spec.MAC = "c6:e5:50:1c:ec:ff"
 				m.Spec.RetainDiskOnDelete = true
+
 				return m
 			}(),
 			wantMAC:    true,
@@ -208,6 +214,7 @@ func TestHypervisorMachineJSONFieldPresence(t *testing.T) {
 			if err := json.Unmarshal(raw, &doc); err != nil {
 				t.Fatalf("Unmarshal into document map: %v", err)
 			}
+
 			var spec map[string]json.RawMessage
 			if err := json.Unmarshal(doc["spec"], &spec); err != nil {
 				t.Fatalf("Unmarshal spec: %v", err)
@@ -217,6 +224,7 @@ func TestHypervisorMachineJSONFieldPresence(t *testing.T) {
 			if gotMAC != tt.wantMAC {
 				t.Errorf("spec.mac present = %t, want %t (json: %s)", gotMAC, tt.wantMAC, raw)
 			}
+
 			_, gotRetain := spec["retainDiskOnDelete"]
 			if gotRetain != tt.wantRetain {
 				t.Errorf("spec.retainDiskOnDelete present = %t, want %t (json: %s)", gotRetain, tt.wantRetain, raw)
@@ -282,9 +290,11 @@ func TestHypervisorMachineDeepCopyNonAliasing(t *testing.T) {
 			if !ok {
 				t.Fatalf("DeepCopyObject returned %T, want *v1alpha1.HypervisorMachine", obj)
 			}
+
 			if copy == original {
 				t.Fatal("DeepCopyObject returned the original pointer")
 			}
+
 			if !reflect.DeepEqual(copy, original) {
 				t.Fatalf("DeepCopyObject did not preserve the value:\ncopy:     %#v\noriginal: %#v", copy, original)
 			}
@@ -292,6 +302,7 @@ func TestHypervisorMachineDeepCopyNonAliasing(t *testing.T) {
 			// want is built from literals, so it is independent of the
 			// DeepCopyObject implementation under test.
 			want := newFullyPopulatedMachine()
+
 			tt.mutate(copy)
 
 			if !reflect.DeepEqual(original, want) {
@@ -313,6 +324,7 @@ func TestHypervisorMachineConditionsContract(t *testing.T) {
 	})
 
 	conditions := machineContractConditions()
+
 	tests := []struct {
 		name string
 		give []metav1.Condition
@@ -381,6 +393,7 @@ func TestHypervisorMachineStatusInitializationContract(t *testing.T) {
 			Ready:          true,
 			Initialization: &v1alpha1.InitializationStatus{Provisioned: true},
 		}
+
 		raw, err := json.Marshal(status)
 		if err != nil {
 			t.Fatalf("Marshal: %v", err)
@@ -390,14 +403,17 @@ func TestHypervisorMachineStatusInitializationContract(t *testing.T) {
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			t.Fatalf("Unmarshal into document map: %v", err)
 		}
+
 		var init map[string]json.RawMessage
 		if err := json.Unmarshal(doc["initialization"], &init); err != nil {
 			t.Fatalf("Unmarshal initialization: %v", err)
 		}
+
 		var provisioned bool
 		if err := json.Unmarshal(init["provisioned"], &provisioned); err != nil {
 			t.Fatalf("Unmarshal provisioned: %v", err)
 		}
+
 		if !provisioned {
 			t.Errorf("status.initialization.provisioned = %t, want true (json: %s)", provisioned, raw)
 		}
@@ -413,6 +429,7 @@ func TestHypervisorMachineStatusInitializationContract(t *testing.T) {
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			t.Fatalf("Unmarshal into document map: %v", err)
 		}
+
 		if _, ok := doc["initialization"]; ok {
 			t.Errorf("zero value serialized initialization: %s", raw)
 		}
@@ -426,10 +443,12 @@ func TestHypervisorMachineStatusInitializationContract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Marshal: %v", err)
 		}
+
 		var got v1alpha1.HypervisorMachine
 		if err := json.Unmarshal(raw, &got); err != nil {
 			t.Fatalf("Unmarshal(%s): %v", raw, err)
 		}
+
 		if got.Status.Initialization == nil || !got.Status.Initialization.Provisioned {
 			t.Errorf("round trip lost status.initialization.provisioned (json: %s)", raw)
 		}
