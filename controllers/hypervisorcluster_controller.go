@@ -94,6 +94,7 @@ func (r *HypervisorClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
+
 		return ctrl.Result{}, fmt.Errorf("get HypervisorCluster %q: %w", req.NamespacedName, err)
 	}
 
@@ -101,6 +102,7 @@ func (r *HypervisorClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
 	if cluster == nil {
 		log.Info("linked Cluster not found, waiting for the Cluster link")
 		return ctrl.Result{}, nil
@@ -117,6 +119,7 @@ func (r *HypervisorClusterReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	if !controllerutil.ContainsFinalizer(hc, hypervisorClusterFinalizer) {
 		controllerutil.AddFinalizer(hc, hypervisorClusterFinalizer)
+
 		if err := r.Update(ctx, hc); err != nil {
 			return ctrl.Result{}, fmt.Errorf("add finalizer to HypervisorCluster: %w", err)
 		}
@@ -145,6 +148,7 @@ func (r *HypervisorClusterReconciler) reconcileNormal(
 	// network was created externally.
 	if !isInfrastructureReady(hc) {
 		network := &hc.Spec.Network
+
 		name := hc.Name
 		if err := r.K8Netd.CreateNetwork(ctx, name, network.CIDR, network.Gateway, defaultPoolStart, defaultPoolEnd); err != nil {
 			if errors.Is(err, k8netd.ErrAlreadyExists) {
@@ -154,6 +158,7 @@ func (r *HypervisorClusterReconciler) reconcileNormal(
 				return fmt.Errorf("create network %q: %w", name, err)
 			}
 		}
+
 		hc.Status.Ready = true
 		hc.Status.Initialization = &infrastructurev1alpha1.InitializationStatus{Provisioned: true}
 		markInfrastructureReady(hc)
@@ -168,7 +173,17 @@ func (r *HypervisorClusterReconciler) reconcileNormal(
 		return err
 	}
 
-	if err := r.Status().Update(ctx, hc); err != nil {
+	// The spec.controlPlaneEndpoint write is part of the v1beta2
+	// infrastructure-cluster contract; persist it with a merge patch so the
+	// write cannot race the status subresource update below (a full Update
+	// would conflict on resourceVersion once the status subresource bump
+	// lands).
+	specPatch := client.MergeFrom(hc.DeepCopy())
+	if err := r.Client.Patch(ctx, hc, specPatch); err != nil {
+		return fmt.Errorf("patch HypervisorCluster spec.controlPlaneEndpoint: %w", err)
+	}
+
+	if err := r.Client.Status().Update(ctx, hc); err != nil {
 		return fmt.Errorf("update HypervisorCluster status: %w", err)
 	}
 
@@ -196,6 +211,7 @@ func (r *HypervisorClusterReconciler) reconcileDelete(
 	}
 
 	controllerutil.RemoveFinalizer(hc, hypervisorClusterFinalizer)
+
 	if err := r.Update(ctx, hc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove finalizer from HypervisorCluster: %w", err)
 	}
@@ -209,14 +225,21 @@ func isInfrastructureReady(hc *infrastructurev1alpha1.HypervisorCluster) bool {
 	if !hc.Status.Ready {
 		return false
 	}
+
 	return meta.IsStatusConditionTrue(hc.Status.Conditions, clusterv1.InfrastructureReadyCondition)
 }
 
-// reconcileControlPlaneEndpoint publishes status.controlPlaneEndpoint when the
-// linked control plane reports initialized and a control-plane machine holds a
-// static internal IP: the host is 127.0.0.1 and the port is 6443, reachable
-// via the control-plane VM's per-VM passt forwarding. An absent or
-// uninitialized control plane leaves the endpoint untouched without error.
+// reconcileControlPlaneEndpoint publishes the workload API server endpoint
+// when the linked control plane reports initialized and a control-plane
+// machine holds a static internal IP. The endpoint is written to BOTH
+// spec.controlPlaneEndpoint (the v1beta2 infrastructure-cluster contract
+// path the CAPI cluster controller copies to the Cluster's
+// spec.controlPlaneEndpoint, driving the phase transition to Provisioned)
+// and status.controlPlaneEndpoint (legacy, kept for observability). The
+// host is 127.0.0.1 and the port is the k8netd-published host port for the
+// API server, falling back to 6443 when the machine has not recorded a
+// publication yet. An absent or uninitialized control plane leaves the
+// endpoint untouched without error.
 func (r *HypervisorClusterReconciler) reconcileControlPlaneEndpoint(
 	ctx context.Context,
 	cluster *clusterv1.Cluster,
@@ -228,11 +251,13 @@ func (r *HypervisorClusterReconciler) reconcileControlPlaneEndpoint(
 
 	cpRef := cluster.Spec.ControlPlaneRef
 	cp := &controlplanev1alpha1.HypervisorControlPlane{}
+
 	key := client.ObjectKey{Namespace: cluster.Namespace, Name: cpRef.Name}
 	if err := r.Get(ctx, key, cp); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
+
 		return fmt.Errorf("get control plane %q: %w", key, err)
 	}
 	// The v1beta2 contract path is authoritative when set; the deprecated
@@ -242,11 +267,13 @@ func (r *HypervisorClusterReconciler) reconcileControlPlaneEndpoint(
 	if set := cp.Status.Initialization.ControlPlaneInitialized; set != nil {
 		initialized = *set
 	}
+
 	if !initialized {
 		return nil
 	}
 
 	machines := &clusterv1.MachineList{}
+
 	selector := client.MatchingLabels{
 		clusterv1.ClusterNameLabel:         cluster.Name,
 		clusterv1.MachineControlPlaneLabel: "",
@@ -256,50 +283,82 @@ func (r *HypervisorClusterReconciler) reconcileControlPlaneEndpoint(
 	}
 
 	for i := range machines.Items {
-		_, ok, err := r.machineInternalIP(ctx, &machines.Items[i])
+		hm, ok, err := r.machineInfraMachine(ctx, &machines.Items[i])
 		if err != nil {
 			return err
 		}
+
 		if !ok {
 			continue
 		}
-		hc.Status.ControlPlaneEndpoint = clusterv1.APIEndpoint{Host: "127.0.0.1", Port: defaultControlPlanePort}
+
+		hasIP := false
+
+		for _, addr := range hm.Status.Addresses {
+			if addr.Type == clusterv1.MachineInternalIP && addr.Address != "" {
+				hasIP = true
+				break
+			}
+		}
+
+		if !hasIP {
+			continue
+		}
+
+		endpoint := clusterv1.APIEndpoint{
+			Host: "127.0.0.1",
+			Port: publishedAPIPort(hm.Status.PublishedPorts),
+		}
+		hc.Spec.ControlPlaneEndpoint = endpoint
+		hc.Status.ControlPlaneEndpoint = endpoint
+
 		return nil
 	}
 
 	return nil
 }
 
-// machineInternalIP returns the static internal IP of the HypervisorMachine
-// backing the given CAPI Machine, when the machine holds one.
-func (r *HypervisorClusterReconciler) machineInternalIP(
+// publishedAPIPort returns the host port k8netd published for the API server
+// (vm_port 6443) from the machine's recorded publications, falling back to
+// the default control-plane port when the publication has not been recorded.
+func publishedAPIPort(ports []infrastructurev1alpha1.MachinePublishedPort) int32 {
+	for _, p := range ports {
+		if p.VMPort == controlPlaneAPIServerPort {
+			return p.HostPort
+		}
+	}
+
+	return defaultControlPlanePort
+}
+
+// machineInfraMachine returns the HypervisorMachine backing the given CAPI
+// Machine, when the machine carries an infrastructure reference. The
+// (nil, false) pair signals "no usable reference" without error, mirroring
+// the not-found tolerance of the other helper lookups.
+func (r *HypervisorClusterReconciler) machineInfraMachine(
 	ctx context.Context,
 	machine *clusterv1.Machine,
-) (string, bool, error) {
+) (*infrastructurev1alpha1.HypervisorMachine, bool, error) {
 	ref := machine.Spec.InfrastructureRef
 	if ref.Kind != "HypervisorMachine" || ref.Name == "" {
-		return "", false, nil
+		return nil, false, nil
 	}
 
 	// Infrastructure references are namespaced to the machine by CAPI
 	// convention; the contract-versioned reference carries no namespace, so
 	// the machine's own namespace names the infrastructure object.
 	hm := &infrastructurev1alpha1.HypervisorMachine{}
+
 	key := client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}
 	if err := r.Get(ctx, key, hm); err != nil {
 		if apierrors.IsNotFound(err) {
-			return "", false, nil
+			return nil, false, nil
 		}
-		return "", false, fmt.Errorf("get infrastructure machine %q: %w", key, err)
+
+		return nil, false, fmt.Errorf("get infrastructure machine %q: %w", key, err)
 	}
 
-	for _, addr := range hm.Status.Addresses {
-		if addr.Type == clusterv1.MachineInternalIP && addr.Address != "" {
-			return addr.Address, true, nil
-		}
-	}
-
-	return "", false, nil
+	return hm, true, nil
 }
 
 // getLinkedCluster resolves the CAPI Cluster this object belongs to, through
@@ -317,17 +376,21 @@ func (r *HypervisorClusterReconciler) getLinkedCluster(
 		if ref.Kind != "Cluster" {
 			continue
 		}
+
 		gv, err := schema.ParseGroupVersion(ref.APIVersion)
 		if err != nil || gv.Group != clusterv1.GroupVersion.Group {
 			continue
 		}
+
 		cluster := &clusterv1.Cluster{}
 		if err := r.Get(ctx, client.ObjectKey{Namespace: hc.Namespace, Name: ref.Name}, cluster); err != nil {
 			if apierrors.IsNotFound(err) {
 				break
 			}
+
 			return nil, fmt.Errorf("get owner Cluster %q: %w", ref.Name, err)
 		}
+
 		return cluster, nil
 	}
 
@@ -337,8 +400,10 @@ func (r *HypervisorClusterReconciler) getLinkedCluster(
 			if apierrors.IsNotFound(err) {
 				return nil, nil
 			}
+
 			return nil, fmt.Errorf("get linked Cluster %q: %w", hc.Spec.ClusterName, err)
 		}
+
 		return cluster, nil
 	}
 
@@ -349,11 +414,13 @@ func (r *HypervisorClusterReconciler) getLinkedCluster(
 	if err := r.List(ctx, clusters, client.InNamespace(hc.Namespace)); err != nil {
 		return nil, fmt.Errorf("list Clusters in %q: %w", hc.Namespace, err)
 	}
+
 	for i := range clusters.Items {
 		ref := clusters.Items[i].Spec.InfrastructureRef
 		if !ref.IsDefined() || ref.Kind != "HypervisorCluster" || ref.Name != hc.Name {
 			continue
 		}
+
 		return &clusters.Items[i], nil
 	}
 
@@ -411,8 +478,14 @@ func (r *HypervisorClusterReconciler) clusterToHypervisorCluster(
 // machineToHypervisorCluster maps a HypervisorMachine event to the
 // HypervisorCluster of its cluster, so a machine gaining its static IP
 // re-reconciles the cluster control-plane endpoint.
+//
+// The CAPI cluster name is NOT the HypervisorCluster name: topology
+// controllers generate a suffixed infrastructure object (e.g. Cluster
+// "k8labs" owns HypervisorCluster "k8labs-t8h8j"), so the mapping resolves
+// the pair through the Cluster's spec.infrastructureRef — the same link
+// getLinkedCluster uses in reverse. A missing Cluster link enqueues nothing.
 func (r *HypervisorClusterReconciler) machineToHypervisorCluster(
-	_ context.Context,
+	ctx context.Context,
 	obj client.Object,
 ) []reconcile.Request {
 	machine, ok := obj.(*infrastructurev1alpha1.HypervisorMachine)
@@ -420,8 +493,19 @@ func (r *HypervisorClusterReconciler) machineToHypervisorCluster(
 		return nil
 	}
 
+	cluster := &clusterv1.Cluster{}
+
+	key := client.ObjectKey{Namespace: machine.Namespace, Name: machine.Spec.ClusterName}
+	if err := r.Get(ctx, key, cluster); err != nil {
+		return nil
+	}
+
+	if !cluster.Spec.InfrastructureRef.IsDefined() {
+		return nil
+	}
+
 	return []reconcile.Request{{
-		NamespacedName: client.ObjectKey{Namespace: machine.Namespace, Name: machine.Spec.ClusterName},
+		NamespacedName: client.ObjectKey{Namespace: machine.Namespace, Name: cluster.Spec.InfrastructureRef.Name},
 	}}
 }
 

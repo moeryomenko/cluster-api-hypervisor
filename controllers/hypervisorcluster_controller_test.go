@@ -109,6 +109,7 @@ func mustReconcileClient(t *testing.T) client.Client {
 	if err != nil {
 		t.Fatalf("helpers.StartEnvTest: %v", err)
 	}
+
 	installCAPICoreCRDs(t, envTest.Env.Config)
 
 	c, err := client.New(envTest.Env.Config, client.Options{Scheme: newScheme()})
@@ -133,6 +134,7 @@ func installCAPICoreCRDs(t *testing.T, cfg *rest.Config) {
 	if err != nil {
 		t.Fatalf("resolve cluster-api module directory: %v", err)
 	}
+
 	clusterCRD := loadCRD(t, filepath.Join(dir, "cluster.x-k8s.io_clusters.yaml"))
 	machineCRD := loadCRD(t, filepath.Join(dir, "cluster.x-k8s.io_machines.yaml"))
 
@@ -152,6 +154,7 @@ func loadCRD(t *testing.T, path string) *apiextensionsv1.CustomResourceDefinitio
 	if err != nil {
 		t.Fatalf("read CRD manifest %q: %v", path, err)
 	}
+
 	crd := &apiextensionsv1.CustomResourceDefinition{}
 	if err := yaml.Unmarshal(data, crd); err != nil {
 		t.Fatalf("decode CRD manifest %q: %v", path, err)
@@ -198,9 +201,11 @@ func newLinkedCluster(t *testing.T, c client.Client, namespace, name string) *li
 	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
 		t.Fatalf("create namespace %q: %v", namespace, err)
 	}
+
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
 		_ = c.Delete(cleanupCtx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})
 	})
 
@@ -275,6 +280,7 @@ func newControlPlane(t *testing.T, c client.Client, lc *linkedCluster, initializ
 	if err := c.Create(ctx, cp); err != nil {
 		t.Fatalf("create HypervisorControlPlane: %v", err)
 	}
+
 	cp.Status.Initialized = initialized
 	if err := c.Status().Update(ctx, cp); err != nil {
 		t.Fatalf("set HypervisorControlPlane initialized status: %v", err)
@@ -306,6 +312,7 @@ func newControlPlaneMachine(t *testing.T, c client.Client, lc *linkedCluster, ip
 	if err := c.Create(ctx, hm); err != nil {
 		t.Fatalf("create HypervisorMachine: %v", err)
 	}
+
 	hm.Status.Addresses = []clusterv1.MachineAddress{
 		{Type: clusterv1.MachineInternalIP, Address: ip},
 	}
@@ -354,12 +361,16 @@ func newTestReconciler(t *testing.T, c client.Client) *HypervisorClusterReconcil
 	t.Helper()
 
 	sock := filepath.Join(t.TempDir(), "control.sock")
+
 	srv, err := fake.New(sock)
 	if err != nil {
 		t.Fatalf("fake.New %q: %v", sock, err)
 	}
+
 	t.Cleanup(func() { _ = srv.Close() })
+
 	kc := k8netd.NewClient(sock)
+
 	return &HypervisorClusterReconciler{
 		Client:   c,
 		Scheme:   newScheme(),
@@ -387,6 +398,7 @@ func TestReconcilePausedClusterIsUntouched(t *testing.T) {
 	r := newTestReconciler(t, c)
 
 	lc := newLinkedCluster(t, c, "hc-paused", "capi-cluster")
+
 	lc.hc.Annotations = map[string]string{clusterv1.PausedAnnotation: ""}
 	if err := c.Update(t.Context(), lc.hc); err != nil {
 		t.Fatalf("annotate HypervisorCluster as paused: %v", err)
@@ -396,6 +408,7 @@ func TestReconcilePausedClusterIsUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
+
 	if res != (ctrl.Result{}) {
 		t.Errorf("Reconcile result = %+v, want empty", res)
 	}
@@ -404,9 +417,11 @@ func TestReconcilePausedClusterIsUntouched(t *testing.T) {
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	if len(hc.Finalizers) != 0 {
 		t.Errorf("paused reconcile added finalizers %v, want none", hc.Finalizers)
 	}
+
 	if hc.Status.Ready {
 		t.Error("paused reconcile marked the object ready")
 	}
@@ -420,10 +435,12 @@ func TestReconcileMissingClusterIsUntouched(t *testing.T) {
 	r := newTestReconciler(t, c)
 
 	const namespace = "hc-missing"
+
 	key := client.ObjectKey{Namespace: namespace, Name: "capi-cluster"}
 	if err := c.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
 		t.Fatalf("create namespace %q: %v", namespace, err)
 	}
+
 	hc := &infrastructurev1alpha1.HypervisorCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
 		Spec: infrastructurev1alpha1.HypervisorClusterSpec{
@@ -445,6 +462,7 @@ func TestReconcileMissingClusterIsUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
+
 	if res != (ctrl.Result{}) {
 		t.Errorf("Reconcile result = %+v, want empty", res)
 	}
@@ -453,9 +471,11 @@ func TestReconcileMissingClusterIsUntouched(t *testing.T) {
 	if err := c.Get(t.Context(), key, got); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	if got.Status.Ready {
 		t.Error("status.ready = true without a linked Cluster, want false")
 	}
+
 	if len(got.Finalizers) != 0 {
 		t.Errorf("finalizers = %v without a linked Cluster, want none", got.Finalizers)
 	}
@@ -468,10 +488,12 @@ func TestReconcileMissingObjectIsNoop(t *testing.T) {
 	r := newTestReconciler(t, c)
 
 	key := client.ObjectKey{Namespace: "hc-missing-obj", Name: "does-not-exist"}
+
 	res, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
 	if err != nil {
 		t.Fatalf("Reconcile error: %v", err)
 	}
+
 	if res != (ctrl.Result{}) {
 		t.Errorf("Reconcile result = %+v, want empty", res)
 	}
@@ -489,9 +511,11 @@ func TestReconcileMissingObjectIsNoop(t *testing.T) {
 func TestReconcileControlPlaneEndpointPublishesLoopback(t *testing.T) {
 	c := mustReconcileClient(t)
 	// Use non-default reserved IP to prove not hardcoded .20.
-	const reservedIP = "192.168.124.77"
-	const wantHost = "127.0.0.1"
-	const wantPort = 6443
+	const (
+		reservedIP = "192.168.124.77"
+		wantHost   = "127.0.0.1"
+		wantPort   = 6443
+	)
 
 	r := newTestReconciler(t, c)
 
@@ -507,6 +531,7 @@ func TestReconcileControlPlaneEndpointPublishesLoopback(t *testing.T) {
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	if hc.Status.ControlPlaneEndpoint.Host != wantHost {
 		t.Errorf(
 			"controlPlaneEndpoint.host = %q, want %q (REQ-006 VC-06: must be loopback, not %s)",
@@ -515,6 +540,7 @@ func TestReconcileControlPlaneEndpointPublishesLoopback(t *testing.T) {
 			reservedIP,
 		)
 	}
+
 	if hc.Status.ControlPlaneEndpoint.Port != wantPort {
 		t.Errorf("controlPlaneEndpoint.port = %d, want %d", hc.Status.ControlPlaneEndpoint.Port, wantPort)
 	}
@@ -530,9 +556,11 @@ func TestReconcileControlPlaneEndpointPublishesLoopback(t *testing.T) {
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 		t.Fatalf("second Reconcile error: %v", err)
 	}
+
 	if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 		t.Fatalf("Get HypervisorCluster after second reconcile: %v", err)
 	}
+
 	if hc.Status.ControlPlaneEndpoint.Host != wantHost || hc.Status.ControlPlaneEndpoint.Port != wantPort {
 		t.Errorf(
 			"after second reconcile endpoint = %s:%d, want %s:%d",
@@ -556,16 +584,20 @@ func TestReconcileControlPlaneEndpointLoopbackWithDynamicIPs(t *testing.T) {
 			lc := newLinkedCluster(t, c, ns, "capi-cluster")
 			newControlPlane(t, c, lc, true)
 			newControlPlaneMachine(t, c, lc, reservedIP)
+
 			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 				t.Fatalf("Reconcile error: %v", err)
 			}
+
 			hc := &infrastructurev1alpha1.HypervisorCluster{}
 			if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 				t.Fatalf("Get HypervisorCluster: %v", err)
 			}
+
 			if hc.Status.ControlPlaneEndpoint.Host != "127.0.0.1" {
 				t.Errorf("reserved %s: endpoint host = %q, want 127.0.0.1", reservedIP, hc.Status.ControlPlaneEndpoint.Host)
 			}
+
 			if hc.Status.ControlPlaneEndpoint.Port != 6443 {
 				t.Errorf("reserved %s: endpoint port = %d, want 6443", reservedIP, hc.Status.ControlPlaneEndpoint.Port)
 			}
@@ -583,13 +615,16 @@ func TestReconcileControlPlaneEndpointLoopbackGate(t *testing.T) {
 		lc := newLinkedCluster(t, c, "hc-endpoint-gate-notinit", "capi-cluster")
 		newControlPlane(t, c, lc, false)
 		newControlPlaneMachine(t, c, lc, "192.168.124.77")
+
 		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 			t.Fatalf("Reconcile error: %v", err)
 		}
+
 		hc := &infrastructurev1alpha1.HypervisorCluster{}
 		if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 			t.Fatalf("Get HypervisorCluster: %v", err)
 		}
+
 		if hc.Status.ControlPlaneEndpoint.Host != "" {
 			t.Errorf("uninitialized: endpoint host = %q, want empty", hc.Status.ControlPlaneEndpoint.Host)
 		}
@@ -598,13 +633,16 @@ func TestReconcileControlPlaneEndpointLoopbackGate(t *testing.T) {
 		r := newTestReconciler(t, c)
 		lc := newLinkedCluster(t, c, "hc-endpoint-gate-nomachine", "capi-cluster")
 		newControlPlane(t, c, lc, true)
+
 		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 			t.Fatalf("Reconcile error: %v", err)
 		}
+
 		hc := &infrastructurev1alpha1.HypervisorCluster{}
 		if err := c.Get(t.Context(), lc.key(), hc); err != nil {
 			t.Fatalf("Get HypervisorCluster: %v", err)
 		}
+
 		if hc.Status.ControlPlaneEndpoint.Host != "" {
 			t.Errorf("no machine: endpoint host = %q, want empty", hc.Status.ControlPlaneEndpoint.Host)
 		}
@@ -629,16 +667,21 @@ func TestReconcileFindsClusterByInfrastructureRefWithoutOwnerRefOrClusterName(t 
 	c := mustReconcileClient(t)
 	r := newTestReconciler(t, c)
 
-	const namespace = "hc-reverse-lookup"
-	const name = "k8labs-vxtxl"
+	const (
+		namespace = "hc-reverse-lookup"
+		name      = "k8labs-vxtxl"
+	)
+
 	ctx := t.Context()
 
 	if err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
 		t.Fatalf("create namespace %q: %v", namespace, err)
 	}
+
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
 		_ = c.Delete(cleanupCtx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})
 	})
 
@@ -683,15 +726,18 @@ func TestReconcileFindsClusterByInfrastructureRefWithoutOwnerRefOrClusterName(t 
 	if err := c.Get(ctx, key, got); err != nil {
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
+
 	if !got.Status.Ready {
 		t.Error(
 			"status.ready = false: Reconcile did not find the linked Cluster through the infrastructureRef back-reference, want provisioned",
 		)
 	}
+
 	if cond := findCondition(got, clusterv1.InfrastructureReadyCondition); cond == nil ||
 		cond.Status != metav1.ConditionTrue {
 		t.Errorf("InfrastructureReady condition = %+v, want present and True", cond)
 	}
+
 	if provisioned, present := statusInitializationProvisioned(got.Status); !present || !provisioned {
 		t.Errorf(
 			"status.initialization.provisioned = (%t, present=%t), want true (CAPI v1beta2 cluster controller gate)",
@@ -705,10 +751,12 @@ func TestReconcileFindsClusterByInfrastructureRefWithoutOwnerRefOrClusterName(t 
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("second Reconcile error: %v", err)
 	}
+
 	got2 := &infrastructurev1alpha1.HypervisorCluster{}
 	if err := c.Get(ctx, key, got2); err != nil {
 		t.Fatalf("Get HypervisorCluster after second reconcile: %v", err)
 	}
+
 	if !got2.Status.Ready {
 		t.Error("status.ready flipped to false on the second reconcile")
 	}
