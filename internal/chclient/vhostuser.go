@@ -38,6 +38,7 @@ func VhostUserSocketPath(portName string) string {
 	if portName == "" {
 		return k8netdSocketBase + "/.sock"
 	}
+
 	safe := filepath.Base(portName)
 	// filepath.Base returns "." for empty or "." inputs and "/" for "/".
 	// Normalize those to a safe placeholder so the path still contains base.
@@ -49,6 +50,7 @@ func VhostUserSocketPath(portName string) string {
 			safe = "port"
 		}
 	}
+
 	return k8netdSocketBase + "/" + safe + ".sock"
 }
 
@@ -66,6 +68,7 @@ func VhostUserNetConfig(socketPath, mac string) (string, error) {
 	if strings.TrimSpace(socketPath) == "" {
 		return "", fmt.Errorf("chclient: socket path must not be empty")
 	}
+
 	if strings.TrimSpace(mac) == "" {
 		return "", fmt.Errorf("chclient: mac must not be empty")
 	}
@@ -76,6 +79,7 @@ func VhostUserNetConfig(socketPath, mac string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("chclient: invalid mac %q: %w", mac, err)
 	}
+
 	if len(parsed) != 6 {
 		return "", fmt.Errorf("chclient: invalid mac %q: want 6 octets, got %d", mac, len(parsed))
 	}
@@ -101,5 +105,6 @@ func VhostUserNetConfig(socketPath, mac string) (string, error) {
 	// ("Number of queues to virtio_net less than 2"); this matches the >=2
 	// floor documented on ch.NetConfig and enforced by ch.ParseNetConfig.
 	cfg := fmt.Sprintf("vhost_user=true,socket=%s,mac=%s,num_queues=2", socketPath, macNorm)
+
 	return cfg, nil
 }

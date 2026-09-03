@@ -81,6 +81,7 @@ const (
 // assertContains fails if s does not contain substr.
 func assertContains(t *testing.T, s, substr, label string) {
 	t.Helper()
+
 	if !strings.Contains(s, substr) {
 		t.Errorf("%s: got %q, want to contain %q", label, s, substr)
 	}
@@ -89,6 +90,7 @@ func assertContains(t *testing.T, s, substr, label string) {
 // assertNotContains fails if s contains substr (case-insensitive for tap).
 func assertNotContains(t *testing.T, s, substr, label string) {
 	t.Helper()
+
 	if strings.Contains(strings.ToLower(s), strings.ToLower(substr)) {
 		t.Errorf("%s: got %q, want NOT to contain %q (case-insensitive)", label, s, substr)
 	}
@@ -114,6 +116,7 @@ func TestVhostUserSocketPath_Derivation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			got := chclient.VhostUserSocketPath(tt.portName)
 			if got != tt.want {
 				t.Errorf("VhostUserSocketPath(%q) = %q, want %q", tt.portName, got, tt.want)
@@ -122,6 +125,7 @@ func TestVhostUserSocketPath_Derivation(t *testing.T) {
 			if !strings.HasPrefix(got, expectedSocketBase+"/") {
 				t.Errorf("socket path %q missing base %q", got, expectedSocketBase)
 			}
+
 			if !strings.HasSuffix(got, expectedSocketSuf) {
 				t.Errorf("socket path %q missing suffix %q", got, expectedSocketSuf)
 			}
@@ -135,10 +139,12 @@ func TestVhostUserSocketPath_UsesPortNameNotHardcoded(t *testing.T) {
 	// grill: ensure port name drives socket, not a fixed string — two distinct
 	// port names must yield distinct sockets.
 	a := chclient.VhostUserSocketPath("machine-a")
+
 	b := chclient.VhostUserSocketPath("machine-b")
 	if a == b {
 		t.Errorf("socket paths for distinct ports collided: %q", a)
 	}
+
 	if !strings.Contains(a, "machine-a") || !strings.Contains(b, "machine-b") {
 		t.Errorf("socket paths do not embed port names: a=%q b=%q", a, b)
 	}
@@ -151,15 +157,18 @@ func TestVhostUserSocketPath_EdgeCases(t *testing.T) {
 	// path. We pin non-panic and that result at least contains base.
 	t.Run("empty port name does not panic", func(t *testing.T) {
 		t.Parallel()
+
 		defer func() {
 			if r := recover(); r != nil {
 				t.Errorf("VhostUserSocketPath(\"\") panicked: %v", r)
 			}
 		}()
+
 		got := chclient.VhostUserSocketPath("")
 		if got == "" {
 			t.Errorf("VhostUserSocketPath(\"\") = empty, want base path even for empty name")
 		}
+
 		if !strings.HasPrefix(got, expectedSocketBase) {
 			t.Errorf("empty port socket %q missing base %q", got, expectedSocketBase)
 		}
@@ -169,7 +178,9 @@ func TestVhostUserSocketPath_EdgeCases(t *testing.T) {
 	// unix socket max (108) without handling; at minimum must embed full name.
 	t.Run("long machine name", func(t *testing.T) {
 		t.Parallel()
+
 		long := strings.Repeat("a", 63)
+
 		got := chclient.VhostUserSocketPath(long)
 		if !strings.Contains(got, long) {
 			t.Errorf("long name socket %q does not contain full machine name", got)
@@ -183,6 +194,7 @@ func TestVhostUserSocketPath_EdgeCases(t *testing.T) {
 	// Special characters — hyphens and dots are valid in machine names
 	t.Run("special chars", func(t *testing.T) {
 		t.Parallel()
+
 		for _, name := range []string{"my.machine-1", "test_machine", "a-b.c_d"} {
 			got := chclient.VhostUserSocketPath(name)
 			if !strings.Contains(got, name) {
@@ -194,11 +206,13 @@ func TestVhostUserSocketPath_EdgeCases(t *testing.T) {
 	// Path traversal should not escape base dir — name containing "/" or ".."
 	t.Run("path traversal safe", func(t *testing.T) {
 		t.Parallel()
+
 		got := chclient.VhostUserSocketPath("../etc/passwd")
 		// Must remain under the base dir, not resolve to /etc/passwd
 		if !strings.HasPrefix(got, expectedSocketBase+"/") {
 			t.Errorf("traversal socket %q escaped base dir", got)
 		}
+
 		if strings.Contains(got, "/etc/passwd") && !strings.Contains(got, expectedSocketBase) {
 			t.Errorf("traversal socket %q not sanitized", got)
 		}
@@ -219,6 +233,7 @@ func TestVhostUserNetConfig_RendersVhostUserTrue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VhostUserNetConfig error: %v", err)
 	}
+
 	assertContains(t, cfg, "vhost_user=true", "VC-05: must render vhost_user=true")
 	// case-sensitive exact flag
 	if !strings.Contains(cfg, "vhost_user=true") {
@@ -244,8 +259,10 @@ func TestVhostUserNetConfig_RendersSocket(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			socket := chclient.VhostUserSocketPath(tt.machine)
 			macAddr := mac.Derive("test-cluster", tt.machine)
+
 			cfg, err := chclient.VhostUserNetConfig(socket, macAddr)
 			if err != nil {
 				t.Fatalf("VhostUserNetConfig error: %v", err)
@@ -283,16 +300,19 @@ func TestVhostUserNetConfig_RendersMAC(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			socket := chclient.VhostUserSocketPath(tt.machine)
 			if tt.machine == "" {
 				socket = "/run/user/1000/k8snet/explicit.sock"
 			}
+
 			var macAddr string
 			if tt.explicitMAC != "" {
 				macAddr = tt.explicitMAC
 			} else {
 				macAddr = mac.Derive(tt.cluster, tt.machine)
 			}
+
 			cfg, err := chclient.VhostUserNetConfig(socket, macAddr)
 			if err != nil {
 				t.Fatalf("VhostUserNetConfig error: %v", err)
@@ -410,10 +430,12 @@ func TestVhostUserNetConfig_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first call error: %v", err)
 	}
+
 	second, err := chclient.VhostUserNetConfig(socket, macAddr)
 	if err != nil {
 		t.Fatalf("second call error: %v", err)
 	}
+
 	if first != second {
 		t.Errorf("non-idempotent: first %q, second %q", first, second)
 	}
@@ -426,24 +448,31 @@ func TestVhostUserNetConfig_ConcurrentSafe(t *testing.T) {
 	macAddr := mac.Derive("c1", "machine-a")
 
 	const workers = 20
+
 	var wg sync.WaitGroup
+
 	results := make([]string, workers)
+
 	errs := make([]error, workers)
 	for i := range workers {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+
 			cfg, err := chclient.VhostUserNetConfig(socket, macAddr)
 			results[idx] = cfg
 			errs[idx] = err
 		}(i)
 	}
+
 	wg.Wait()
+
 	for i, err := range errs {
 		if err != nil {
 			t.Errorf("worker %d error: %v", i, err)
 		}
 	}
+
 	for i := 1; i < workers; i++ {
 		if results[i] != results[0] {
 			t.Errorf("concurrent mismatch: worker 0 %q, worker %d %q", results[0], i, results[i])
@@ -461,7 +490,9 @@ func TestVhostUserNetConfig_EmptyInputs(t *testing.T) {
 	// Empty socket must error (port socket must exist before VM start)
 	t.Run("empty socket", func(t *testing.T) {
 		t.Parallel()
+
 		macAddr := mac.Derive("c1", "m1")
+
 		_, err := chclient.VhostUserNetConfig("", macAddr)
 		if err == nil {
 			t.Errorf("VhostUserNetConfig with empty socket wanted error, got nil")
@@ -471,7 +502,9 @@ func TestVhostUserNetConfig_EmptyInputs(t *testing.T) {
 	// Empty MAC must error
 	t.Run("empty mac", func(t *testing.T) {
 		t.Parallel()
+
 		socket := chclient.VhostUserSocketPath("m1")
+
 		_, err := chclient.VhostUserNetConfig(socket, "")
 		if err == nil {
 			t.Errorf("VhostUserNetConfig with empty mac wanted error, got nil")
@@ -481,11 +514,13 @@ func TestVhostUserNetConfig_EmptyInputs(t *testing.T) {
 	// Both empty must error, not panic
 	t.Run("both empty no panic", func(t *testing.T) {
 		t.Parallel()
+
 		defer func() {
 			if r := recover(); r != nil {
 				t.Errorf("VhostUserNetConfig panicked on empty inputs: %v", r)
 			}
 		}()
+
 		_, err := chclient.VhostUserNetConfig("", "")
 		if err == nil {
 			t.Errorf("both empty wanted error, got nil")
@@ -509,6 +544,7 @@ func TestVhostUserNetConfig_InvalidMAC(t *testing.T) {
 	for _, bad := range invalidMACs {
 		t.Run(bad, func(t *testing.T) {
 			t.Parallel()
+
 			_, err := chclient.VhostUserNetConfig(socket, bad)
 			if err == nil {
 				t.Errorf("VhostUserNetConfig with mac %q wanted error, got nil", bad)
@@ -560,6 +596,7 @@ func TestVhostUserNetConfig_SocketPathMustBeUnderK8snet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VhostUserNetConfig error: %v", err)
 	}
+
 	if !strings.Contains(cfg, expectedSocketBase) {
 		t.Errorf("cfg %q missing k8netd socket base %q", cfg, expectedSocketBase)
 	}

@@ -152,9 +152,11 @@ func (c *VMClient) EnsureRunning(ctx context.Context) error {
 	if _, err := c.manager.Start(ctx); err != nil {
 		return err
 	}
+
 	if err := c.manager.WaitReady(ctx, socketReadyTimeout); err != nil {
 		return err
 	}
+
 	return c.ensureBooted(ctx)
 }
 
@@ -171,8 +173,10 @@ func (c *VMClient) ensureBooted(ctx context.Context) error {
 		if state == ch.VMState("Running") {
 			return nil
 		}
+
 		return c.client.Boot(ctx)
 	}
+
 	if !isVMAbsent(err) {
 		return err
 	}
@@ -180,6 +184,7 @@ func (c *VMClient) ensureBooted(ctx context.Context) error {
 	if err := c.pushConfig(ctx); err != nil {
 		return err
 	}
+
 	return c.client.Boot(ctx)
 }
 
@@ -207,25 +212,31 @@ func (c *VMClient) pushConfig(ctx context.Context) error {
 	if c.cpu > 0 {
 		cfg.Cpus = &ch.CpusConfig{BootVCPUs: int(c.cpu), MaxVCPUs: int(c.cpu)}
 	}
+
 	for _, path := range c.diskPaths {
 		cfg.Disks = append(cfg.Disks, ch.DiskConfig{Path: path, Readonly: isCIDATADisk(path)})
 	}
+
 	if c.netConfig != "" {
 		net, err := ch.ParseNetConfig(c.netConfig)
 		if err != nil {
 			return fmt.Errorf("push vm config: %w", err)
 		}
+
 		cfg.Net = []ch.NetConfig{net}
+
 		memorySize := ch.DefaultMemorySize
 		if c.ramMiB > 0 {
 			memorySize = int64(c.ramMiB) * 1024 * 1024
 		}
+
 		cfg.Memory = &ch.MemoryConfig{Size: memorySize, Shared: true}
 	}
 
 	if err := c.client.Create(ctx, cfg); err != nil {
 		return fmt.Errorf("push vm config: %w", err)
 	}
+
 	return nil
 }
 
@@ -254,9 +265,11 @@ func isVMAbsent(err error) bool {
 	if !errors.As(err, &statusErr) {
 		return false
 	}
+
 	if statusErr.StatusCode == http.StatusNotFound {
 		return true
 	}
+
 	return statusErr.StatusCode == http.StatusInternalServerError &&
 		strings.Contains(strings.ToLower(statusErr.Body), vmAbsentBodyMarker)
 }
@@ -267,6 +280,7 @@ func (c *VMClient) Shutdown(ctx context.Context) error {
 	if _, err := os.Stat(c.socket); errors.Is(err, os.ErrNotExist) {
 		return ErrNotFound
 	}
+
 	return c.client.Shutdown(ctx)
 }
 
@@ -283,5 +297,6 @@ func (c *VMClient) Info(ctx context.Context) (ch.VMState, error) {
 	if _, err := os.Stat(c.socket); errors.Is(err, os.ErrNotExist) {
 		return "", ErrNotFound
 	}
+
 	return c.client.Info(ctx)
 }

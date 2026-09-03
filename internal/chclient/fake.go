@@ -98,5 +98,6 @@ func (f *FakeClient) Info(context.Context) (ch.VMState, error) {
 	if f.InfoErr != nil {
 		return "", f.InfoErr
 	}
+
 	return f.State, nil
 }

@@ -85,6 +85,7 @@ func (r *apiRecorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		body := make([]byte, req.ContentLength)
 		_, _ = req.Body.Read(body)
 		r.createBod = body
+
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusNoContent)
@@ -94,12 +95,14 @@ func (r *apiRecorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 func (r *apiRecorder) calls() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	return append([]string(nil), r.sequence...)
 }
 
 func (r *apiRecorder) createBody() []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	return append([]byte(nil), r.createBod...)
 }
 
@@ -114,11 +117,14 @@ func newTestVMClient(t *testing.T, handler http.Handler) *VMClient {
 	if err := srv.Listener.Close(); err != nil {
 		t.Fatalf("close default listener: %v", err)
 	}
+
 	socketPath := filepath.Join(t.TempDir(), "api.sock")
+
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen on unix socket %s: %v", socketPath, err)
 	}
+
 	srv.Listener = listener
 	srv.Start()
 	t.Cleanup(srv.Close)
@@ -144,6 +150,7 @@ func scriptedVMClient(t *testing.T, rec *apiRecorder) *VMClient {
 	})
 	c.SetCPU(2)
 	c.SetRAM(2048)
+
 	return c
 }
 
@@ -169,6 +176,7 @@ func TestEnsureBootedCreatesThenBoots(t *testing.T) {
 	if err := json.Unmarshal(rec.createBody(), &cfg); err != nil {
 		t.Fatalf("create body is not valid JSON: %v (body %q)", err, rec.createBody())
 	}
+
 	assertCreateField(t, cfg, "payload.firmware", "/build/CLOUDHV.fd")
 	assertCreateField(t, cfg, "cpus.boot_vcpus", float64(2))
 	assertCreateField(t, cfg, "cpus.max_vcpus", float64(2))
@@ -199,6 +207,7 @@ func TestEnsureBootedAbsentCPUOmitsCpusField(t *testing.T) {
 	if err := json.Unmarshal(rec.createBody(), &cfg); err != nil {
 		t.Fatalf("create body is not valid JSON: %v (body %q)", err, rec.createBody())
 	}
+
 	assertCreateFieldAbsent(t, cfg, "cpus")
 	assertCreateField(t, cfg, "memory.size", float64(2048*1024*1024))
 }
@@ -220,6 +229,7 @@ func TestEnsureBootedAbsentRAMFallsBackToDefault(t *testing.T) {
 	if err := json.Unmarshal(rec.createBody(), &cfg); err != nil {
 		t.Fatalf("create body is not valid JSON: %v (body %q)", err, rec.createBody())
 	}
+
 	assertCreateField(t, cfg, "cpus.boot_vcpus", float64(2))
 	assertCreateField(t, cfg, "cpus.max_vcpus", float64(2))
 	assertCreateField(t, cfg, "memory.size", float64(ch.DefaultMemorySize))
@@ -244,6 +254,7 @@ func TestEnsureBootedNegativeSpecValuesFallBack(t *testing.T) {
 	if err := json.Unmarshal(rec.createBody(), &cfg); err != nil {
 		t.Fatalf("create body is not valid JSON: %v (body %q)", err, rec.createBody())
 	}
+
 	assertCreateFieldAbsent(t, cfg, "cpus")
 	assertCreateField(t, cfg, "memory.size", float64(ch.DefaultMemorySize))
 }
@@ -271,6 +282,7 @@ func TestEnsureBootedCIDATADiskReadonly(t *testing.T) {
 	if err := json.Unmarshal(rec.createBody(), &cfg); err != nil {
 		t.Fatalf("create body is not valid JSON: %v (body %q)", err, rec.createBody())
 	}
+
 	assertCreateField(t, cfg, "disks.1.path", "/build/vm-disks/node-1-cidata.img")
 	assertCreateField(t, cfg, "disks.1.readonly", true)
 
@@ -281,12 +293,15 @@ func TestEnsureBootedCIDATADiskReadonly(t *testing.T) {
 	if !ok || len(disks) != 3 {
 		t.Fatalf("create body disks = %#v, want 3 entries", cfg["disks"])
 	}
+
 	for i, name := range []string{"root", "confext"} {
 		idx := i * 2 // skip the CIDATA disk at index 1
+
 		entry, ok := disks[idx].(map[string]any)
 		if !ok {
 			t.Fatalf("disks.%d = %#v, want an object", idx, disks[idx])
 		}
+
 		if _, ok := entry["readonly"]; ok {
 			t.Errorf("disks.%d (%s) carries readonly %v, want writable", idx, name, entry["readonly"])
 		}
@@ -330,15 +345,19 @@ func TestEnsureBootedAbsentVMShapes(t *testing.T) {
 				if err == nil {
 					t.Fatal("ensureBooted() = nil, want error")
 				}
+
 				want := []string{"/api/v1/vm.info"}
 				if got := rec.calls(); !equalStrings(got, want) {
 					t.Fatalf("endpoint sequence = %v, want %v (no create/boot expected)", got, want)
 				}
+
 				return
 			}
+
 			if err != nil {
 				t.Fatalf("ensureBooted() error = %v, want nil", err)
 			}
+
 			want := []string{"/api/v1/vm.info", "/api/v1/vm.create", "/api/v1/vm.boot"}
 			if got := rec.calls(); !equalStrings(got, want) {
 				t.Fatalf("endpoint sequence = %v, want %v", got, want)
@@ -411,6 +430,7 @@ func TestEnsureBootedCreatedStateSkipsCreate(t *testing.T) {
 	if got := rec.calls(); !equalStrings(got, want) {
 		t.Fatalf("endpoint sequence = %v, want %v", got, want)
 	}
+
 	if len(rec.createBody()) != 0 {
 		t.Errorf("a create body was pushed (%q), want none", rec.createBody())
 	}
@@ -467,6 +487,7 @@ func TestEnsureBootedTransportErrorSurfaces(t *testing.T) {
 	if err == nil {
 		t.Fatal("ensureBooted() = nil against a dead socket, want error")
 	}
+
 	if _, ok := errors.AsType[*ch.StatusError](err); ok {
 		t.Errorf("error %v is a StatusError, want a transport error", err)
 	}
@@ -484,9 +505,11 @@ func TestEnsureBootedRequiresFirmware(t *testing.T) {
 	if err == nil {
 		t.Fatal("ensureBooted() without firmware = nil, want error")
 	}
+
 	if !strings.Contains(err.Error(), "SetFirmware") {
 		t.Errorf("error %v does not name SetFirmware", err)
 	}
+
 	want := []string{"/api/v1/vm.info"}
 	if got := rec.calls(); !equalStrings(got, want) {
 		t.Fatalf("endpoint sequence = %v, want %v (no create/boot expected)", got, want)
@@ -498,11 +521,13 @@ func equalStrings(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
 	}
+
 	for i := range got {
 		if got[i] != want[i] {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -520,23 +545,29 @@ func assertCreateField(t *testing.T, doc map[string]any, path string, want any) 
 			if !ok {
 				t.Fatalf("JSON path %q: key %q missing in %v", path, seg, node)
 			}
+
 			cur = next
 		case []any:
 			idx := 0
+
 			for _, c := range seg {
 				if c < '0' || c > '9' {
 					t.Fatalf("JSON path %q: segment %q is not an index", path, seg)
 				}
+
 				idx = idx*10 + int(c-'0')
 			}
+
 			if idx >= len(node) {
 				t.Fatalf("JSON path %q: index %d out of range (%d entries)", path, idx, len(node))
 			}
+
 			cur = node[idx]
 		default:
 			t.Fatalf("JSON path %q: segment %q traverses non-container %T", path, seg, cur)
 		}
 	}
+
 	if cur != want {
 		t.Errorf("JSON path %q = %v, want %v", path, cur, want)
 	}
@@ -556,10 +587,12 @@ func assertCreateFieldAbsent(t *testing.T, doc map[string]any, path string) {
 			if !ok {
 				return
 			}
+
 			cur = next
 		default:
 			t.Fatalf("JSON path %q: segment %q traverses non-container %T", path, seg, cur)
 		}
 	}
+
 	t.Errorf("JSON path %q present as %v, want absent", path, cur)
 }

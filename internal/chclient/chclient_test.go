@@ -72,6 +72,7 @@ func TestFakeClientImplementsClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Info() error = %v, want nil", err)
 	}
+
 	if state != ch.VMState("Running") {
 		t.Fatalf("Info() state = %q, want %q", state, ch.VMState("Running"))
 	}
@@ -138,6 +139,7 @@ func TestFakeInfo(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Info() error = %v, want nil", err)
 			}
+
 			if state != tt.want {
 				t.Errorf("Info() state = %q, want %q", state, tt.want)
 			}
@@ -159,6 +161,7 @@ func TestFakeInfoNotFound(t *testing.T) {
 	if !errors.Is(err, chclient.ErrNotFound) {
 		t.Fatalf("Info() error = %v, want errors.Is(err, ErrNotFound)", err)
 	}
+
 	if state != "" {
 		t.Errorf("Info() state = %q, want empty on error", state)
 	}
@@ -243,15 +246,19 @@ func TestFakeCallLogSequence(t *testing.T) {
 	if err := fake.EnsureRunning(t.Context()); err != nil {
 		t.Fatalf("EnsureRunning() error = %v, want nil", err)
 	}
+
 	if _, err := fake.Info(t.Context()); err != nil {
 		t.Fatalf("Info() error = %v, want nil", err)
 	}
+
 	if _, err := fake.Info(t.Context()); err != nil {
 		t.Fatalf("Info() error = %v, want nil", err)
 	}
+
 	if err := fake.Shutdown(t.Context()); err != nil {
 		t.Fatalf("Shutdown() error = %v, want nil", err)
 	}
+
 	if err := fake.Stop(t.Context()); err != nil {
 		t.Fatalf("Stop() error = %v, want nil", err)
 	}
