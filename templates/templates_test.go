@@ -88,6 +88,7 @@ func TestClusterClassExistsAndParses(t *testing.T) {
 			clusterv1.GroupVersion.String(),
 		)
 	}
+
 	if cc.Name == "" {
 		t.Fatal("metadata.name must be set: the example Cluster references the class by this name")
 	}
@@ -132,11 +133,13 @@ func TestClusterClassWorkerClass(t *testing.T) {
 	if len(classes) == 0 {
 		t.Fatal("spec.workers.machineDeployments must define at least one worker MachineDeployment class")
 	}
+
 	for i := range classes {
 		path := fmt.Sprintf("spec.workers.machineDeployments[%d]", i)
 		if classes[i].Class == "" {
 			t.Errorf("%s: class name must be set", path)
 		}
+
 		boot := requireTemplateRef(t, classes[i].Bootstrap.TemplateRef, path+".template.bootstrap.templateRef")
 		assertTemplateRefTarget(t, boot, "HypervisorConfigTemplate", bootstrapv1alpha1.GroupVersion)
 		infra := requireTemplateRef(t, classes[i].Infrastructure.TemplateRef, path+".template.infrastructure.templateRef")
@@ -153,29 +156,36 @@ func TestExampleClusterTopology(t *testing.T) {
 	if topo.ClassRef.Name == "" {
 		t.Fatal("spec.topology.classRef.name must name the ClusterClass")
 	}
+
 	if topo.Version == "" {
 		t.Fatal("spec.topology.version must be set")
 	}
+
 	if topo.ControlPlane.Replicas == nil {
 		t.Fatal("spec.topology.controlPlane.replicas must be set")
 	}
+
 	if *topo.ControlPlane.Replicas != 1 {
 		t.Fatalf(
 			"spec.topology.controlPlane.replicas must be 1 (single control-plane lab), got %d",
 			*topo.ControlPlane.Replicas,
 		)
 	}
+
 	if len(topo.Workers.MachineDeployments) == 0 {
 		t.Fatal("spec.topology.workers.machineDeployments must list at least one worker MachineDeployment")
 	}
+
 	for i, md := range topo.Workers.MachineDeployments {
 		path := fmt.Sprintf("spec.topology.workers.machineDeployments[%d]", i)
 		if md.Name == "" {
 			t.Errorf("%s: name must be set", path)
 		}
+
 		if md.Class == "" {
 			t.Errorf("%s: class must reference a MachineDeployment class from the ClusterClass", path)
 		}
+
 		if md.Replicas == nil || *md.Replicas < 1 {
 			t.Errorf("%s: replicas must be set to at least 1", path)
 		}
@@ -187,10 +197,12 @@ func TestExampleClusterTopology(t *testing.T) {
 	if topo.ClassRef.Name != cc.Name {
 		t.Errorf("spec.topology.classRef.name %q does not match the ClusterClass name %q", topo.ClassRef.Name, cc.Name)
 	}
+
 	workerClasses := make(map[string]bool, len(cc.Spec.Workers.MachineDeployments))
 	for _, class := range cc.Spec.Workers.MachineDeployments {
 		workerClasses[class.Class] = true
 	}
+
 	for _, md := range topo.Workers.MachineDeployments {
 		if !workerClasses[md.Class] {
 			t.Errorf("machineDeployment class %q is not defined in the ClusterClass", md.Class)
@@ -205,7 +217,9 @@ func TestTemplateRefsResolveToCommittedKinds(t *testing.T) {
 		path string
 		ref  clusterv1.ClusterClassTemplateReference
 	}
+
 	var refs []namedRef
+
 	add := func(path string, ref clusterv1.ClusterClassTemplateReference) {
 		if ref.IsDefined() {
 			refs = append(refs, namedRef{path: path, ref: ref})
@@ -214,6 +228,7 @@ func TestTemplateRefsResolveToCommittedKinds(t *testing.T) {
 	add("spec.infrastructure.templateRef", cc.Spec.Infrastructure.TemplateRef)
 	add("spec.controlPlane.templateRef", cc.Spec.ControlPlane.TemplateRef)
 	add("spec.controlPlane.machineInfrastructure.templateRef", cc.Spec.ControlPlane.MachineInfrastructure.TemplateRef)
+
 	for i := range cc.Spec.Workers.MachineDeployments {
 		path := fmt.Sprintf("spec.workers.machineDeployments[%d]", i)
 		add(path+".template.bootstrap.templateRef", cc.Spec.Workers.MachineDeployments[i].Bootstrap.TemplateRef)
@@ -232,8 +247,10 @@ func TestTemplateRefsResolveToCommittedKinds(t *testing.T) {
 				nr.path,
 				nr.ref.Kind,
 			)
+
 			continue
 		}
+
 		if nr.ref.APIVersion != gv.String() {
 			t.Errorf(
 				"%s: apiVersion %q does not match the committed group/version %q for kind %s",
@@ -243,6 +260,7 @@ func TestTemplateRefsResolveToCommittedKinds(t *testing.T) {
 				nr.ref.Kind,
 			)
 		}
+
 		if nr.ref.Name == "" {
 			t.Errorf("%s: name must be set (no dangling references)", nr.path)
 		}
@@ -251,15 +269,18 @@ func TestTemplateRefsResolveToCommittedKinds(t *testing.T) {
 
 func readTemplate(t *testing.T, path string) []byte {
 	t.Helper()
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("template %s must exist in templates/: %v", path, err)
 	}
+
 	return data
 }
 
 func parseClusterClass(t *testing.T) clusterv1.ClusterClass {
 	t.Helper()
+
 	var cc clusterv1.ClusterClass
 	if !findDocument(t, clusterClassFile, "ClusterClass", clusterv1.GroupVersion.String(), &cc) {
 		t.Fatalf(
@@ -268,30 +289,38 @@ func parseClusterClass(t *testing.T) clusterv1.ClusterClass {
 			clusterv1.GroupVersion.String(),
 		)
 	}
+
 	return cc
 }
 
 func parseExampleCluster(t *testing.T) clusterv1.Cluster {
 	t.Helper()
+
 	var cluster clusterv1.Cluster
+
 	found := false
+
 	for _, doc := range splitYAMLDocuments(t, exampleClusterFile) {
 		if err := yaml.Unmarshal(doc, &cluster); err != nil {
 			t.Fatalf("%s contains an invalid YAML document: %v", exampleClusterFile, err)
 		}
+
 		if cluster.Kind == "Cluster" && cluster.APIVersion == clusterv1.GroupVersion.String() {
 			found = true
 			break
 		}
 	}
+
 	if !found {
 		t.Fatalf("%s must contain a Cluster document with apiVersion %s", exampleClusterFile, clusterv1.GroupVersion.String())
 	}
+
 	return cluster
 }
 
 func rawClusterClass(t *testing.T) map[string]any {
 	t.Helper()
+
 	var m map[string]any
 	if !findDocument(t, clusterClassFile, "ClusterClass", clusterv1.GroupVersion.String(), &m) {
 		t.Fatalf(
@@ -300,23 +329,28 @@ func rawClusterClass(t *testing.T) map[string]any {
 			clusterv1.GroupVersion.String(),
 		)
 	}
+
 	return m
 }
 
 func nestedMap(t *testing.T, m map[string]any, path ...string) map[string]any {
 	t.Helper()
+
 	cur := m
 	for _, key := range path {
 		next, ok := cur[key]
 		if !ok {
 			t.Fatalf("missing key %q in %v", key, path)
 		}
+
 		nm, ok := next.(map[string]any)
 		if !ok {
 			t.Fatalf("key %q in %v is not a mapping", key, path)
 		}
+
 		cur = nm
 	}
+
 	return cur
 }
 
@@ -326,23 +360,30 @@ func nestedMap(t *testing.T, m map[string]any, path ...string) map[string]any {
 func splitYAMLDocuments(t *testing.T, path string) [][]byte {
 	t.Helper()
 	dec := yamlv3.NewDecoder(bytes.NewReader(readTemplate(t, path)))
+
 	var docs [][]byte
+
 	for {
 		var doc any
+
 		err := dec.Decode(&doc)
 		if errors.Is(err, io.EOF) {
 			return docs
 		}
+
 		if err != nil {
 			t.Fatalf("%s contains an invalid YAML document: %v", path, err)
 		}
+
 		if doc == nil {
 			continue
 		}
+
 		raw, err := yamlv3.Marshal(doc)
 		if err != nil {
 			t.Fatalf("%s: re-encoding YAML document: %v", path, err)
 		}
+
 		docs = append(docs, raw)
 	}
 }
@@ -353,12 +394,15 @@ func requireTemplateRef(
 	path string,
 ) clusterv1.ClusterClassTemplateReference {
 	t.Helper()
+
 	if !ref.IsDefined() {
 		t.Fatalf("%s must be set", path)
 	}
+
 	if ref.Name == "" {
 		t.Fatalf("%s must name a template object", path)
 	}
+
 	return ref
 }
 
@@ -369,9 +413,11 @@ func assertTemplateRefTarget(
 	gv schema.GroupVersion,
 ) {
 	t.Helper()
+
 	if ref.Kind != kind {
 		t.Errorf("ref %s must have kind %s, got %q", ref.Name, kind, ref.Kind)
 	}
+
 	if ref.APIVersion != gv.String() {
 		t.Errorf("ref %s must have apiVersion %s, got %q", ref.Name, gv.String(), ref.APIVersion)
 	}
@@ -411,11 +457,13 @@ func TestClusterTemplateDocumentOrder(t *testing.T) {
 		APIVersion string `json:"apiVersion"`
 		Kind       string `json:"kind"`
 	}
+
 	for i, doc := range docs {
 		var meta docMeta
 		if err := yaml.Unmarshal(doc, &meta); err != nil {
 			t.Fatalf("document %d of %s must parse: %v", i, clusterTemplateFile, err)
 		}
+
 		if meta.APIVersion != want[i].apiVersion || meta.Kind != want[i].kind {
 			t.Errorf(
 				"document %d of %s must be %s %s, got %s %s",
@@ -467,11 +515,13 @@ func TestClusterTemplateClusterClassWorkerClass(t *testing.T) {
 	if len(classes) == 0 {
 		t.Fatal("spec.workers.machineDeployments must define at least one worker MachineDeployment class")
 	}
+
 	for i := range classes {
 		path := fmt.Sprintf("spec.workers.machineDeployments[%d]", i)
 		if classes[i].Class == "" {
 			t.Errorf("%s: class name must be set", path)
 		}
+
 		boot := requireTemplateRef(t, classes[i].Bootstrap.TemplateRef, path+".template.bootstrap.templateRef")
 		assertTemplateRefTarget(t, boot, "HypervisorConfigTemplate", bootstrapv1alpha1.GroupVersion)
 		infra := requireTemplateRef(t, classes[i].Infrastructure.TemplateRef, path+".template.infrastructure.templateRef")
@@ -486,7 +536,9 @@ func TestClusterTemplateRefsResolveToCommittedKinds(t *testing.T) {
 		path string
 		ref  clusterv1.ClusterClassTemplateReference
 	}
+
 	var refs []namedRef
+
 	add := func(path string, ref clusterv1.ClusterClassTemplateReference) {
 		if ref.IsDefined() {
 			refs = append(refs, namedRef{path: path, ref: ref})
@@ -495,6 +547,7 @@ func TestClusterTemplateRefsResolveToCommittedKinds(t *testing.T) {
 	add("spec.infrastructure.templateRef", cc.Spec.Infrastructure.TemplateRef)
 	add("spec.controlPlane.templateRef", cc.Spec.ControlPlane.TemplateRef)
 	add("spec.controlPlane.machineInfrastructure.templateRef", cc.Spec.ControlPlane.MachineInfrastructure.TemplateRef)
+
 	for i := range cc.Spec.Workers.MachineDeployments {
 		path := fmt.Sprintf("spec.workers.machineDeployments[%d]", i)
 		add(path+".template.bootstrap.templateRef", cc.Spec.Workers.MachineDeployments[i].Bootstrap.TemplateRef)
@@ -513,8 +566,10 @@ func TestClusterTemplateRefsResolveToCommittedKinds(t *testing.T) {
 				nr.path,
 				nr.ref.Kind,
 			)
+
 			continue
 		}
+
 		if nr.ref.APIVersion != gv.String() {
 			t.Errorf(
 				"%s: apiVersion %q does not match the committed group/version %q for kind %s",
@@ -524,6 +579,7 @@ func TestClusterTemplateRefsResolveToCommittedKinds(t *testing.T) {
 				nr.ref.Kind,
 			)
 		}
+
 		if nr.ref.Name == "" {
 			t.Errorf("%s: name must be set (no dangling references)", nr.path)
 		}
@@ -562,6 +618,7 @@ func classRefs(cc clusterv1.ClusterClass) []namedTemplateRef {
 			},
 		)
 	}
+
 	return refs
 }
 
@@ -586,7 +643,9 @@ func TestClusterTemplateRefsResolveToCommittedObjects(t *testing.T) {
 // intentionally supplied by the consuming repository rather than shipped here.
 func assertRefsResolveToObjects(t *testing.T, path string, cc clusterv1.ClusterClass) {
 	t.Helper()
+
 	objects := make(map[string]bool)
+
 	for _, doc := range splitYAMLDocuments(t, path) {
 		var meta struct {
 			Kind     string `json:"kind"`
@@ -597,9 +656,11 @@ func assertRefsResolveToObjects(t *testing.T, path string, cc clusterv1.ClusterC
 		if err := yaml.Unmarshal(doc, &meta); err != nil {
 			t.Fatalf("%s contains an invalid YAML document: %v", path, err)
 		}
+
 		if meta.Kind == "" {
 			continue
 		}
+
 		objects[meta.Kind+"/"+meta.Metadata.Name] = true
 	}
 
@@ -608,9 +669,11 @@ func assertRefsResolveToObjects(t *testing.T, path string, cc clusterv1.ClusterC
 			t.Errorf("%s: %s must be set", path, nr.path)
 			continue
 		}
+
 		if nr.ref.Kind == "HypervisorMachineTemplate" {
 			continue
 		}
+
 		if !objects[nr.ref.Kind+"/"+nr.ref.Name] {
 			t.Errorf(
 				"%s: %s points at %s/%q which is not committed in this file",
@@ -634,11 +697,14 @@ func TestControlPlaneTemplatesLeaveScalingToTopology(t *testing.T) {
 		if !findDocument(t, path, "HypervisorControlPlaneTemplate", "", &raw) {
 			t.Fatalf("%s must contain a HypervisorControlPlaneTemplate document", path)
 		}
+
 		template := nestedMap(t, raw, "spec", "template")
+
 		spec, ok := template["spec"].(map[string]any)
 		if !ok {
 			t.Fatalf("%s: spec.template.spec of the HypervisorControlPlaneTemplate must be a mapping", path)
 		}
+
 		for _, key := range []string{"replicas", "version"} {
 			if _, ok := spec[key]; ok {
 				t.Errorf(
@@ -655,14 +721,17 @@ func TestClusterTemplateClusterTopology(t *testing.T) {
 	cluster := parseClusterTemplateCluster(t)
 
 	topo := nestedMap(t, cluster, "spec", "topology")
+
 	classRef, ok := topo["classRef"].(map[string]any)
 	if !ok {
 		t.Fatalf("spec.topology.classRef must be a mapping, got %T", topo["classRef"])
 	}
+
 	class, ok := classRef["name"].(string)
 	if !ok {
 		t.Fatalf("spec.topology.classRef.name must be a string, got %T", classRef["name"])
 	}
+
 	if class != "hypervisor-cluster-template" {
 		t.Errorf("spec.topology.classRef.name must be %q, got %q", "hypervisor-cluster-template", class)
 	}
@@ -674,6 +743,7 @@ func TestClusterTemplateClusterTopology(t *testing.T) {
 	if class != cc.Name {
 		t.Errorf("spec.topology.classRef.name %q does not match the ClusterClass name %q", class, cc.Name)
 	}
+
 	example := parseExampleCluster(t)
 	// Topology is a value type in v1beta2; an absent spec.topology yields an
 	// empty classRef.name, which the comparison below rejects.
@@ -689,10 +759,12 @@ func TestClusterTemplateClusterTopology(t *testing.T) {
 	// The first worker MachineDeployment must exist; its replicas marker is
 	// pinned by TestClusterTemplateVariableMarkers.
 	workers := nestedMap(t, topo, "workers")
+
 	mds, ok := workers["machineDeployments"].([]any)
 	if !ok {
 		t.Fatal("spec.topology.workers.machineDeployments must be a list")
 	}
+
 	if len(mds) == 0 {
 		t.Fatal("spec.topology.workers.machineDeployments must list at least one MachineDeployment")
 	}
@@ -719,10 +791,12 @@ func TestClusterTemplateVariableMarkers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			raw := mapPathValue(t, cluster, tt.path)
+
 			got, ok := raw.(string)
 			if !ok {
 				t.Fatalf("%s must hold the literal marker %s as a string, got %T", tt.path, tt.want, raw)
 			}
+
 			if got != tt.want {
 				t.Errorf("%s must equal the literal marker %s, got %q", tt.path, tt.want, got)
 			}
@@ -737,22 +811,28 @@ func TestClusterTemplateDefaultsDocumentedByExample(t *testing.T) {
 	if example.Name != "k8labs" {
 		t.Errorf("example metadata.name must document the default %q, got %q", "k8labs", example.Name)
 	}
+
 	if example.Namespace != "default" {
 		t.Errorf("example metadata.namespace must document the default %q, got %q", "default", example.Namespace)
 	}
+
 	if example.Spec.Topology.ClassRef.Name == "" {
 		t.Fatal("the example Cluster must carry spec.topology to document the template defaults")
 	}
+
 	topo := example.Spec.Topology
 	if topo.Version != "v1.32.13" {
 		t.Errorf("example spec.topology.version must document the default %q, got %q", "v1.32.13", topo.Version)
 	}
+
 	if topo.ControlPlane.Replicas == nil || *topo.ControlPlane.Replicas != 1 {
 		t.Errorf("example spec.topology.controlPlane.replicas must document the default 1")
 	}
+
 	if len(topo.Workers.MachineDeployments) == 0 {
 		t.Fatal("the example Cluster must list a worker MachineDeployment to document the worker default")
 	}
+
 	md := topo.Workers.MachineDeployments[0]
 	if md.Replicas == nil || *md.Replicas != 3 {
 		t.Errorf("example spec.topology.workers.machineDeployments[0].replicas must document the default 3")
@@ -764,6 +844,7 @@ func TestClusterTemplateDefaultsDocumentedByExample(t *testing.T) {
 // also carry it. It reports false when no such document exists.
 func findDocument(t *testing.T, path, kind, apiVersion string, out any) bool {
 	t.Helper()
+
 	for _, doc := range splitYAMLDocuments(t, path) {
 		var meta struct {
 			APIVersion string `json:"apiVersion"`
@@ -772,19 +853,24 @@ func findDocument(t *testing.T, path, kind, apiVersion string, out any) bool {
 		if err := yaml.Unmarshal(doc, &meta); err != nil {
 			t.Fatalf("%s contains an invalid YAML document: %v", path, err)
 		}
+
 		if meta.Kind != kind || (apiVersion != "" && meta.APIVersion != apiVersion) {
 			continue
 		}
+
 		if err := yaml.Unmarshal(doc, out); err != nil {
 			t.Fatalf("%s document %s must parse: %v", path, kind, err)
 		}
+
 		return true
 	}
+
 	return false
 }
 
 func parseClusterTemplateClusterClass(t *testing.T) clusterv1.ClusterClass {
 	t.Helper()
+
 	var cc clusterv1.ClusterClass
 	if !findDocument(t, clusterTemplateFile, "ClusterClass", clusterv1.GroupVersion.String(), &cc) {
 		t.Fatalf(
@@ -793,6 +879,7 @@ func parseClusterTemplateClusterClass(t *testing.T) clusterv1.ClusterClass {
 			clusterv1.GroupVersion.String(),
 		)
 	}
+
 	return cc
 }
 
@@ -801,6 +888,7 @@ func parseClusterTemplateClusterClass(t *testing.T) clusterv1.ClusterClass {
 // document cannot unmarshal into clusterv1.Cluster while the markers exist.
 func parseClusterTemplateCluster(t *testing.T) map[string]any {
 	t.Helper()
+
 	var m map[string]any
 	if !findDocument(t, clusterTemplateFile, "Cluster", clusterv1.GroupVersion.String(), &m) {
 		t.Fatalf(
@@ -809,11 +897,13 @@ func parseClusterTemplateCluster(t *testing.T) map[string]any {
 			clusterv1.GroupVersion.String(),
 		)
 	}
+
 	return m
 }
 
 func rawClusterTemplateClusterClass(t *testing.T) map[string]any {
 	t.Helper()
+
 	var m map[string]any
 	if !findDocument(t, clusterTemplateFile, "ClusterClass", clusterv1.GroupVersion.String(), &m) {
 		t.Fatalf(
@@ -822,6 +912,7 @@ func rawClusterTemplateClusterClass(t *testing.T) map[string]any {
 			clusterv1.GroupVersion.String(),
 		)
 	}
+
 	return m
 }
 
@@ -830,41 +921,54 @@ func rawClusterTemplateClusterClass(t *testing.T) map[string]any {
 // YAML document and returns the value at that exact location.
 func mapPathValue(t *testing.T, root map[string]any, path string) any {
 	t.Helper()
+
 	var cur any = root
+
 	for seg := range strings.SplitSeq(path, ".") {
 		key := seg
 		index := -1
+
 		if i := strings.IndexByte(seg, '['); i >= 0 {
 			key = seg[:i]
 			if !strings.HasSuffix(seg, "]") {
 				t.Fatalf("path %q: segment %q must end in ]", path, seg)
 			}
+
 			n, err := strconv.Atoi(seg[i+1 : len(seg)-1])
 			if err != nil {
 				t.Fatalf("path %q: segment %q has a non-numeric list index", path, seg)
 			}
+
 			index = n
 		}
+
 		m, ok := cur.(map[string]any)
 		if !ok {
 			t.Fatalf("path %q: %v is not a mapping before segment %q", path, cur, seg)
 		}
+
 		if index >= 0 {
 			list, ok := m[key].([]any)
 			if !ok {
 				t.Fatalf("path %q: key %q is not a list", path, key)
 			}
+
 			if index >= len(list) {
 				t.Fatalf("path %q: index %d out of range for key %q (len %d)", path, index, key, len(list))
 			}
+
 			cur = list[index]
+
 			continue
 		}
+
 		v, ok := m[key]
 		if !ok {
 			t.Fatalf("path %q: missing key %q", path, key)
 		}
+
 		cur = v
 	}
+
 	return cur
 }
