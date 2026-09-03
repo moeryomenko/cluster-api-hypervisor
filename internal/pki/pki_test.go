@@ -107,9 +107,11 @@ func decodeCert(t *testing.T, pemBytes []byte) *x509.Certificate {
 	if block == nil {
 		t.Fatalf("no PEM block in certificate bytes")
 	}
+
 	if block.Type != "CERTIFICATE" {
 		t.Fatalf("PEM block type %q, want CERTIFICATE", block.Type)
 	}
+
 	if len(rest) != 0 {
 		t.Fatalf("trailing data after certificate PEM block")
 	}
@@ -131,6 +133,7 @@ func decodePrivateKey(t *testing.T, pemBytes []byte) crypto.Signer {
 	if block == nil {
 		t.Fatalf("no PEM block in private key bytes")
 	}
+
 	if len(rest) != 0 {
 		t.Fatalf("trailing data after private key PEM block")
 	}
@@ -140,15 +143,20 @@ func decodePrivateKey(t *testing.T, pemBytes []byte) crypto.Signer {
 		if !ok {
 			t.Fatalf("PKCS#8 key does not implement crypto.Signer")
 		}
+
 		return signer
 	}
+
 	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
 		return key
 	}
+
 	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
 		return key
 	}
+
 	t.Fatalf("private key bytes parse as neither PKCS#8, PKCS#1, nor EC")
+
 	return nil
 }
 
@@ -161,10 +169,12 @@ func assertPublicKeyMatches(t *testing.T, cert *x509.Certificate, key crypto.Sig
 	if err != nil {
 		t.Fatalf("MarshalPKIXPublicKey(cert) error: %v", err)
 	}
+
 	keyPK, err := x509.MarshalPKIXPublicKey(key.Public())
 	if err != nil {
 		t.Fatalf("MarshalPKIXPublicKey(key) error: %v", err)
 	}
+
 	if !bytes.Equal(certPK, keyPK) {
 		t.Errorf("certificate public key does not match the private key")
 	}
@@ -212,9 +222,11 @@ func TestGenerateClusterPKIProducesParsableMaterial(t *testing.T) {
 	if !ca.IsCA {
 		t.Errorf("CA certificate IsCA = false, want true")
 	}
+
 	if err := verifyAgainstCA(ca, ca); err != nil {
 		t.Errorf("CA does not verify as its own signer: %v", err)
 	}
+
 	assertPublicKeyMatches(t, ca, decodePrivateKey(t, pk.CAKey))
 
 	t.Run("apiserver", func(t *testing.T) {
@@ -251,6 +263,7 @@ func TestGenerateClusterPKIApiserverCertificateSANs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClusterPKI error: %v", err)
 	}
+
 	cert := decodeCert(t, pk.APIServer)
 
 	wantIP := net.ParseIP(cpIP)
@@ -264,6 +277,7 @@ func TestGenerateClusterPKIApiserverCertificateSANs(t *testing.T) {
 				return
 			}
 		}
+
 		t.Errorf("apiserver certificate IP SANs %v do not contain %s", cert.IPAddresses, cpIP)
 	})
 
@@ -271,6 +285,7 @@ func TestGenerateClusterPKIApiserverCertificateSANs(t *testing.T) {
 		if slices.Contains(cert.DNSNames, cpName) {
 			return
 		}
+
 		t.Errorf("apiserver certificate DNS SANs %v do not contain %q", cert.DNSNames, cpName)
 	})
 }
@@ -290,6 +305,7 @@ func TestGenerateClusterPKICertificatesVerifyAgainstCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClusterPKI error: %v", err)
 	}
+
 	ca := decodeCert(t, pk.CA)
 
 	certs := []struct {
@@ -314,6 +330,7 @@ func TestGenerateClusterPKICertificatesVerifyAgainstCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClusterPKI (second cluster) error: %v", err)
 	}
+
 	otherCA := decodeCert(t, other.CA)
 
 	t.Run("not signed by a different CA", func(t *testing.T) {
@@ -338,6 +355,7 @@ func TestGenerateClusterPKIFrontProxySignedByFrontProxyCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClusterPKI error: %v", err)
 	}
+
 	ca := decodeCert(t, pk.CA)
 	frontProxyCA := decodeCert(t, pk.FrontProxyCA)
 	frontProxyCert := decodeCert(t, pk.FrontProxy)
@@ -346,6 +364,7 @@ func TestGenerateClusterPKIFrontProxySignedByFrontProxyCA(t *testing.T) {
 		if !frontProxyCA.IsCA {
 			t.Errorf("front-proxy CA certificate IsCA = false, want true")
 		}
+
 		if err := verifyAgainstCA(frontProxyCA, frontProxyCA); err != nil {
 			t.Errorf("front-proxy CA does not verify as its own signer: %v", err)
 		}
@@ -361,6 +380,7 @@ func TestGenerateClusterPKIFrontProxySignedByFrontProxyCA(t *testing.T) {
 		if bytes.Equal(pk.FrontProxyCA, pk.CA) {
 			t.Errorf("front-proxy CA PEM equals the cluster CA PEM, want distinct CAs")
 		}
+
 		if err := verifyAgainstCA(frontProxyCA, ca); err == nil {
 			t.Errorf("front-proxy CA unexpectedly verifies against the cluster CA")
 		}
@@ -375,6 +395,7 @@ func TestGenerateClusterPKIFrontProxySignedByFrontProxyCA(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GenerateClusterPKI (second cluster) error: %v", err)
 		}
+
 		assertNotSignedBy(t, frontProxyCert, decodeCert(t, other.FrontProxyCA))
 	})
 }
@@ -418,12 +439,14 @@ func TestGenerateKubeletCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClusterPKI error: %v", err)
 	}
+
 	ca := decodeCert(t, pk.CA)
 
 	certPEM, keyPEM, err := pki.GenerateKubeletCert(pk, nodeName)
 	if err != nil {
 		t.Fatalf("GenerateKubeletCert error: %v", err)
 	}
+
 	cert := decodeCert(t, certPEM)
 	key := decodePrivateKey(t, keyPEM)
 
@@ -449,6 +472,7 @@ func TestGenerateKubeletCertificate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GenerateClusterPKI (second cluster) error: %v", err)
 		}
+
 		assertNotSignedBy(t, cert, decodeCert(t, other.CA))
 	})
 
@@ -482,6 +506,7 @@ func TestRenderKubeconfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClusterPKI error: %v", err)
 	}
+
 	certPEM, keyPEM, err := pki.GenerateKubeletCert(pk, "worker1")
 	if err != nil {
 		t.Fatalf("GenerateKubeletCert error: %v", err)
@@ -515,6 +540,7 @@ func TestRenderKubeconfig(t *testing.T) {
 		if len(cfg.Clusters) == 0 {
 			t.Fatalf("kubeconfig has no clusters: %s", got)
 		}
+
 		if cfg.Clusters[0].Cluster.Server != server {
 			t.Errorf("kubeconfig server = %q, want %q", cfg.Clusters[0].Cluster.Server, server)
 		}
@@ -524,10 +550,12 @@ func TestRenderKubeconfig(t *testing.T) {
 		if len(cfg.Clusters) == 0 {
 			t.Fatalf("kubeconfig has no clusters: %s", got)
 		}
+
 		decoded, err := base64.StdEncoding.DecodeString(cfg.Clusters[0].Cluster.CertificateAuthorityData)
 		if err != nil {
 			t.Fatalf("certificate-authority-data is not base64: %v", err)
 		}
+
 		if !bytes.Equal(decoded, pk.CA) {
 			t.Errorf("certificate-authority-data does not round-trip to the CA PEM")
 		}
@@ -537,13 +565,16 @@ func TestRenderKubeconfig(t *testing.T) {
 		if len(cfg.Users) == 0 {
 			t.Fatalf("kubeconfig has no users: %s", got)
 		}
+
 		if cfg.Users[0].Name != user {
 			t.Errorf("kubeconfig user name = %q, want %q", cfg.Users[0].Name, user)
 		}
+
 		decoded, err := base64.StdEncoding.DecodeString(cfg.Users[0].User.ClientCertificateData)
 		if err != nil {
 			t.Fatalf("client-certificate-data is not base64: %v", err)
 		}
+
 		if !bytes.Equal(decoded, certPEM) {
 			t.Errorf("client-certificate-data does not round-trip to the client certificate PEM")
 		}
@@ -553,10 +584,12 @@ func TestRenderKubeconfig(t *testing.T) {
 		if len(cfg.Users) == 0 {
 			t.Fatalf("kubeconfig has no users: %s", got)
 		}
+
 		decoded, err := base64.StdEncoding.DecodeString(cfg.Users[0].User.ClientKeyData)
 		if err != nil {
 			t.Fatalf("client-key-data is not base64: %v", err)
 		}
+
 		if !bytes.Equal(decoded, keyPEM) {
 			t.Errorf("client-key-data does not round-trip to the client key PEM")
 		}
@@ -567,6 +600,7 @@ func TestRenderKubeconfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RenderKubeconfig (second call) error: %v", err)
 		}
+
 		if !bytes.Equal(got, again) {
 			t.Errorf("RenderKubeconfig output differs between calls with identical inputs")
 		}
@@ -596,30 +630,38 @@ func TestGenerateClusterPKISANsContainReservedIPAndLoopback(t *testing.T) {
 		reservedIP = "192.168.124.77"
 		cpName     = "cp-0"
 	)
+
 	loopback := net.ParseIP("127.0.0.1")
+
 	reserved := net.ParseIP(reservedIP)
 	if loopback == nil || reserved == nil {
 		t.Fatalf("test IPs do not parse")
 	}
+
 	pk, err := pki.GenerateClusterPKI(reservedIP, cpName)
 	if err != nil {
 		t.Fatalf("GenerateClusterPKI error: %v", err)
 	}
+
 	cert := decodeCert(t, pk.APIServer)
 
 	hasReserved := false
 	hasLoopback := false
+
 	for _, ip := range cert.IPAddresses {
 		if ip.Equal(reserved) {
 			hasReserved = true
 		}
+
 		if ip.Equal(loopback) {
 			hasLoopback = true
 		}
 	}
+
 	if !hasReserved {
 		t.Errorf("apiserver cert IP SANs %v do not contain reserved internal IP %s", cert.IPAddresses, reservedIP)
 	}
+
 	if !hasLoopback {
 		t.Errorf("apiserver cert IP SANs %v do not contain 127.0.0.1 (REQ-006 VC-06)", cert.IPAddresses)
 	}
@@ -636,26 +678,32 @@ func TestGenerateClusterPKISANsContainReservedIPAndLoopback(t *testing.T) {
 func TestGenerateClusterPKISANsWithDynamicReservedIP(t *testing.T) {
 	cases := []string{"192.168.124.50", "192.168.124.90", "10.0.0.10"}
 	loopback := net.ParseIP("127.0.0.1")
+
 	for _, reservedIP := range cases {
 		t.Run(reservedIP, func(t *testing.T) {
 			pk, err := pki.GenerateClusterPKI(reservedIP, "cp-0")
 			if err != nil {
 				t.Fatalf("GenerateClusterPKI(%q) error: %v", reservedIP, err)
 			}
+
 			cert := decodeCert(t, pk.APIServer)
 			reserved := net.ParseIP(reservedIP)
 			hasReserved, hasLoopback := false, false
+
 			for _, ip := range cert.IPAddresses {
 				if ip.Equal(reserved) {
 					hasReserved = true
 				}
+
 				if ip.Equal(loopback) {
 					hasLoopback = true
 				}
 			}
+
 			if !hasReserved {
 				t.Errorf("IP SANs %v missing reserved IP %s", cert.IPAddresses, reservedIP)
 			}
+
 			if !hasLoopback {
 				t.Errorf("IP SANs %v missing 127.0.0.1 for reserved IP %s", cert.IPAddresses, reservedIP)
 			}
@@ -670,18 +718,21 @@ func TestGenerateClusterPKILoopbackIsIPSANNotDNSSAN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClusterPKI error: %v", err)
 	}
+
 	cert := decodeCert(t, pk.APIServer)
 	for _, dns := range cert.DNSNames {
 		if dns == "127.0.0.1" {
 			t.Errorf("127.0.0.1 appears as DNS SAN %v, want IP SAN", cert.DNSNames)
 		}
 	}
+
 	loopback := net.ParseIP("127.0.0.1")
 	for _, ip := range cert.IPAddresses {
 		if ip.Equal(loopback) {
 			return
 		}
 	}
+
 	t.Errorf("127.0.0.1 not found as IP SAN: %v", cert.IPAddresses)
 }
 
@@ -696,18 +747,22 @@ func TestRenderKubeconfigLoopbackServerURL(t *testing.T) {
 		loopbackURL = "https://127.0.0.1:6443"
 		user        = "system:node:cp-0"
 	)
+
 	pk, err := pki.GenerateClusterPKI(reservedIP, cpName)
 	if err != nil {
 		t.Fatalf("GenerateClusterPKI error: %v", err)
 	}
+
 	certPEM, keyPEM, err := pki.GenerateKubeletCert(pk, cpName)
 	if err != nil {
 		t.Fatalf("GenerateKubeletCert error: %v", err)
 	}
+
 	got, err := pki.RenderKubeconfig(pk.CA, loopbackURL, user, certPEM, keyPEM)
 	if err != nil {
 		t.Fatalf("RenderKubeconfig error: %v", err)
 	}
+
 	var cfg struct {
 		Clusters []struct {
 			Cluster struct {
@@ -718,9 +773,11 @@ func TestRenderKubeconfigLoopbackServerURL(t *testing.T) {
 	if err := yaml.Unmarshal(got, &cfg); err != nil {
 		t.Fatalf("rendered kubeconfig does not parse as YAML: %v\n%s", err, got)
 	}
+
 	if len(cfg.Clusters) == 0 || cfg.Clusters[0].Cluster.Server != loopbackURL {
 		t.Errorf("kubeconfig server = %q, want %q", cfg.Clusters[0].Cluster.Server, loopbackURL)
 	}
+
 	if cfg.Clusters[0].Cluster.Server != "https://127.0.0.1:6443" {
 		t.Errorf("kubeconfig server must be exactly https://127.0.0.1:6443, got %q", cfg.Clusters[0].Cluster.Server)
 	}
