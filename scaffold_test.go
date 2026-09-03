@@ -54,7 +54,9 @@ func TestToolchainContract(t *testing.T) {
 		}
 
 		var modulePath, goVersion string
+
 		goDirective := regexp.MustCompile(`^go ([0-9]+(?:\.[0-9]+)*)$`)
+
 		for line := range strings.SplitSeq(string(raw), "\n") {
 			line = strings.TrimSpace(line)
 			switch {
@@ -90,12 +92,15 @@ func TestToolchainContract(t *testing.T) {
 				// (controller-gen, setup-envtest). An undeclared tool fails
 				// with "go: no such tool" and a non-zero exit.
 				cmd := exec.CommandContext(ctx, "go", "tool", "-n", name)
+
 				cmd.Env = append(os.Environ(), "GO111MODULE=on", "GOPROXY=off")
+
 				out, err := cmd.CombinedOutput()
 				if err != nil {
 					t.Fatalf("go tool -n %s: not resolvable: %v: %s",
 						name, err, strings.TrimSpace(string(out)))
 				}
+
 				if resolved := strings.TrimSpace(string(out)); resolved == "" {
 					t.Fatalf("go tool -n %s: resolved to an empty path", name)
 				}
@@ -112,6 +117,7 @@ func TestToolchainContract(t *testing.T) {
 
 		present := make(map[string]bool)
 		targetRE := regexp.MustCompile(`^([A-Za-z0-9_][A-Za-z0-9_.-]*):`)
+
 		for line := range strings.SplitSeq(string(raw), "\n") {
 			line = strings.TrimSpace(line)
 			if m := targetRE.FindStringSubmatch(line); m != nil {
