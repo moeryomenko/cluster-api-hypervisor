@@ -12,7 +12,7 @@ stays up.
 
 The suite is documentation-faithful: every environment variable, default, wait
 budget, and step below is read from the scripts in this directory (`run.sh`,
-`scale.sh`, `delete-cluster.sh`, `smoke.sh`, and `mgmt/`). Source lines are
+`scale.sh`, `upgrade.sh`, `delete-cluster.sh`, `smoke.sh`, and `mgmt/`). Source lines are
 listed for each claim so the runbook can be re-verified against the code.
 
 ## Scripts at a glance
@@ -22,6 +22,7 @@ listed for each claim so the runbook can be re-verified against the code.
 | `test/e2e/run.sh` | Full-lab orchestration: lab-host guard + prerequisite gates, management plane up (or external), provider user quadlet, workload Cluster generated via clusterctl and applied, wait for workload Machines Ready, k8netd/passt dataplane gates, workload API gate via `https://127.0.0.1:6443`, guest reachability probes over SSH, workload smoke checks, teardown with host-cleanliness verification via a trap. |
 | `test/e2e/smoke.sh` | Workload-cluster smoke checks (nodes, kube-system pods, Cilium, Gateway, CoreDNS, in-cluster DNS). Invoked by `run.sh`; also runnable standalone. |
 | `test/e2e/scale.sh` | Worker scale scenario against a live lab: bump replicas, new Machine boots and the node registers, then delete the Machine and wait for the count to drop. |
+| `test/e2e/upgrade.sh` | Kubernetes version upgrade scenario against a live lab: apply a HypervisorUpgradePlan for the target version, wait for it to complete, then verify the topology, Machines, and workload nodes all report the target version. Pinned by `upgrade_test.sh` (stub-kubectl contract, no live lab needed). |
 | `test/e2e/delete-cluster.sh` | Cluster-deletion scenario against a live lab: delete the Cluster object, wait for Machine teardown, stop a self-bootstrapped management plane, verify the host network state is gone. |
 | `test/e2e/mgmt/` | Self-bootstrapped management plane: `pki.sh` (PKI + kubeconfigs), `apply.sh` (core manifests, clusterctl config render, offline core override, `clusterctl init`, webhook caBundle patch, quadlets), `down.sh` (stop the plane), `units/`, `core/`. |
 
@@ -158,6 +159,27 @@ is started unless every variable above is valid (`run.sh:20-22`,
 | `CLUSTER_NAME` | `k8labs` | Workload Cluster name. | `scale.sh:61` |
 | `CLUSTER_NAMESPACE` | `default` | Workload Cluster namespace. | `scale.sh:62` |
 | `SCALE_WAIT_TIMEOUT` | `1800` | Per-step wait budget in seconds; must be a non-negative integer. | `scale.sh:63`; type check `scale.sh:64-67` |
+
+### `upgrade.sh` contract
+
+| Variable | Default | Meaning | Source |
+|---|---|---|---|
+| `KUBECONFIG` | required, no default | Management-cluster kubeconfig; overridden by the first positional argument. | required `upgrade.sh:52`; override `upgrade.sh:49-51` |
+| `TO_VERSION` | required, no default | Target Kubernetes version, v-prefixed semver; overridden by the second positional argument. Must match `^v[0-9]+\.[0-9]+\.[0-9]+$`. | required `upgrade.sh:59`; override `upgrade.sh:56-58`; format check `upgrade.sh:60-63` |
+| `CLUSTER_NAME` | `k8labs` | Workload Cluster name. | `upgrade.sh:65` |
+| `CLUSTER_NAMESPACE` | `default` | Workload Cluster namespace. | `upgrade.sh:66` |
+| `UPGRADE_WAIT_TIMEOUT` | `3600` | Per-step wait budget in seconds; must be a non-negative integer. Larger than the scale budget because an upgrade replaces every VM in the cluster. | `upgrade.sh:67`; type check `upgrade.sh:68-71` |
+
+The upgrade scenario applies a `HypervisorUpgradePlan` named
+`<cluster>-upgrade-<version>` and polls it to `Completed` (a `Failed` plan
+fails the scenario with the plan's failure reason and message); it then
+verifies the topology and control-plane Machine report the target version,
+every worker Machine reports it, and every workload node is Ready on that
+kubelet version. The per-step contract is pinned by `upgrade_test.sh`, which
+runs `upgrade.sh` against a stub kubectl: happy-path convergence, missing and
+malformed version rejection, the three preflight failures (CRD absent, no
+registered base image, already current), plan failure propagation, and the
+plan and nodes timeouts.
 
 ### `delete-cluster.sh` contract
 
