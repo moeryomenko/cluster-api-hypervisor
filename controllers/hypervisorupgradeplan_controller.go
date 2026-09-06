@@ -647,13 +647,15 @@ func currentClusterVersion(cluster *clusterv1.Cluster, cp *controlplanev1alpha1.
 }
 
 // checkVersionAdvance reports whether the target version advances on current.
+// compareSemver orders current against target, so a non-negative result
+// means the target does not move forward and the plan must fail.
 func checkVersionAdvance(current, target string) error {
 	comparison, err := compareSemver(current, target)
 	if err != nil {
 		return err
 	}
 
-	if comparison <= 0 {
+	if comparison >= 0 {
 		return fmt.Errorf("target version %q must be strictly greater than the current version %q", target, current)
 	}
 
