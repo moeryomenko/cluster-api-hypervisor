@@ -160,8 +160,9 @@ func TestHypervisorMachineDefaulting(t *testing.T) {
 
 // TestHypervisorMachineValidateCreate pins the create admission rules: CPU,
 // RAM, and disk must be positive, and the optional MAC, when set, must be a
-// well-formed MAC address whose first five octets are c6:e5:50:1c:ec. An
-// empty MAC is allowed. Anything else is rejected with an error.
+// well-formed MAC address whose first octet is the locally administered c6
+// family octet. An empty MAC is allowed. Anything else is rejected with an
+// error.
 func TestHypervisorMachineValidateCreate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -171,13 +172,13 @@ func TestHypervisorMachineValidateCreate(t *testing.T) {
 		{name: "valid machine", give: validMachine(), wantErr: false},
 		{name: "empty MAC is allowed", give: validMachine(), wantErr: false},
 		{name: "family MAC is allowed", give: withMAC(validMachine(), "c6:e5:50:1c:ec:01"), wantErr: false},
-		{name: "family MAC last octet is arbitrary", give: withMAC(validMachine(), "c6:e5:50:1c:ec:ff"), wantErr: false},
+		{name: "family MAC body octets are arbitrary", give: withMAC(validMachine(), "c6:e5:50:1c:ed:01"), wantErr: false},
 		{name: "malformed MAC is rejected", give: withMAC(validMachine(), "not-a-mac"), wantErr: true},
 		{name: "too short MAC is rejected", give: withMAC(validMachine(), "c6:e5:50:1c:ec"), wantErr: true},
 		{name: "non-hex MAC is rejected", give: withMAC(validMachine(), "zz:zz:zz:zz:zz:zz"), wantErr: true},
 		{name: "out-of-family MAC is rejected", give: withMAC(validMachine(), "00:11:22:33:44:55"), wantErr: true},
 		{name: "zero MAC is rejected", give: withMAC(validMachine(), "00:00:00:00:00:00"), wantErr: true},
-		{name: "family prefix boundary is rejected", give: withMAC(validMachine(), "c6:e5:50:1c:ed:01"), wantErr: true},
+		{name: "family octet boundary is rejected", give: withMAC(validMachine(), "c7:e5:50:1c:ec:01"), wantErr: true},
 		{name: "zero cpu is rejected", give: withCPU(validMachine(), 0), wantErr: true},
 		{name: "negative cpu is rejected", give: withCPU(validMachine(), -1), wantErr: true},
 		{name: "zero ram is rejected", give: withRAM(validMachine(), 0), wantErr: true},

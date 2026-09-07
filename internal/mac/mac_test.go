@@ -21,22 +21,22 @@ limitations under the License.
 // machine's MAC address as a string. The machine contract requires the
 // address to be deterministic (the same cluster/machine pair always produces
 // the same address, however often or from wherever it is derived), to belong
-// to the locally administered c6:e5:50:1c:ec family (the first five octets
-// are always exactly that prefix and the last octet is lower-case hex), and
-// to be distinct enough that different machines in one cluster, and the same
-// machine name in different clusters, do not collapse onto one address in
-// the pinned test set.
+// to the locally administered c6 family (the first octet is always exactly
+// c6 and the remaining five octets are lower-case hex derived from the
+// pair), and to be distinct enough that different machines in one cluster,
+// and the same machine name in different clusters, do not collapse onto one
+// address in the pinned test set.
 //
 // The contract, in prose:
 //
 //   - Derive(clusterName, machineName string) string returns a MAC address
-//     string of the form c6:e5:50:1c:ec:xx, where xx is derived from the
-//     cluster/machine pair. The exact derivation is deliberately not pinned:
-//     any stable hash over the pair is acceptable as long as the format, the
-//     family prefix, determinism, and the distinctness of the pinned inputs
-//     all hold. The derivation input must cover both names: machines are
-//     addressed within their cluster, so the same machine name in two
-//     clusters must not collide.
+//     string of the form c6:xx:xx:xx:xx:xx, where the five body octets are
+//     derived from the cluster/machine pair. The exact derivation is
+//     deliberately not pinned: any stable hash over the pair is acceptable
+//     as long as the format, the family octet, determinism, and the
+//     distinctness of the pinned inputs all hold. The derivation input must
+//     cover both names: machines are addressed within their cluster, so the
+//     same machine name in two clusters must not collide.
 //   - The optional explicit MAC override (spec.mac) is not part of this
 //     package: the machine controller bypasses Derive at its call site when
 //     an explicit MAC is configured. This package only derives the default.
@@ -48,15 +48,16 @@ package mac_test
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
 )
 
-// macFamily pins the address shape the derived MACs must belong to: five
-// fixed family octets followed by one derived octet, lower-case hex,
+// macFamily pins the address shape the derived MACs must belong to: the
+// fixed family octet followed by five derived octets, lower-case hex,
 // colon-separated.
-var macFamily = regexp.MustCompile(`^c6:e5:50:1c:ec:[0-9a-f]{2}$`)
+var macFamily = regexp.MustCompile(`^c6(:[0-9a-f]{2}){5}$`)
 
 // Compile-time pin: Derive must exist with exactly this signature.
 var (
@@ -86,8 +87,8 @@ func TestDeriveDeterministic(t *testing.T) {
 	}
 }
 
-// TestDeriveFormat pins the address shape: five fixed family octets, one
-// derived lower-case hex octet, colon-separated.
+// TestDeriveFormat pins the address shape: the fixed family octet, then five
+// derived lower-case hex octets, colon-separated.
 func TestDeriveFormat(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -122,6 +123,33 @@ func TestDeriveDistinct(t *testing.T) {
 	// participate in the derivation.
 	if a, b := mac.Derive("c1", "m1"), mac.Derive("c2", "m1"); a == b {
 		t.Errorf("Derive for the same machine name in distinct clusters collided: %q", a)
+	}
+
+	// Regression: the shipped lab set (1 control plane + 3 workers with
+	// CAPI-generated suffixes, plus the same shape for a second cluster)
+	// must be collision-free. The one-octet derivation that preceded this
+	// contract collided exactly here in production.
+	names := []string{
+		"k8labs-lmfpl-0",
+		"k8labs-md-0-m9bp6-p9427-hdwfb",
+		"k8labs-md-0-m9bp6-p9427-jtd2f",
+		"k8labs-md-0-m9bp6-p9427-nfpwm",
+		"k8labs-2-rsb8w-0",
+		"k8labs-2-md-0-x1y2z-a3b4c-d5e6f",
+		"k8labs-2-md-0-x1y2z-a3b4c-g7h8i",
+		"k8labs-2-md-0-x1y2z-a3b4c-j9k0l",
+	}
+	byAddr := make(map[string]string, len(names))
+	for _, machine := range names {
+		cluster := "k8labs"
+		if strings.HasPrefix(machine, "k8labs-2-") {
+			cluster = "k8labs-2"
+		}
+		addr := mac.Derive(cluster, machine)
+		if other, dup := byAddr[addr]; dup {
+			t.Errorf("lab machine set collided: %q and %q both derived %q", other, machine, addr)
+		}
+		byAddr[addr] = machine
 	}
 }
 

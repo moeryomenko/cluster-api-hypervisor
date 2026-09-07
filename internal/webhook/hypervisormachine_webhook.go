@@ -31,10 +31,13 @@ import (
 	infrav1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
 )
 
-// hypervisorMachineMACPrefix is the first five octets of the lab MAC family.
-// When spec.mac is set it must belong to this family; the controller derives
-// the address from a stable hash when the field is left empty.
-const hypervisorMachineMACPrefix = "c6:e5:50:1c:ec"
+// hypervisorMachineMACPrefix is the first octet of the lab MAC family: a
+// locally administered, unicast octet. When spec.mac is set it must belong
+// to this family; the controller derives the remaining five octets from a
+// stable hash when the field is left empty. Earlier revisions pinned five
+// family octets and left one derived octet (256 addresses), which collided
+// for real machine sets; the family is now one octet wide.
+const hypervisorMachineMACPrefix = "c6:"
 
 // +kubebuilder:webhook:path=/mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachine,mutating=true,failurePolicy=fail,sideEffects=None,groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachines,verbs=create;update,versions=v1alpha1,name=mhypervisormachine.kb.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachine,mutating=false,failurePolicy=fail,sideEffects=None,groups=infrastructure.cluster.x-k8s.io,resources=hypervisormachines,verbs=create;update,versions=v1alpha1,name=vhypervisormachine.kb.io,admissionReviewVersions=v1
@@ -86,7 +89,7 @@ func (w *HypervisorMachineWebhook) Default(_ context.Context, obj runtime.Object
 
 // ValidateCreate validates a HypervisorMachine on creation: CPU, RAM, and disk
 // must be positive, and the optional MAC, when set, must be a well-formed MAC
-// address belonging to the c6:e5:50:1c:ec family.
+// address belonging to the c6 family.
 func (w *HypervisorMachineWebhook) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
 	machine, ok := obj.(*infrav1.HypervisorMachine)
 	if !ok {

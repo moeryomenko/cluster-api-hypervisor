@@ -321,11 +321,11 @@ func TestVhostUserNetConfig_RendersMAC(t *testing.T) {
 			if !strings.Contains(cfg, "mac="+macAddr) && !strings.Contains(cfg, "mac="+strings.ToLower(macAddr)) {
 				t.Errorf("cfg %q missing mac=%q (or lowercased)", cfg, macAddr)
 			}
-			// MAC must contain the family prefix for derived cases
-			if tt.explicitMAC == "" {
-				if !strings.Contains(strings.ToLower(cfg), "c6:e5:50:1c:ec") {
-					t.Errorf("cfg %q missing derived MAC family c6:e5:50:1c:ec", cfg)
-				}
+			// Derived addresses belong to the locally administered c6
+			// family: five derived octets of hash entropy follow the
+			// fixed first octet (see internal/mac).
+			if tt.explicitMAC == "" && !strings.HasPrefix(strings.ToLower(macAddr), "c6:") {
+				t.Errorf("derived mac %q missing family octet c6:", macAddr)
 			}
 		})
 	}
