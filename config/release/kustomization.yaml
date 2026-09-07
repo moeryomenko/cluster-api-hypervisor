@@ -27,7 +27,7 @@ labels:
 
 # The webhook server runs on the provider host and is reached directly at the
 # pinned port, so every generated Service-based clientConfig is rewritten to
-# url form. The ten paths follow the controller-gen output in
+# url form. The twelve paths follow the controller-gen output in
 # config/webhook/manifests.yaml exactly.
 patches:
 # Mutating webhooks, clientConfig per webhook index.
@@ -86,6 +86,17 @@ patches:
     version: v1
     kind: MutatingWebhookConfiguration
     name: mutating-webhook-configuration
+- patch: |-
+    - op: remove
+      path: /webhooks/5/clientConfig/service
+    - op: add
+      path: /webhooks/5/clientConfig/url
+      value: https://127.0.0.1:9443/mutate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorupgradeplan
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: MutatingWebhookConfiguration
+    name: mutating-webhook-configuration
 # Validating webhooks, clientConfig per webhook index.
 - patch: |-
     - op: remove
@@ -137,6 +148,17 @@ patches:
     - op: add
       path: /webhooks/4/clientConfig/url
       value: https://127.0.0.1:9443/validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachinetemplate
+  target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: ValidatingWebhookConfiguration
+    name: validating-webhook-configuration
+- patch: |-
+    - op: remove
+      path: /webhooks/5/clientConfig/service
+    - op: add
+      path: /webhooks/5/clientConfig/url
+      value: https://127.0.0.1:9443/validate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorupgradeplan
   target:
     group: admissionregistration.k8s.io
     version: v1
