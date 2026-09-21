@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: hypervisor-system
+  labels:
+    control-plane: controller-manager
+    cluster.x-k8s.io/provider: infrastructure-hypervisor
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+  template:
+    metadata:
+      labels:
+        control-plane: controller-manager
+    spec:
+      serviceAccountName: hypervisor-manager
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: manager
+        image: localhost/cluster-api-hypervisor:v0.2.0
+        imagePullPolicy: IfNotPresent
+        args:
+        - --webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs
+        - --webhook-port=9443
+        - --health-addr=:9440
+        - --hypervisorcluster-concurrency=1
+        - --hypervisormachine-concurrency=1
+        - --hypervisorconfig-concurrency=1
+        - --hypervisorcontrolplane-concurrency=1
+        - --upgradeplan-concurrency=1
+        ports:
+        - name: webhook
+          containerPort: 9443
+          protocol: TCP
+        - name: health
+          containerPort: 9440
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+        volumeMounts:
+        - name: webhook-certs
+          mountPath: /tmp/k8s-webhook-server/serving-certs
+          readOnly: true
+      volumes:
+      - name: webhook-certs
+        secret:
+          secretName: hypervisor-webhook-serving-cert
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: controller-manager-health
+  namespace: hypervisor-system
+  labels:
+    control-plane: controller-manager
+spec:
+  selector:
+    control-plane: controller-manager
+  ports:
+  - name: health
+    port: 9440
+    targetPort: health

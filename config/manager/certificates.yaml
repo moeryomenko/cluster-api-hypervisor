@@ -1,0 +1,47 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: hypervisor-webhook-selfsigned
+  namespace: hypervisor-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hypervisor-webhook-ca
+  namespace: hypervisor-system
+spec:
+  isCA: true
+  commonName: hypervisor-webhook-ca
+  secretName: hypervisor-webhook-ca
+  issuerRef:
+    name: hypervisor-webhook-selfsigned
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: hypervisor-webhook-ca
+  namespace: hypervisor-system
+spec:
+  ca:
+    secretName: hypervisor-webhook-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hypervisor-webhook-serving
+  namespace: hypervisor-system
+spec:
+  secretName: hypervisor-webhook-serving-cert
+  duration: 2160h
+  renewBefore: 360h
+  issuerRef:
+    name: hypervisor-webhook-ca
+    kind: Issuer
+  dnsNames:
+  - webhook-service
+  - webhook-service.hypervisor-system
+  - webhook-service.hypervisor-system.svc
+  - webhook-service.hypervisor-system.svc.cluster.local
