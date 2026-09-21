@@ -1,0 +1,113 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hypervisor-agent
+  namespace: hypervisor-system
+spec:
+  selector:
+    app.kubernetes.io/name: hypervisor-agent
+  ports:
+  - name: grpc
+    port: 9444
+    targetPort: grpc
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: hypervisor-agent
+  namespace: hypervisor-system
+  labels:
+    app.kubernetes.io/name: hypervisor-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hypervisor-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hypervisor-agent
+    spec:
+      serviceAccountName: hypervisor-manager
+      nodeSelector:
+        k8labs.io/agent: "true"
+      containers:
+      - name: agent
+        image: localhost/cluster-api-hypervisor-agent:v0.2.0-agent1
+        imagePullPolicy: IfNotPresent
+        args:
+        - --listen=:9444
+        - --node-id=$(NODE_NAME)
+        ports:
+        - name: grpc
+          containerPort: 9444
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        securityContext:
+          privileged: true
+          allowPrivilegeEscalation: true
+        readinessProbe:
+          tcpSocket:
+            port: grpc
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        volumeMounts:
+        - name: server-tls
+          mountPath: /tls/server
+          readOnly: true
+        - name: ca-tls
+          mountPath: /tls/ca
+          readOnly: true
+        - name: inventory
+          mountPath: /state
+        - name: kvm
+          mountPath: /dev/kvm
+        - name: dbus
+          mountPath: /run/user/1000/bus
+        - name: k8netd
+          mountPath: /run/user/1000/k8snet
+        - name: vm-state
+          mountPath: /host-state
+      volumes:
+      - name: server-tls
+        secret:
+          secretName: hypervisor-agent-serving-cert
+      - name: ca-tls
+        secret:
+          secretName: hypervisor-webhook-ca
+          items:
+          - key: tls.crt
+            path: ca.crt
+      - name: inventory
+        persistentVolumeClaim:
+          claimName: hypervisor-agent-inventory
+      - name: kvm
+        hostPath:
+          path: /dev/kvm
+          type: CharDevice
+      - name: dbus
+        hostPath:
+          path: /run/user/1000/bus
+          type: Socket
+      - name: k8netd
+        hostPath:
+          path: /run/user/1000/k8snet
+          type: Directory
+      - name: vm-state
+        hostPath:
+          path: /host-state
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hypervisor-agent-inventory
+  namespace: hypervisor-system
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

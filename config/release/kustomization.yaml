@@ -9,6 +9,7 @@ resources:
 - ../rbac
 - ../webhook
 - ../manager
+- ../agent
 
 labels:
 - includeSelectors: false

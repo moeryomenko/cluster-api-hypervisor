@@ -1,0 +1,32 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hypervisor-agent-serving
+  namespace: hypervisor-system
+spec:
+  secretName: hypervisor-agent-serving-cert
+  issuerRef:
+    name: hypervisor-webhook-ca
+    kind: Issuer
+  usages:
+  - server auth
+  dnsNames:
+  - hypervisor-agent
+  - hypervisor-agent.hypervisor-system
+  - hypervisor-agent.hypervisor-system.svc
+  - hypervisor-agent.hypervisor-system.svc.cluster.local
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hypervisor-manager-agent-client
+  namespace: hypervisor-system
+spec:
+  secretName: hypervisor-manager-agent-client-cert
+  issuerRef:
+    name: hypervisor-webhook-ca
+    kind: Issuer
+  usages:
+  - client auth
+  uris:
+  - spiffe://k8labs/provider/manager
