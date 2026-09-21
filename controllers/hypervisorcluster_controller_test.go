@@ -42,9 +42,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
+	stdruntime "runtime"
 	"testing"
 	"time"
 
@@ -135,8 +134,8 @@ func installCAPICoreCRDs(t *testing.T, cfg *rest.Config) {
 		t.Fatalf("resolve cluster-api module directory: %v", err)
 	}
 
-	clusterCRD := loadCRD(t, filepath.Join(dir, "cluster.x-k8s.io_clusters.yaml"))
-	machineCRD := loadCRD(t, filepath.Join(dir, "cluster.x-k8s.io_machines.yaml"))
+	clusterCRD := loadCRD(t, filepath.Join(dir, "clusters.cluster.x-k8s.io.yaml"))
+	machineCRD := loadCRD(t, filepath.Join(dir, "machines.cluster.x-k8s.io.yaml"))
 
 	if _, err := envtest.InstallCRDs(cfg, envtest.CRDInstallOptions{
 		CRDs: []*apiextensionsv1.CustomResourceDefinition{clusterCRD, machineCRD},
@@ -166,12 +165,14 @@ func loadCRD(t *testing.T, path string) *apiextensionsv1.CustomResourceDefinitio
 // capiCRDDirectory resolves the CRD manifest directory of the pinned
 // sigs.k8s.io/cluster-api module.
 func capiCRDDirectory() (string, error) {
-	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "sigs.k8s.io/cluster-api").Output()
-	if err != nil {
-		return "", fmt.Errorf("go list -m sigs.k8s.io/cluster-api: %w", err)
+	if dir := os.Getenv("CAPI_CRD_DIRECTORY"); dir != "" {
+		return dir, nil
 	}
-
-	return filepath.Join(strings.TrimSpace(string(out)), "config", "crd", "bases"), nil
+	_, file, _, ok := stdruntime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("locate controller test source")
+	}
+	return filepath.Join(filepath.Dir(file), "..", "testdata", "capi-crds"), nil
 }
 
 // linkedCluster is the minimal CAPI linkage the reconciler contract reads: a

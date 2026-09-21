@@ -84,7 +84,7 @@ func StartEnvTest(t *testing.T) (*EnvTest, error) {
 
 	env := &envtest.Environment{
 		BinaryAssetsDirectory: assetsDir,
-		CRDDirectoryPaths:     []string{crdDirectory()},
+		CRDDirectoryPaths:     []string{crdDirectory(), providerCRDDirectory()},
 		ErrorIfCRDPathMissing: true,
 	}
 
@@ -123,10 +123,18 @@ func binaryAssetsDir() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// crdDirectory returns the absolute path to the CRD manifests, anchored at
-// this source file so the path resolves regardless of the test binary's
-// working directory.
-func crdDirectory() string {
+func providerCRDDirectory() string {
 	_, file, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(file), "..", "..", "config", "crd", "bases")
+}
+
+// crdDirectory returns the CAPI v1.14.2 CRD fixture directory. The fixture
+// is extracted from the verified upstream core-components manifest; callers
+// can override it with CAPI_CRD_DIRECTORY when refreshing the cache.
+func crdDirectory() string {
+	if dir := os.Getenv("CAPI_CRD_DIRECTORY"); dir != "" {
+		return dir
+	}
+	_, file, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(file), "..", "..", "testdata", "capi-crds")
 }

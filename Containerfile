@@ -66,4 +66,8 @@ RUN apk add --no-cache \
 
 COPY --from=builder /out/cluster-api-hypervisor /usr/local/bin/cluster-api-hypervisor
 
+RUN adduser -D -H -u 65532 manager
+
+USER 65532:65532
+
 ENTRYPOINT ["/usr/local/bin/cluster-api-hypervisor"]

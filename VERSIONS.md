@@ -6,7 +6,8 @@ the source of truth listed in the table — keep them in sync when bumping.
 | Component | Version | Source of truth |
 |---|---|---|
 | Go toolchain | 1.26.0 | `go.mod:3` / `tools/go.mod:3` (`go` directive) |
-| sigs.k8s.io/cluster-api (CAPI) | v1.13.5 | `go.mod:14` |
+| sigs.k8s.io/cluster-api (CAPI) | v1.14.2 | `go.mod:14` |
+| sigs.k8s.io/cluster-api/api | v1.14.2 | `go.mod:15` |
 | sigs.k8s.io/controller-runtime | v0.23.3 | `go.mod:15` |
 | k8s.io/api | v0.35.4 | `go.mod:10` |
 | k8s.io/apimachinery | v0.35.4 | `go.mod:12` |
