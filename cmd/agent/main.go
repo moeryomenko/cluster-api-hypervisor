@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	agentv1 "github.com/moeryomenko/cluster-api-hypervisor/api/agent/v1"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/inventory"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agentgrpc"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
 	"google.golang.org/grpc"
@@ -20,12 +21,21 @@ func main() {
 	var listenAddress string
 	var certificateDirectory string
 	var clientCAFile string
+	var inventoryPath string
 	var nodeID string
 	flag.StringVar(&listenAddress, "listen", ":9444", "gRPC listen address")
 	flag.StringVar(&certificateDirectory, "tls-cert-dir", "/tls/server", "directory containing tls.crt and tls.key")
 	flag.StringVar(&clientCAFile, "client-ca", "/tls/ca/ca.crt", "PEM client CA certificate")
 	flag.StringVar(&nodeID, "node-id", "", "Kubernetes node identity")
+	flag.StringVar(&inventoryPath, "inventory", "/state/inventory.db", "SQLite inventory path")
 	flag.Parse()
+
+	store, err := inventory.Open(inventoryPath)
+	if err != nil {
+		fatalf("open inventory: %v", err)
+	}
+	defer store.Close()
+	_ = store
 
 	certificate, err := tls.LoadX509KeyPair(filepath.Join(certificateDirectory, "tls.crt"), filepath.Join(certificateDirectory, "tls.key"))
 	if err != nil {
