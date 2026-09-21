@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package k8labs.agent.v1;
+
+option go_package = "github.com/moeryomenko/cluster-api-hypervisor/api/agent/v1;agentv1";
+
+message Owner {
+  string installation_id = 1;
+  string node_id = 2;
+  string uid = 3;
+}
+
+message Mutation {
+  uint32 protocol_major = 1;
+  Owner owner = 2;
+  uint64 generation = 3;
+  string idempotency_key = 4;
+}
+
+message HealthRequest { uint32 protocol_major = 1; }
+message Capabilities {
+  uint32 protocol_major = 1;
+  string node_id = 2;
+  string cloud_hypervisor = 3;
+  uint32 k8netd_protocol_major = 4;
+  bool can_use_kvm = 5;
+  bool can_use_user_dbus = 6;
+}
+
+message VMDesired {
+  string uid = 1;
+  string name = 2;
+  string image = 3;
+  string firmware = 4;
+  string api_socket = 5;
+  string vhost_socket = 6;
+  string disk = 7;
+  string mac = 8;
+  string ip = 9;
+  uint32 cpus = 10;
+  uint32 memory_mib = 11;
+}
+
+message VMObserved {
+  string uid = 1;
+  string unit = 2;
+  int64 pid = 3;
+  uint64 guest_uptime = 4;
+  bool running = 5;
+  string api_socket = 6;
+  string vhost_socket = 7;
+  string ip = 8;
+  string mac = 9;
+  uint64 generation = 10;
+}
+
+message EnsureVMRequest { Mutation mutation = 1; VMDesired desired = 2; }
+message GetVMRequest { Owner owner = 1; uint32 protocol_major = 2; }
+message VMResponse { VMObserved observed = 1; }
+message MutationRequest { Mutation mutation = 1; }
+message Empty {}
+
+service HostAgent {
+  rpc Health(HealthRequest) returns (Capabilities);
+  rpc EnsureVM(EnsureVMRequest) returns (VMResponse);
+  rpc GetVM(GetVMRequest) returns (VMResponse);
+  rpc StopVM(MutationRequest) returns (Empty);
+  rpc DeleteVM(MutationRequest) returns (Empty);
+}
