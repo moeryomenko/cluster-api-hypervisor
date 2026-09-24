@@ -11,9 +11,35 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
-var ErrIdempotencyConflict = errors.New("inventory idempotency conflict")
+var (
+	ErrIdempotencyConflict = errors.New("inventory idempotency conflict")
+	ErrOperationNotFound   = errors.New("inventory operation not found")
+)
+
+type OperationState string
+
+const (
+	OperationIntent    OperationState = "intent"
+	OperationCompleted OperationState = "completed"
+	OperationFailed    OperationState = "failed"
+)
+
+type Operation struct {
+	InstallationID string
+	OwnerUID       string
+	NodeID         string
+	Key            string
+	Kind           string
+	RequestHash    string
+	Generation     uint64
+	State          OperationState
+	Result         string
+	Failure        string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
 
 type VM struct {
 	InstallationID string
@@ -57,39 +83,55 @@ func Open(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) migrate() error {
-	if _, err := s.db.Exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"); err != nil {
+	if _, err := s.db.Exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;"); err != nil {
 		return fmt.Errorf("configure inventory SQLite: %w", err)
 	}
 
 	_, err := s.db.Exec(`
-CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS operations (
-  installation_id TEXT NOT NULL,
-  owner_uid TEXT NOT NULL,
-  idempotency_key TEXT NOT NULL,
-  generation INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  PRIMARY KEY (installation_id, owner_uid, idempotency_key)
-);
-CREATE TABLE IF NOT EXISTS vms (
-  installation_id TEXT NOT NULL,
-  owner_uid TEXT NOT NULL,
-  node_id TEXT NOT NULL,
-  unit TEXT NOT NULL,
-  generation INTEGER NOT NULL,
-  pid INTEGER NOT NULL,
-  disk TEXT NOT NULL,
-  api_socket TEXT NOT NULL,
-  vhost_socket TEXT NOT NULL,
-  network TEXT NOT NULL,
-  port TEXT NOT NULL,
-  mac TEXT NOT NULL,
-  ip TEXT NOT NULL,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (installation_id, owner_uid),
-  UNIQUE (installation_id, unit)
-);
-INSERT OR IGNORE INTO schema_migrations(version) VALUES (?);`, schemaVersion)
+	CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);
+	CREATE TABLE IF NOT EXISTS operations (
+	  installation_id TEXT NOT NULL,
+	  owner_uid TEXT NOT NULL,
+	  idempotency_key TEXT NOT NULL,
+	  generation INTEGER NOT NULL,
+	  created_at INTEGER NOT NULL,
+	  PRIMARY KEY (installation_id, owner_uid, idempotency_key)
+	);
+	CREATE TABLE IF NOT EXISTS operation_journal (
+	  installation_id TEXT NOT NULL,
+	  owner_uid TEXT NOT NULL,
+	  node_id TEXT NOT NULL,
+	  idempotency_key TEXT NOT NULL,
+	  operation_kind TEXT NOT NULL,
+	  request_hash TEXT NOT NULL,
+	  generation INTEGER NOT NULL,
+	  state TEXT NOT NULL CHECK(state IN ('intent', 'completed', 'failed')),
+	  result TEXT NOT NULL DEFAULT '',
+	  failure TEXT NOT NULL DEFAULT '',
+	  created_at INTEGER NOT NULL,
+	  updated_at INTEGER NOT NULL,
+	  PRIMARY KEY (installation_id, owner_uid, idempotency_key)
+	);
+	CREATE INDEX IF NOT EXISTS operation_journal_pending_idx ON operation_journal(state, updated_at);
+	CREATE TABLE IF NOT EXISTS vms (
+	  installation_id TEXT NOT NULL,
+	  owner_uid TEXT NOT NULL,
+	  node_id TEXT NOT NULL,
+	  unit TEXT NOT NULL,
+	  generation INTEGER NOT NULL,
+	  pid INTEGER NOT NULL,
+	  disk TEXT NOT NULL,
+	  api_socket TEXT NOT NULL,
+	  vhost_socket TEXT NOT NULL,
+	  network TEXT NOT NULL,
+	  port TEXT NOT NULL,
+	  mac TEXT NOT NULL,
+	  ip TEXT NOT NULL,
+	  updated_at INTEGER NOT NULL,
+	  PRIMARY KEY (installation_id, owner_uid),
+	  UNIQUE (installation_id, unit)
+	);
+	INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);`, schemaVersion)
 	if err != nil {
 		return fmt.Errorf("migrate inventory: %w", err)
 	}
