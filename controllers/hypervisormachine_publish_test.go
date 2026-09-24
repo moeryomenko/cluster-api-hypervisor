@@ -18,14 +18,14 @@ limitations under the License.
 //
 // REQ-008 / TASK-013: after the machine's port is attached, the machine
 // controller publishes the control-plane endpoints through the k8netd
-// PublishPort RPC — exactly two calls for a control-plane machine,
-// (port=<machine-name>, vm_port=6443) and (port=<machine-name>, vm_port=22) —
-// and records the returned host ports on status.publishedPorts. Worker
-// machines publish nothing. Re-reconciles are idempotent: no duplicate or
-// changed allocations.
+// PublishPort RPC — exactly three calls for a control-plane machine,
+// (port=<machine-name>, vm_port=6443), (port=<machine-name>, vm_port=22), and
+// (port=<machine-name>, vm_port=2379) — and records the returned host ports
+// on status.publishedPorts. Worker machines publish nothing. Re-reconciles are
+// idempotent: no duplicate or changed allocations.
 //
 // Grill cases covered:
-//   - exactly two PublishPort calls with exact param sets after AttachPort
+//   - exactly three PublishPort calls with exact param sets after AttachPort
 //   - returned host ports recorded in status.publishedPorts
 //   - re-reconcile does not duplicate or change allocations
 //   - worker machines issue zero PublishPort calls and record nothing
@@ -127,13 +127,14 @@ func installPublishRecorder(t *testing.T, srv *fake.Server) func() []publishPort
 	return func() []publishPortParams { return calls }
 }
 
-// TestHypervisorMachineK8netd_ControlPlanePublishesTwoPortsAfterAttach pins
-// the REQ-008 publication contract for control-plane machines: after the
-// port is attached, exactly two PublishPort calls are issued —
-// (port=<machine-name>, vm_port=6443) and (port=<machine-name>, vm_port=22),
-// each params object carrying exactly those two keys — and the returned host
-// ports land on status.publishedPorts.
-func TestHypervisorMachineK8netd_ControlPlanePublishesTwoPortsAfterAttach(t *testing.T) {
+// TestHypervisorMachineK8netd_ControlPlanePublishesPortsAfterAttach pins the
+// REQ-008 publication contract for control-plane machines: after the port is
+// attached, exactly three PublishPort calls are issued —
+// (port=<machine-name>, vm_port=6443), (port=<machine-name>, vm_port=22), and
+// (port=<machine-name>, vm_port=2379) — each params object carrying exactly
+// the two canonical keys — and the returned host ports land on
+// status.publishedPorts.
+func TestHypervisorMachineK8netd_ControlPlanePublishesPortsAfterAttach(t *testing.T) {
 	c := mustReconcileClient(t)
 	srv := newMachineK8netdFakeServer(t)
 	r, srv, vm := newMachineK8netdReconciler(t, c, srv)
@@ -148,13 +149,13 @@ func TestHypervisorMachineK8netd_ControlPlanePublishesTwoPortsAfterAttach(t *tes
 		t.Fatalf("Reconcile error: %v", err)
 	}
 
-	if got := len(publishCalls()); got != 2 {
-		t.Fatalf("recorder saw %d PublishPort invocations, want 2; requests=%v", got, srv.Requests())
+	if got := len(publishCalls()); got != 3 {
+		t.Fatalf("recorder saw %d PublishPort invocations, want 3; requests=%v", got, srv.Requests())
 	}
 
 	reqs := srv.Requests()
-	if got := countMachineK8netdMethod(reqs, "PublishPort"); got != 2 {
-		t.Fatalf("PublishPort calls = %d, want exactly 2 (requests=%v)", got, reqs)
+	if got := countMachineK8netdMethod(reqs, "PublishPort"); got != 3 {
+		t.Fatalf("PublishPort calls = %d, want exactly 3 (requests=%v)", got, reqs)
 	}
 
 	// Publication happens after the port is attached.
@@ -175,7 +176,7 @@ func TestHypervisorMachineK8netd_ControlPlanePublishesTwoPortsAfterAttach(t *tes
 
 	// Exact param sets: one 6443 call and one 22 call, both naming the
 	// machine's port, each carrying exactly the two canonical keys.
-	wantByVMPort := map[int32]bool{6443: false, 22: false}
+	wantByVMPort := map[int32]bool{6443: false, 22: false, 2379: false}
 
 	for _, req := range reqs {
 		if req.Method != "PublishPort" {
@@ -225,7 +226,7 @@ func TestHypervisorMachineK8netd_ControlPlanePublishesTwoPortsAfterAttach(t *tes
 		got[pp.VMPort] = pp.HostPort
 	}
 
-	want := map[int32]int32{6443: 26443, 22: 20022}
+	want := map[int32]int32{6443: 26443, 22: 20022, 2379: 20022}
 	if len(got) != len(want) {
 		t.Fatalf("status.publishedPorts = %+v, want entries for exactly %v", hm.Status.PublishedPorts, want)
 	}
@@ -264,12 +265,12 @@ func TestHypervisorMachineK8netd_ControlPlanePublishIdempotentAcrossReconciles(t
 		t.Fatalf("second Reconcile error: %v", err)
 	}
 
-	if got := countMachineK8netdMethod(srv.Requests(), "PublishPort"); got != 2 {
-		t.Errorf("PublishPort calls across two reconciles = %d, want still 2 (idempotent)", got)
+	if got := countMachineK8netdMethod(srv.Requests(), "PublishPort"); got != 3 {
+		t.Errorf("PublishPort calls across two reconciles = %d, want still 3 (idempotent)", got)
 	}
 
-	if got := len(publishCalls()); got != 2 {
-		t.Errorf("recorder saw %d PublishPort invocations across two reconciles, want 2", got)
+	if got := len(publishCalls()); got != 3 {
+		t.Errorf("recorder saw %d PublishPort invocations across two reconciles, want 3", got)
 	}
 
 	hm := &infrastructurev1alpha1.HypervisorMachine{}

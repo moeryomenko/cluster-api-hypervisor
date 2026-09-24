@@ -33,6 +33,7 @@ func (o Owner) Validate() error {
 	if o.InstallationID == "" || o.NodeID == "" || o.UID == "" {
 		return fmt.Errorf("%w: owner installation_id, node_id, and uid are required", ErrInvalidRequest)
 	}
+
 	return nil
 }
 
@@ -47,12 +48,15 @@ func (m Mutation) Validate() error {
 	if m.ProtocolMajor != ProtocolMajor {
 		return fmt.Errorf("%w: got %d, want %d", ErrProtocol, m.ProtocolMajor, ProtocolMajor)
 	}
+
 	if err := m.Owner.Validate(); err != nil {
 		return err
 	}
+
 	if m.Generation == 0 || m.IdempotencyKey == "" {
 		return fmt.Errorf("%w: generation and idempotency_key are required", ErrInvalidRequest)
 	}
+
 	return nil
 }
 
@@ -151,6 +155,7 @@ func (*Fake) Health(context.Context) (Capabilities, error) { return Capabilities
 func (*Fake) EnsureVM(context.Context, Mutation, VMDesired) (VMObserved, error) {
 	return VMObserved{}, nil
 }
+
 func (*Fake) GetVM(context.Context, Owner) (VMObserved, error)              { return VMObserved{}, ErrNotFound }
 func (*Fake) StopVM(context.Context, Mutation) error                        { return nil }
 func (*Fake) DeleteVM(context.Context, Mutation) error                      { return nil }
@@ -165,6 +170,7 @@ func (*Fake) ReleaseIP(context.Context, Mutation, string) error                 
 func (*Fake) PublishPort(context.Context, Mutation, uint32, uint32) (uint32, error) { return 0, nil }
 func (*Fake) ReleasePort(context.Context, Mutation, uint32, uint32) error           { return nil }
 func (*Fake) Diagnostics(context.Context, Owner) (Diagnostics, error)               { return Diagnostics{}, nil }
+
 func (*Fake) AcquireProbe(context.Context, Mutation, string) (ProbeLease, error) {
 	return ProbeLease{}, nil
 }

@@ -35,6 +35,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/ch"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/chclient"
 )
 
@@ -57,7 +58,7 @@ func (f *recordingVMFactory) newVMClient(socketDir, binary string) chclient.Clie
 
 	f.dirs = append(f.dirs, socketDir)
 	f.binaries = append(f.binaries, binary)
-	fake := &chclient.FakeClient{}
+	fake := &chclient.FakeClient{State: ch.VMState("Running")}
 	f.fakes = append(f.fakes, fake)
 
 	return fake

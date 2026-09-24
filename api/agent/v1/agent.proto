@@ -18,6 +18,7 @@ message Mutation {
 }
 
 message HealthRequest { uint32 protocol_major = 1; }
+
 message Capabilities {
   uint32 protocol_major = 1;
   string node_id = 2;
@@ -54,10 +55,64 @@ message VMObserved {
   uint64 generation = 10;
 }
 
+message NetworkRequest {
+  string name = 1;
+  string cidr = 2;
+}
+
+message PortRequest {
+  string name = 1;
+  string network = 2;
+  string mac = 3;
+}
+
+message PortObserved {
+  string name = 1;
+  string network = 2;
+  string mac = 3;
+  string ip = 4;
+  map<uint32, uint32> published = 5;
+}
+
+message Diagnostics {
+  string owner_uid = 1;
+  repeated string messages = 2;
+}
+
+message ProbeLease {
+  string uid = 1;
+  string network = 2;
+  string port = 3;
+  string mac = 4;
+  string ip = 5;
+  int64 expires_at = 6;
+}
+
 message EnsureVMRequest { Mutation mutation = 1; VMDesired desired = 2; }
 message GetVMRequest { Owner owner = 1; uint32 protocol_major = 2; }
 message VMResponse { VMObserved observed = 1; }
 message MutationRequest { Mutation mutation = 1; }
+message EnsureNetworkRequest { Mutation mutation = 1; NetworkRequest network = 2; }
+message EnsurePortRequest { Mutation mutation = 1; PortRequest port = 2; }
+message PortResponse { PortObserved observed = 1; }
+message AllocateIPResponse { string ip = 1; }
+message ReleaseIPRequest { Mutation mutation = 1; string ip = 2; }
+message PublishPortRequest {
+  Mutation mutation = 1;
+  uint32 guest_port = 2;
+  uint32 host_port = 3;
+}
+message PublishPortResponse { uint32 host_port = 1; }
+message ReleasePortRequest {
+  Mutation mutation = 1;
+  uint32 guest_port = 2;
+  uint32 host_port = 3;
+}
+message DiagnosticsRequest { Owner owner = 1; uint32 protocol_major = 2; }
+message DiagnosticsResponse { Diagnostics diagnostics = 1; }
+message AcquireProbeRequest { Mutation mutation = 1; string network = 2; }
+message ProbeResponse { ProbeLease lease = 1; }
+message ReleaseProbeRequest { Mutation mutation = 1; string uid = 2; }
 message Empty {}
 
 service HostAgent {
@@ -66,4 +121,15 @@ service HostAgent {
   rpc GetVM(GetVMRequest) returns (VMResponse);
   rpc StopVM(MutationRequest) returns (Empty);
   rpc DeleteVM(MutationRequest) returns (Empty);
+  rpc EnsureNetwork(EnsureNetworkRequest) returns (Empty);
+  rpc DeleteNetwork(MutationRequest) returns (Empty);
+  rpc EnsurePort(EnsurePortRequest) returns (PortResponse);
+  rpc DeletePort(MutationRequest) returns (Empty);
+  rpc AllocateIP(MutationRequest) returns (AllocateIPResponse);
+  rpc ReleaseIP(ReleaseIPRequest) returns (Empty);
+  rpc PublishPort(PublishPortRequest) returns (PublishPortResponse);
+  rpc ReleasePort(ReleasePortRequest) returns (Empty);
+  rpc Diagnostics(DiagnosticsRequest) returns (DiagnosticsResponse);
+  rpc AcquireProbe(AcquireProbeRequest) returns (ProbeResponse);
+  rpc ReleaseProbe(ReleaseProbeRequest) returns (Empty);
 }

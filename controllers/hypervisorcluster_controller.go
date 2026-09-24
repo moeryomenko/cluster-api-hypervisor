@@ -146,6 +146,8 @@ func (r *HypervisorClusterReconciler) reconcileNormal(
 	// makes repeated reconciles idempotent without issuing a duplicate
 	// CreateNetwork, while still treating AlreadyExists as success when the
 	// network was created externally.
+	specPatch := client.MergeFrom(hc.DeepCopy())
+
 	if !isInfrastructureReady(hc) {
 		network := &hc.Spec.Network
 
@@ -178,10 +180,12 @@ func (r *HypervisorClusterReconciler) reconcileNormal(
 	// write cannot race the status subresource update below (a full Update
 	// would conflict on resourceVersion once the status subresource bump
 	// lands).
-	specPatch := client.MergeFrom(hc.DeepCopy())
-	if err := r.Client.Patch(ctx, hc, specPatch); err != nil {
+	specObject := hc.DeepCopy()
+	if err := r.Client.Patch(ctx, specObject, specPatch); err != nil {
 		return fmt.Errorf("patch HypervisorCluster spec.controlPlaneEndpoint: %w", err)
 	}
+
+	hc.ResourceVersion = specObject.ResourceVersion
 
 	if err := r.Client.Status().Update(ctx, hc); err != nil {
 		return fmt.Errorf("update HypervisorCluster status: %w", err)

@@ -40,6 +40,7 @@ const macFamilyPrefix = "c6"
 // address.
 func Derive(clusterName, machineName string) string {
 	sum := sha256.Sum256([]byte(clusterName + "/" + machineName))
+
 	return fmt.Sprintf(
 		"%s:%02x:%02x:%02x:%02x:%02x",
 		macFamilyPrefix, sum[0], sum[1], sum[2], sum[3], sum[4],

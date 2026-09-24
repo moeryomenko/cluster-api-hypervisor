@@ -307,7 +307,7 @@ func (f *recordingExecRunner) qemuImg(args []string) ([]byte, error) {
 			return nil, fmt.Errorf("qemu-img: %s: No such file or directory", disk)
 		}
 
-		return []byte(fmt.Sprintf(`{"virtual-size": %d, "format": "qcow2", "filename": %q}`, size, disk)), nil
+		return fmt.Appendf(nil, `{"virtual-size": %d, "format": "qcow2", "filename": %q}`, size, disk), nil
 	default:
 		return nil, fmt.Errorf("recordingExecRunner: unexpected qemu-img subcommand %q", args[0])
 	}

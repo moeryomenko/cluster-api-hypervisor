@@ -17,6 +17,7 @@ func validMutation() Mutation {
 
 func TestMutationValidateRejectsProtocolBeforeOwnerSideEffects(t *testing.T) {
 	mutation := validMutation()
+
 	mutation.ProtocolMajor = ProtocolMajor + 1
 	if err := mutation.Validate(); !errors.Is(err, ErrProtocol) {
 		t.Fatalf("Validate() error = %v, want ErrProtocol", err)
@@ -36,6 +37,7 @@ func TestMutationValidateRequiresStableIdentityAndReplayKey(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			mutation := validMutation()
 			testCase.mutate(&mutation)
+
 			if err := mutation.Validate(); !errors.Is(err, ErrInvalidRequest) {
 				t.Fatalf("Validate() error = %v, want ErrInvalidRequest", err)
 			}

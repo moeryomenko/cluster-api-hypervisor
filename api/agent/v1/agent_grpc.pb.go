@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v7.36.1
-// source: agent.proto
+// source: api/agent/v1/agent.proto
 
 package agentv1
 
@@ -19,11 +19,22 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	HostAgent_Health_FullMethodName   = "/k8labs.agent.v1.HostAgent/Health"
-	HostAgent_EnsureVM_FullMethodName = "/k8labs.agent.v1.HostAgent/EnsureVM"
-	HostAgent_GetVM_FullMethodName    = "/k8labs.agent.v1.HostAgent/GetVM"
-	HostAgent_StopVM_FullMethodName   = "/k8labs.agent.v1.HostAgent/StopVM"
-	HostAgent_DeleteVM_FullMethodName = "/k8labs.agent.v1.HostAgent/DeleteVM"
+	HostAgent_Health_FullMethodName        = "/k8labs.agent.v1.HostAgent/Health"
+	HostAgent_EnsureVM_FullMethodName      = "/k8labs.agent.v1.HostAgent/EnsureVM"
+	HostAgent_GetVM_FullMethodName         = "/k8labs.agent.v1.HostAgent/GetVM"
+	HostAgent_StopVM_FullMethodName        = "/k8labs.agent.v1.HostAgent/StopVM"
+	HostAgent_DeleteVM_FullMethodName      = "/k8labs.agent.v1.HostAgent/DeleteVM"
+	HostAgent_EnsureNetwork_FullMethodName = "/k8labs.agent.v1.HostAgent/EnsureNetwork"
+	HostAgent_DeleteNetwork_FullMethodName = "/k8labs.agent.v1.HostAgent/DeleteNetwork"
+	HostAgent_EnsurePort_FullMethodName    = "/k8labs.agent.v1.HostAgent/EnsurePort"
+	HostAgent_DeletePort_FullMethodName    = "/k8labs.agent.v1.HostAgent/DeletePort"
+	HostAgent_AllocateIP_FullMethodName    = "/k8labs.agent.v1.HostAgent/AllocateIP"
+	HostAgent_ReleaseIP_FullMethodName     = "/k8labs.agent.v1.HostAgent/ReleaseIP"
+	HostAgent_PublishPort_FullMethodName   = "/k8labs.agent.v1.HostAgent/PublishPort"
+	HostAgent_ReleasePort_FullMethodName   = "/k8labs.agent.v1.HostAgent/ReleasePort"
+	HostAgent_Diagnostics_FullMethodName   = "/k8labs.agent.v1.HostAgent/Diagnostics"
+	HostAgent_AcquireProbe_FullMethodName  = "/k8labs.agent.v1.HostAgent/AcquireProbe"
+	HostAgent_ReleaseProbe_FullMethodName  = "/k8labs.agent.v1.HostAgent/ReleaseProbe"
 )
 
 // HostAgentClient is the client API for HostAgent service.
@@ -35,6 +46,17 @@ type HostAgentClient interface {
 	GetVM(ctx context.Context, in *GetVMRequest, opts ...grpc.CallOption) (*VMResponse, error)
 	StopVM(ctx context.Context, in *MutationRequest, opts ...grpc.CallOption) (*Empty, error)
 	DeleteVM(ctx context.Context, in *MutationRequest, opts ...grpc.CallOption) (*Empty, error)
+	EnsureNetwork(ctx context.Context, in *EnsureNetworkRequest, opts ...grpc.CallOption) (*Empty, error)
+	DeleteNetwork(ctx context.Context, in *MutationRequest, opts ...grpc.CallOption) (*Empty, error)
+	EnsurePort(ctx context.Context, in *EnsurePortRequest, opts ...grpc.CallOption) (*PortResponse, error)
+	DeletePort(ctx context.Context, in *MutationRequest, opts ...grpc.CallOption) (*Empty, error)
+	AllocateIP(ctx context.Context, in *MutationRequest, opts ...grpc.CallOption) (*AllocateIPResponse, error)
+	ReleaseIP(ctx context.Context, in *ReleaseIPRequest, opts ...grpc.CallOption) (*Empty, error)
+	PublishPort(ctx context.Context, in *PublishPortRequest, opts ...grpc.CallOption) (*PublishPortResponse, error)
+	ReleasePort(ctx context.Context, in *ReleasePortRequest, opts ...grpc.CallOption) (*Empty, error)
+	Diagnostics(ctx context.Context, in *DiagnosticsRequest, opts ...grpc.CallOption) (*DiagnosticsResponse, error)
+	AcquireProbe(ctx context.Context, in *AcquireProbeRequest, opts ...grpc.CallOption) (*ProbeResponse, error)
+	ReleaseProbe(ctx context.Context, in *ReleaseProbeRequest, opts ...grpc.CallOption) (*Empty, error)
 }
 
 type hostAgentClient struct {
@@ -95,6 +117,116 @@ func (c *hostAgentClient) DeleteVM(ctx context.Context, in *MutationRequest, opt
 	return out, nil
 }
 
+func (c *hostAgentClient) EnsureNetwork(ctx context.Context, in *EnsureNetworkRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, HostAgent_EnsureNetwork_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostAgentClient) DeleteNetwork(ctx context.Context, in *MutationRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, HostAgent_DeleteNetwork_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostAgentClient) EnsurePort(ctx context.Context, in *EnsurePortRequest, opts ...grpc.CallOption) (*PortResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PortResponse)
+	err := c.cc.Invoke(ctx, HostAgent_EnsurePort_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostAgentClient) DeletePort(ctx context.Context, in *MutationRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, HostAgent_DeletePort_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostAgentClient) AllocateIP(ctx context.Context, in *MutationRequest, opts ...grpc.CallOption) (*AllocateIPResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AllocateIPResponse)
+	err := c.cc.Invoke(ctx, HostAgent_AllocateIP_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostAgentClient) ReleaseIP(ctx context.Context, in *ReleaseIPRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, HostAgent_ReleaseIP_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostAgentClient) PublishPort(ctx context.Context, in *PublishPortRequest, opts ...grpc.CallOption) (*PublishPortResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PublishPortResponse)
+	err := c.cc.Invoke(ctx, HostAgent_PublishPort_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostAgentClient) ReleasePort(ctx context.Context, in *ReleasePortRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, HostAgent_ReleasePort_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostAgentClient) Diagnostics(ctx context.Context, in *DiagnosticsRequest, opts ...grpc.CallOption) (*DiagnosticsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DiagnosticsResponse)
+	err := c.cc.Invoke(ctx, HostAgent_Diagnostics_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostAgentClient) AcquireProbe(ctx context.Context, in *AcquireProbeRequest, opts ...grpc.CallOption) (*ProbeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProbeResponse)
+	err := c.cc.Invoke(ctx, HostAgent_AcquireProbe_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostAgentClient) ReleaseProbe(ctx context.Context, in *ReleaseProbeRequest, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, HostAgent_ReleaseProbe_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HostAgentServer is the server API for HostAgent service.
 // All implementations must embed UnimplementedHostAgentServer
 // for forward compatibility.
@@ -104,6 +236,17 @@ type HostAgentServer interface {
 	GetVM(context.Context, *GetVMRequest) (*VMResponse, error)
 	StopVM(context.Context, *MutationRequest) (*Empty, error)
 	DeleteVM(context.Context, *MutationRequest) (*Empty, error)
+	EnsureNetwork(context.Context, *EnsureNetworkRequest) (*Empty, error)
+	DeleteNetwork(context.Context, *MutationRequest) (*Empty, error)
+	EnsurePort(context.Context, *EnsurePortRequest) (*PortResponse, error)
+	DeletePort(context.Context, *MutationRequest) (*Empty, error)
+	AllocateIP(context.Context, *MutationRequest) (*AllocateIPResponse, error)
+	ReleaseIP(context.Context, *ReleaseIPRequest) (*Empty, error)
+	PublishPort(context.Context, *PublishPortRequest) (*PublishPortResponse, error)
+	ReleasePort(context.Context, *ReleasePortRequest) (*Empty, error)
+	Diagnostics(context.Context, *DiagnosticsRequest) (*DiagnosticsResponse, error)
+	AcquireProbe(context.Context, *AcquireProbeRequest) (*ProbeResponse, error)
+	ReleaseProbe(context.Context, *ReleaseProbeRequest) (*Empty, error)
 	mustEmbedUnimplementedHostAgentServer()
 }
 
@@ -128,6 +271,39 @@ func (UnimplementedHostAgentServer) StopVM(context.Context, *MutationRequest) (*
 }
 func (UnimplementedHostAgentServer) DeleteVM(context.Context, *MutationRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteVM not implemented")
+}
+func (UnimplementedHostAgentServer) EnsureNetwork(context.Context, *EnsureNetworkRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnsureNetwork not implemented")
+}
+func (UnimplementedHostAgentServer) DeleteNetwork(context.Context, *MutationRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteNetwork not implemented")
+}
+func (UnimplementedHostAgentServer) EnsurePort(context.Context, *EnsurePortRequest) (*PortResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnsurePort not implemented")
+}
+func (UnimplementedHostAgentServer) DeletePort(context.Context, *MutationRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeletePort not implemented")
+}
+func (UnimplementedHostAgentServer) AllocateIP(context.Context, *MutationRequest) (*AllocateIPResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AllocateIP not implemented")
+}
+func (UnimplementedHostAgentServer) ReleaseIP(context.Context, *ReleaseIPRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReleaseIP not implemented")
+}
+func (UnimplementedHostAgentServer) PublishPort(context.Context, *PublishPortRequest) (*PublishPortResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PublishPort not implemented")
+}
+func (UnimplementedHostAgentServer) ReleasePort(context.Context, *ReleasePortRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReleasePort not implemented")
+}
+func (UnimplementedHostAgentServer) Diagnostics(context.Context, *DiagnosticsRequest) (*DiagnosticsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Diagnostics not implemented")
+}
+func (UnimplementedHostAgentServer) AcquireProbe(context.Context, *AcquireProbeRequest) (*ProbeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AcquireProbe not implemented")
+}
+func (UnimplementedHostAgentServer) ReleaseProbe(context.Context, *ReleaseProbeRequest) (*Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReleaseProbe not implemented")
 }
 func (UnimplementedHostAgentServer) mustEmbedUnimplementedHostAgentServer() {}
 func (UnimplementedHostAgentServer) testEmbeddedByValue()                   {}
@@ -240,6 +416,204 @@ func _HostAgent_DeleteVM_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HostAgent_EnsureNetwork_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnsureNetworkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).EnsureNetwork(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_EnsureNetwork_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).EnsureNetwork(ctx, req.(*EnsureNetworkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostAgent_DeleteNetwork_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MutationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).DeleteNetwork(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_DeleteNetwork_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).DeleteNetwork(ctx, req.(*MutationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostAgent_EnsurePort_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnsurePortRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).EnsurePort(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_EnsurePort_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).EnsurePort(ctx, req.(*EnsurePortRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostAgent_DeletePort_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MutationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).DeletePort(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_DeletePort_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).DeletePort(ctx, req.(*MutationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostAgent_AllocateIP_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MutationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).AllocateIP(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_AllocateIP_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).AllocateIP(ctx, req.(*MutationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostAgent_ReleaseIP_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseIPRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).ReleaseIP(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_ReleaseIP_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).ReleaseIP(ctx, req.(*ReleaseIPRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostAgent_PublishPort_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PublishPortRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).PublishPort(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_PublishPort_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).PublishPort(ctx, req.(*PublishPortRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostAgent_ReleasePort_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleasePortRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).ReleasePort(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_ReleasePort_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).ReleasePort(ctx, req.(*ReleasePortRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostAgent_Diagnostics_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DiagnosticsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).Diagnostics(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_Diagnostics_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).Diagnostics(ctx, req.(*DiagnosticsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostAgent_AcquireProbe_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AcquireProbeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).AcquireProbe(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_AcquireProbe_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).AcquireProbe(ctx, req.(*AcquireProbeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostAgent_ReleaseProbe_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseProbeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).ReleaseProbe(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_ReleaseProbe_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).ReleaseProbe(ctx, req.(*ReleaseProbeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // HostAgent_ServiceDesc is the grpc.ServiceDesc for HostAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -267,7 +641,51 @@ var HostAgent_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "DeleteVM",
 			Handler:    _HostAgent_DeleteVM_Handler,
 		},
+		{
+			MethodName: "EnsureNetwork",
+			Handler:    _HostAgent_EnsureNetwork_Handler,
+		},
+		{
+			MethodName: "DeleteNetwork",
+			Handler:    _HostAgent_DeleteNetwork_Handler,
+		},
+		{
+			MethodName: "EnsurePort",
+			Handler:    _HostAgent_EnsurePort_Handler,
+		},
+		{
+			MethodName: "DeletePort",
+			Handler:    _HostAgent_DeletePort_Handler,
+		},
+		{
+			MethodName: "AllocateIP",
+			Handler:    _HostAgent_AllocateIP_Handler,
+		},
+		{
+			MethodName: "ReleaseIP",
+			Handler:    _HostAgent_ReleaseIP_Handler,
+		},
+		{
+			MethodName: "PublishPort",
+			Handler:    _HostAgent_PublishPort_Handler,
+		},
+		{
+			MethodName: "ReleasePort",
+			Handler:    _HostAgent_ReleasePort_Handler,
+		},
+		{
+			MethodName: "Diagnostics",
+			Handler:    _HostAgent_Diagnostics_Handler,
+		},
+		{
+			MethodName: "AcquireProbe",
+			Handler:    _HostAgent_AcquireProbe_Handler,
+		},
+		{
+			MethodName: "ReleaseProbe",
+			Handler:    _HostAgent_ReleaseProbe_Handler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "agent.proto",
+	Metadata: "api/agent/v1/agent.proto",
 }

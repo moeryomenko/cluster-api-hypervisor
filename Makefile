@@ -63,6 +63,20 @@ tidy: ## Tidy go module dependencies
 	@go mod tidy -v
 	@go work sync
 
+.PHONY: proto
+proto: ## Regenerate checked-in HostAgent protobuf and gRPC bindings
+	@protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative api/agent/v1/agent.proto
+
+.PHONY: proto-check
+proto-check: ## Fail if regenerating HostAgent bindings changes their current content
+	@set -e; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	cp api/agent/v1/agent.pb.go api/agent/v1/agent_grpc.pb.go "$$tmp"; \
+	$(MAKE) proto; \
+	cmp -s "$$tmp/agent.pb.go" api/agent/v1/agent.pb.go; \
+	cmp -s "$$tmp/agent_grpc.pb.go" api/agent/v1/agent_grpc.pb.go
+
 .PHONY: generate
 generate: ## Run controller-gen codegen (deepcopy, CRDs, RBAC, webhook manifests)
 	@go tool controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./api/..."

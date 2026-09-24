@@ -139,16 +139,19 @@ func TestDeriveDistinct(t *testing.T) {
 		"k8labs-2-md-0-x1y2z-a3b4c-g7h8i",
 		"k8labs-2-md-0-x1y2z-a3b4c-j9k0l",
 	}
+
 	byAddr := make(map[string]string, len(names))
 	for _, machine := range names {
 		cluster := "k8labs"
 		if strings.HasPrefix(machine, "k8labs-2-") {
 			cluster = "k8labs-2"
 		}
+
 		addr := mac.Derive(cluster, machine)
 		if other, dup := byAddr[addr]; dup {
 			t.Errorf("lab machine set collided: %q and %q both derived %q", other, machine, addr)
 		}
+
 		byAddr[addr] = machine
 	}
 }

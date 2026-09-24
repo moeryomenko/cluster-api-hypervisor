@@ -58,6 +58,7 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd/fake"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
 )
 
 // newMachineK8netdFakeServer creates a fake k8netd server on a temp socket.
@@ -563,9 +564,10 @@ func TestHypervisorMachineK8netd_AllocateIPUsesDerivedMAC(t *testing.T) {
 	if capturedMAC == "" {
 		t.Fatalf("AllocateIP not called or mac param empty; requests=%v", srv.Requests())
 	}
-	// MAC must be in the c6:e5:50:1c:ec family and match Derive output length.
-	if !strings.HasPrefix(capturedMAC, "c6:e5:50:1c:ec") {
-		t.Errorf("AllocateIP mac = %q, want prefix c6:e5:50:1c:ec (stable hash family)", capturedMAC)
+
+	wantMAC := mac.Derive(lc.name, lm.machine.Name)
+	if capturedMAC != wantMAC {
+		t.Errorf("AllocateIP mac = %q, want derived MAC %q", capturedMAC, wantMAC)
 	}
 	// Verify the reconcile's DeriveMAC seam was exercised. We capture via reflection on the fixture's derive counter.
 	// The fixture's derive field is not accessible here after reflection patching, so we at least ensure MAC looks derived.

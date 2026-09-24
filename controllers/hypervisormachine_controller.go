@@ -1200,7 +1200,21 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 
 		state, err = vm.Info(ctx)
 		if err != nil {
-			return fmt.Errorf("info after re-boot for %q: %w", hm.Name, err)
+			r.Recorder.Eventf(
+				hm,
+				corev1.EventTypeWarning,
+				"FailedProvision",
+				"failed to query re-booted VM for %q: %v",
+				hm.Name,
+				err,
+			)
+
+			hm.Status.Ready = false
+			if err := r.Status().Update(ctx, hm); err != nil {
+				return fmt.Errorf("update HypervisorMachine status: %w", err)
+			}
+
+			return nil
 		}
 	}
 

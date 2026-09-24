@@ -135,6 +135,8 @@ func crdDirectory() string {
 	if dir := os.Getenv("CAPI_CRD_DIRECTORY"); dir != "" {
 		return dir
 	}
+
 	_, file, _, _ := runtime.Caller(0)
+
 	return filepath.Join(filepath.Dir(file), "..", "..", "testdata", "capi-crds")
 }

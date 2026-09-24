@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.12
 // 	protoc        v7.36.1
-// source: agent.proto
+// source: api/agent/v1/agent.proto
 
 package agentv1
 
@@ -32,7 +32,7 @@ type Owner struct {
 
 func (x *Owner) Reset() {
 	*x = Owner{}
-	mi := &file_agent_proto_msgTypes[0]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -44,7 +44,7 @@ func (x *Owner) String() string {
 func (*Owner) ProtoMessage() {}
 
 func (x *Owner) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[0]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -57,7 +57,7 @@ func (x *Owner) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Owner.ProtoReflect.Descriptor instead.
 func (*Owner) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{0}
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Owner) GetInstallationId() string {
@@ -93,7 +93,7 @@ type Mutation struct {
 
 func (x *Mutation) Reset() {
 	*x = Mutation{}
-	mi := &file_agent_proto_msgTypes[1]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -105,7 +105,7 @@ func (x *Mutation) String() string {
 func (*Mutation) ProtoMessage() {}
 
 func (x *Mutation) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[1]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -118,7 +118,7 @@ func (x *Mutation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Mutation.ProtoReflect.Descriptor instead.
 func (*Mutation) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{1}
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Mutation) GetProtocolMajor() uint32 {
@@ -158,7 +158,7 @@ type HealthRequest struct {
 
 func (x *HealthRequest) Reset() {
 	*x = HealthRequest{}
-	mi := &file_agent_proto_msgTypes[2]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -170,7 +170,7 @@ func (x *HealthRequest) String() string {
 func (*HealthRequest) ProtoMessage() {}
 
 func (x *HealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[2]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -183,7 +183,7 @@ func (x *HealthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthRequest.ProtoReflect.Descriptor instead.
 func (*HealthRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{2}
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *HealthRequest) GetProtocolMajor() uint32 {
@@ -207,7 +207,7 @@ type Capabilities struct {
 
 func (x *Capabilities) Reset() {
 	*x = Capabilities{}
-	mi := &file_agent_proto_msgTypes[3]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -219,7 +219,7 @@ func (x *Capabilities) String() string {
 func (*Capabilities) ProtoMessage() {}
 
 func (x *Capabilities) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[3]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -232,7 +232,7 @@ func (x *Capabilities) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Capabilities.ProtoReflect.Descriptor instead.
 func (*Capabilities) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{3}
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Capabilities) GetProtocolMajor() uint32 {
@@ -296,7 +296,7 @@ type VMDesired struct {
 
 func (x *VMDesired) Reset() {
 	*x = VMDesired{}
-	mi := &file_agent_proto_msgTypes[4]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -308,7 +308,7 @@ func (x *VMDesired) String() string {
 func (*VMDesired) ProtoMessage() {}
 
 func (x *VMDesired) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[4]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -321,7 +321,7 @@ func (x *VMDesired) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VMDesired.ProtoReflect.Descriptor instead.
 func (*VMDesired) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{4}
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *VMDesired) GetUid() string {
@@ -419,7 +419,7 @@ type VMObserved struct {
 
 func (x *VMObserved) Reset() {
 	*x = VMObserved{}
-	mi := &file_agent_proto_msgTypes[5]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -431,7 +431,7 @@ func (x *VMObserved) String() string {
 func (*VMObserved) ProtoMessage() {}
 
 func (x *VMObserved) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[5]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -444,7 +444,7 @@ func (x *VMObserved) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VMObserved.ProtoReflect.Descriptor instead.
 func (*VMObserved) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{5}
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *VMObserved) GetUid() string {
@@ -517,6 +517,330 @@ func (x *VMObserved) GetGeneration() uint64 {
 	return 0
 }
 
+type NetworkRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Cidr          string                 `protobuf:"bytes,2,opt,name=cidr,proto3" json:"cidr,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NetworkRequest) Reset() {
+	*x = NetworkRequest{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NetworkRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NetworkRequest) ProtoMessage() {}
+
+func (x *NetworkRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NetworkRequest.ProtoReflect.Descriptor instead.
+func (*NetworkRequest) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *NetworkRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *NetworkRequest) GetCidr() string {
+	if x != nil {
+		return x.Cidr
+	}
+	return ""
+}
+
+type PortRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Network       string                 `protobuf:"bytes,2,opt,name=network,proto3" json:"network,omitempty"`
+	Mac           string                 `protobuf:"bytes,3,opt,name=mac,proto3" json:"mac,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PortRequest) Reset() {
+	*x = PortRequest{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PortRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PortRequest) ProtoMessage() {}
+
+func (x *PortRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PortRequest.ProtoReflect.Descriptor instead.
+func (*PortRequest) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *PortRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *PortRequest) GetNetwork() string {
+	if x != nil {
+		return x.Network
+	}
+	return ""
+}
+
+func (x *PortRequest) GetMac() string {
+	if x != nil {
+		return x.Mac
+	}
+	return ""
+}
+
+type PortObserved struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Network       string                 `protobuf:"bytes,2,opt,name=network,proto3" json:"network,omitempty"`
+	Mac           string                 `protobuf:"bytes,3,opt,name=mac,proto3" json:"mac,omitempty"`
+	Ip            string                 `protobuf:"bytes,4,opt,name=ip,proto3" json:"ip,omitempty"`
+	Published     map[uint32]uint32      `protobuf:"bytes,5,rep,name=published,proto3" json:"published,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PortObserved) Reset() {
+	*x = PortObserved{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PortObserved) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PortObserved) ProtoMessage() {}
+
+func (x *PortObserved) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PortObserved.ProtoReflect.Descriptor instead.
+func (*PortObserved) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *PortObserved) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *PortObserved) GetNetwork() string {
+	if x != nil {
+		return x.Network
+	}
+	return ""
+}
+
+func (x *PortObserved) GetMac() string {
+	if x != nil {
+		return x.Mac
+	}
+	return ""
+}
+
+func (x *PortObserved) GetIp() string {
+	if x != nil {
+		return x.Ip
+	}
+	return ""
+}
+
+func (x *PortObserved) GetPublished() map[uint32]uint32 {
+	if x != nil {
+		return x.Published
+	}
+	return nil
+}
+
+type Diagnostics struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OwnerUid      string                 `protobuf:"bytes,1,opt,name=owner_uid,json=ownerUid,proto3" json:"owner_uid,omitempty"`
+	Messages      []string               `protobuf:"bytes,2,rep,name=messages,proto3" json:"messages,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Diagnostics) Reset() {
+	*x = Diagnostics{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Diagnostics) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Diagnostics) ProtoMessage() {}
+
+func (x *Diagnostics) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Diagnostics.ProtoReflect.Descriptor instead.
+func (*Diagnostics) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *Diagnostics) GetOwnerUid() string {
+	if x != nil {
+		return x.OwnerUid
+	}
+	return ""
+}
+
+func (x *Diagnostics) GetMessages() []string {
+	if x != nil {
+		return x.Messages
+	}
+	return nil
+}
+
+type ProbeLease struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uid           string                 `protobuf:"bytes,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	Network       string                 `protobuf:"bytes,2,opt,name=network,proto3" json:"network,omitempty"`
+	Port          string                 `protobuf:"bytes,3,opt,name=port,proto3" json:"port,omitempty"`
+	Mac           string                 `protobuf:"bytes,4,opt,name=mac,proto3" json:"mac,omitempty"`
+	Ip            string                 `protobuf:"bytes,5,opt,name=ip,proto3" json:"ip,omitempty"`
+	ExpiresAt     int64                  `protobuf:"varint,6,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProbeLease) Reset() {
+	*x = ProbeLease{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProbeLease) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProbeLease) ProtoMessage() {}
+
+func (x *ProbeLease) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProbeLease.ProtoReflect.Descriptor instead.
+func (*ProbeLease) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ProbeLease) GetUid() string {
+	if x != nil {
+		return x.Uid
+	}
+	return ""
+}
+
+func (x *ProbeLease) GetNetwork() string {
+	if x != nil {
+		return x.Network
+	}
+	return ""
+}
+
+func (x *ProbeLease) GetPort() string {
+	if x != nil {
+		return x.Port
+	}
+	return ""
+}
+
+func (x *ProbeLease) GetMac() string {
+	if x != nil {
+		return x.Mac
+	}
+	return ""
+}
+
+func (x *ProbeLease) GetIp() string {
+	if x != nil {
+		return x.Ip
+	}
+	return ""
+}
+
+func (x *ProbeLease) GetExpiresAt() int64 {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return 0
+}
+
 type EnsureVMRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Mutation      *Mutation              `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
@@ -527,7 +851,7 @@ type EnsureVMRequest struct {
 
 func (x *EnsureVMRequest) Reset() {
 	*x = EnsureVMRequest{}
-	mi := &file_agent_proto_msgTypes[6]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -539,7 +863,7 @@ func (x *EnsureVMRequest) String() string {
 func (*EnsureVMRequest) ProtoMessage() {}
 
 func (x *EnsureVMRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[6]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -552,7 +876,7 @@ func (x *EnsureVMRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnsureVMRequest.ProtoReflect.Descriptor instead.
 func (*EnsureVMRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{6}
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *EnsureVMRequest) GetMutation() *Mutation {
@@ -579,7 +903,7 @@ type GetVMRequest struct {
 
 func (x *GetVMRequest) Reset() {
 	*x = GetVMRequest{}
-	mi := &file_agent_proto_msgTypes[7]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -591,7 +915,7 @@ func (x *GetVMRequest) String() string {
 func (*GetVMRequest) ProtoMessage() {}
 
 func (x *GetVMRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[7]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -604,7 +928,7 @@ func (x *GetVMRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetVMRequest.ProtoReflect.Descriptor instead.
 func (*GetVMRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{7}
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *GetVMRequest) GetOwner() *Owner {
@@ -630,7 +954,7 @@ type VMResponse struct {
 
 func (x *VMResponse) Reset() {
 	*x = VMResponse{}
-	mi := &file_agent_proto_msgTypes[8]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -642,7 +966,7 @@ func (x *VMResponse) String() string {
 func (*VMResponse) ProtoMessage() {}
 
 func (x *VMResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[8]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -655,7 +979,7 @@ func (x *VMResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VMResponse.ProtoReflect.Descriptor instead.
 func (*VMResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{8}
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *VMResponse) GetObserved() *VMObserved {
@@ -674,7 +998,7 @@ type MutationRequest struct {
 
 func (x *MutationRequest) Reset() {
 	*x = MutationRequest{}
-	mi := &file_agent_proto_msgTypes[9]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -686,7 +1010,7 @@ func (x *MutationRequest) String() string {
 func (*MutationRequest) ProtoMessage() {}
 
 func (x *MutationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[9]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -699,7 +1023,7 @@ func (x *MutationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MutationRequest.ProtoReflect.Descriptor instead.
 func (*MutationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{9}
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *MutationRequest) GetMutation() *Mutation {
@@ -707,6 +1031,658 @@ func (x *MutationRequest) GetMutation() *Mutation {
 		return x.Mutation
 	}
 	return nil
+}
+
+type EnsureNetworkRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mutation      *Mutation              `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	Network       *NetworkRequest        `protobuf:"bytes,2,opt,name=network,proto3" json:"network,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EnsureNetworkRequest) Reset() {
+	*x = EnsureNetworkRequest{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EnsureNetworkRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EnsureNetworkRequest) ProtoMessage() {}
+
+func (x *EnsureNetworkRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EnsureNetworkRequest.ProtoReflect.Descriptor instead.
+func (*EnsureNetworkRequest) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *EnsureNetworkRequest) GetMutation() *Mutation {
+	if x != nil {
+		return x.Mutation
+	}
+	return nil
+}
+
+func (x *EnsureNetworkRequest) GetNetwork() *NetworkRequest {
+	if x != nil {
+		return x.Network
+	}
+	return nil
+}
+
+type EnsurePortRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mutation      *Mutation              `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	Port          *PortRequest           `protobuf:"bytes,2,opt,name=port,proto3" json:"port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EnsurePortRequest) Reset() {
+	*x = EnsurePortRequest{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EnsurePortRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EnsurePortRequest) ProtoMessage() {}
+
+func (x *EnsurePortRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EnsurePortRequest.ProtoReflect.Descriptor instead.
+func (*EnsurePortRequest) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *EnsurePortRequest) GetMutation() *Mutation {
+	if x != nil {
+		return x.Mutation
+	}
+	return nil
+}
+
+func (x *EnsurePortRequest) GetPort() *PortRequest {
+	if x != nil {
+		return x.Port
+	}
+	return nil
+}
+
+type PortResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Observed      *PortObserved          `protobuf:"bytes,1,opt,name=observed,proto3" json:"observed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PortResponse) Reset() {
+	*x = PortResponse{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PortResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PortResponse) ProtoMessage() {}
+
+func (x *PortResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PortResponse.ProtoReflect.Descriptor instead.
+func (*PortResponse) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *PortResponse) GetObserved() *PortObserved {
+	if x != nil {
+		return x.Observed
+	}
+	return nil
+}
+
+type AllocateIPResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ip            string                 `protobuf:"bytes,1,opt,name=ip,proto3" json:"ip,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AllocateIPResponse) Reset() {
+	*x = AllocateIPResponse{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AllocateIPResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AllocateIPResponse) ProtoMessage() {}
+
+func (x *AllocateIPResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AllocateIPResponse.ProtoReflect.Descriptor instead.
+func (*AllocateIPResponse) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *AllocateIPResponse) GetIp() string {
+	if x != nil {
+		return x.Ip
+	}
+	return ""
+}
+
+type ReleaseIPRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mutation      *Mutation              `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	Ip            string                 `protobuf:"bytes,2,opt,name=ip,proto3" json:"ip,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseIPRequest) Reset() {
+	*x = ReleaseIPRequest{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseIPRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseIPRequest) ProtoMessage() {}
+
+func (x *ReleaseIPRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseIPRequest.ProtoReflect.Descriptor instead.
+func (*ReleaseIPRequest) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *ReleaseIPRequest) GetMutation() *Mutation {
+	if x != nil {
+		return x.Mutation
+	}
+	return nil
+}
+
+func (x *ReleaseIPRequest) GetIp() string {
+	if x != nil {
+		return x.Ip
+	}
+	return ""
+}
+
+type PublishPortRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mutation      *Mutation              `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	GuestPort     uint32                 `protobuf:"varint,2,opt,name=guest_port,json=guestPort,proto3" json:"guest_port,omitempty"`
+	HostPort      uint32                 `protobuf:"varint,3,opt,name=host_port,json=hostPort,proto3" json:"host_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublishPortRequest) Reset() {
+	*x = PublishPortRequest{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublishPortRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublishPortRequest) ProtoMessage() {}
+
+func (x *PublishPortRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublishPortRequest.ProtoReflect.Descriptor instead.
+func (*PublishPortRequest) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *PublishPortRequest) GetMutation() *Mutation {
+	if x != nil {
+		return x.Mutation
+	}
+	return nil
+}
+
+func (x *PublishPortRequest) GetGuestPort() uint32 {
+	if x != nil {
+		return x.GuestPort
+	}
+	return 0
+}
+
+func (x *PublishPortRequest) GetHostPort() uint32 {
+	if x != nil {
+		return x.HostPort
+	}
+	return 0
+}
+
+type PublishPortResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	HostPort      uint32                 `protobuf:"varint,1,opt,name=host_port,json=hostPort,proto3" json:"host_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublishPortResponse) Reset() {
+	*x = PublishPortResponse{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublishPortResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublishPortResponse) ProtoMessage() {}
+
+func (x *PublishPortResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublishPortResponse.ProtoReflect.Descriptor instead.
+func (*PublishPortResponse) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *PublishPortResponse) GetHostPort() uint32 {
+	if x != nil {
+		return x.HostPort
+	}
+	return 0
+}
+
+type ReleasePortRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mutation      *Mutation              `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	GuestPort     uint32                 `protobuf:"varint,2,opt,name=guest_port,json=guestPort,proto3" json:"guest_port,omitempty"`
+	HostPort      uint32                 `protobuf:"varint,3,opt,name=host_port,json=hostPort,proto3" json:"host_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleasePortRequest) Reset() {
+	*x = ReleasePortRequest{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleasePortRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleasePortRequest) ProtoMessage() {}
+
+func (x *ReleasePortRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleasePortRequest.ProtoReflect.Descriptor instead.
+func (*ReleasePortRequest) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ReleasePortRequest) GetMutation() *Mutation {
+	if x != nil {
+		return x.Mutation
+	}
+	return nil
+}
+
+func (x *ReleasePortRequest) GetGuestPort() uint32 {
+	if x != nil {
+		return x.GuestPort
+	}
+	return 0
+}
+
+func (x *ReleasePortRequest) GetHostPort() uint32 {
+	if x != nil {
+		return x.HostPort
+	}
+	return 0
+}
+
+type DiagnosticsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Owner         *Owner                 `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	ProtocolMajor uint32                 `protobuf:"varint,2,opt,name=protocol_major,json=protocolMajor,proto3" json:"protocol_major,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiagnosticsRequest) Reset() {
+	*x = DiagnosticsRequest{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiagnosticsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiagnosticsRequest) ProtoMessage() {}
+
+func (x *DiagnosticsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiagnosticsRequest.ProtoReflect.Descriptor instead.
+func (*DiagnosticsRequest) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *DiagnosticsRequest) GetOwner() *Owner {
+	if x != nil {
+		return x.Owner
+	}
+	return nil
+}
+
+func (x *DiagnosticsRequest) GetProtocolMajor() uint32 {
+	if x != nil {
+		return x.ProtocolMajor
+	}
+	return 0
+}
+
+type DiagnosticsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Diagnostics   *Diagnostics           `protobuf:"bytes,1,opt,name=diagnostics,proto3" json:"diagnostics,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiagnosticsResponse) Reset() {
+	*x = DiagnosticsResponse{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiagnosticsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiagnosticsResponse) ProtoMessage() {}
+
+func (x *DiagnosticsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiagnosticsResponse.ProtoReflect.Descriptor instead.
+func (*DiagnosticsResponse) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *DiagnosticsResponse) GetDiagnostics() *Diagnostics {
+	if x != nil {
+		return x.Diagnostics
+	}
+	return nil
+}
+
+type AcquireProbeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mutation      *Mutation              `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	Network       string                 `protobuf:"bytes,2,opt,name=network,proto3" json:"network,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AcquireProbeRequest) Reset() {
+	*x = AcquireProbeRequest{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AcquireProbeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AcquireProbeRequest) ProtoMessage() {}
+
+func (x *AcquireProbeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AcquireProbeRequest.ProtoReflect.Descriptor instead.
+func (*AcquireProbeRequest) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *AcquireProbeRequest) GetMutation() *Mutation {
+	if x != nil {
+		return x.Mutation
+	}
+	return nil
+}
+
+func (x *AcquireProbeRequest) GetNetwork() string {
+	if x != nil {
+		return x.Network
+	}
+	return ""
+}
+
+type ProbeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Lease         *ProbeLease            `protobuf:"bytes,1,opt,name=lease,proto3" json:"lease,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProbeResponse) Reset() {
+	*x = ProbeResponse{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProbeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProbeResponse) ProtoMessage() {}
+
+func (x *ProbeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProbeResponse.ProtoReflect.Descriptor instead.
+func (*ProbeResponse) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *ProbeResponse) GetLease() *ProbeLease {
+	if x != nil {
+		return x.Lease
+	}
+	return nil
+}
+
+type ReleaseProbeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mutation      *Mutation              `protobuf:"bytes,1,opt,name=mutation,proto3" json:"mutation,omitempty"`
+	Uid           string                 `protobuf:"bytes,2,opt,name=uid,proto3" json:"uid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseProbeRequest) Reset() {
+	*x = ReleaseProbeRequest{}
+	mi := &file_api_agent_v1_agent_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseProbeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseProbeRequest) ProtoMessage() {}
+
+func (x *ReleaseProbeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_agent_v1_agent_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseProbeRequest.ProtoReflect.Descriptor instead.
+func (*ReleaseProbeRequest) Descriptor() ([]byte, []int) {
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *ReleaseProbeRequest) GetMutation() *Mutation {
+	if x != nil {
+		return x.Mutation
+	}
+	return nil
+}
+
+func (x *ReleaseProbeRequest) GetUid() string {
+	if x != nil {
+		return x.Uid
+	}
+	return ""
 }
 
 type Empty struct {
@@ -717,7 +1693,7 @@ type Empty struct {
 
 func (x *Empty) Reset() {
 	*x = Empty{}
-	mi := &file_agent_proto_msgTypes[10]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -729,7 +1705,7 @@ func (x *Empty) String() string {
 func (*Empty) ProtoMessage() {}
 
 func (x *Empty) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[10]
+	mi := &file_api_agent_v1_agent_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -742,14 +1718,14 @@ func (x *Empty) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Empty.ProtoReflect.Descriptor instead.
 func (*Empty) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{10}
+	return file_api_agent_v1_agent_proto_rawDescGZIP(), []int{28}
 }
 
-var File_agent_proto protoreflect.FileDescriptor
+var File_api_agent_v1_agent_proto protoreflect.FileDescriptor
 
-const file_agent_proto_rawDesc = "" +
+const file_api_agent_v1_agent_proto_rawDesc = "" +
 	"\n" +
-	"\vagent.proto\x12\x0fk8labs.agent.v1\"[\n" +
+	"\x18api/agent/v1/agent.proto\x12\x0fk8labs.agent.v1\"[\n" +
 	"\x05Owner\x12'\n" +
 	"\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12\x17\n" +
 	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x10\n" +
@@ -800,7 +1776,35 @@ const file_agent_proto_rawDesc = "" +
 	"\n" +
 	"generation\x18\n" +
 	" \x01(\x04R\n" +
-	"generation\"~\n" +
+	"generation\"8\n" +
+	"\x0eNetworkRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04cidr\x18\x02 \x01(\tR\x04cidr\"M\n" +
+	"\vPortRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
+	"\anetwork\x18\x02 \x01(\tR\anetwork\x12\x10\n" +
+	"\x03mac\x18\x03 \x01(\tR\x03mac\"\xe8\x01\n" +
+	"\fPortObserved\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
+	"\anetwork\x18\x02 \x01(\tR\anetwork\x12\x10\n" +
+	"\x03mac\x18\x03 \x01(\tR\x03mac\x12\x0e\n" +
+	"\x02ip\x18\x04 \x01(\tR\x02ip\x12J\n" +
+	"\tpublished\x18\x05 \x03(\v2,.k8labs.agent.v1.PortObserved.PublishedEntryR\tpublished\x1a<\n" +
+	"\x0ePublishedEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\rR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\rR\x05value:\x028\x01\"F\n" +
+	"\vDiagnostics\x12\x1b\n" +
+	"\towner_uid\x18\x01 \x01(\tR\bownerUid\x12\x1a\n" +
+	"\bmessages\x18\x02 \x03(\tR\bmessages\"\x8d\x01\n" +
+	"\n" +
+	"ProbeLease\x12\x10\n" +
+	"\x03uid\x18\x01 \x01(\tR\x03uid\x12\x18\n" +
+	"\anetwork\x18\x02 \x01(\tR\anetwork\x12\x12\n" +
+	"\x04port\x18\x03 \x01(\tR\x04port\x12\x10\n" +
+	"\x03mac\x18\x04 \x01(\tR\x03mac\x12\x0e\n" +
+	"\x02ip\x18\x05 \x01(\tR\x02ip\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\x06 \x01(\x03R\texpiresAt\"~\n" +
 	"\x0fEnsureVMRequest\x125\n" +
 	"\bmutation\x18\x01 \x01(\v2\x19.k8labs.agent.v1.MutationR\bmutation\x124\n" +
 	"\adesired\x18\x02 \x01(\v2\x1a.k8labs.agent.v1.VMDesiredR\adesired\"c\n" +
@@ -811,85 +1815,192 @@ const file_agent_proto_rawDesc = "" +
 	"VMResponse\x127\n" +
 	"\bobserved\x18\x01 \x01(\v2\x1b.k8labs.agent.v1.VMObservedR\bobserved\"H\n" +
 	"\x0fMutationRequest\x125\n" +
-	"\bmutation\x18\x01 \x01(\v2\x19.k8labs.agent.v1.MutationR\bmutation\"\a\n" +
-	"\x05Empty2\xee\x02\n" +
+	"\bmutation\x18\x01 \x01(\v2\x19.k8labs.agent.v1.MutationR\bmutation\"\x88\x01\n" +
+	"\x14EnsureNetworkRequest\x125\n" +
+	"\bmutation\x18\x01 \x01(\v2\x19.k8labs.agent.v1.MutationR\bmutation\x129\n" +
+	"\anetwork\x18\x02 \x01(\v2\x1f.k8labs.agent.v1.NetworkRequestR\anetwork\"|\n" +
+	"\x11EnsurePortRequest\x125\n" +
+	"\bmutation\x18\x01 \x01(\v2\x19.k8labs.agent.v1.MutationR\bmutation\x120\n" +
+	"\x04port\x18\x02 \x01(\v2\x1c.k8labs.agent.v1.PortRequestR\x04port\"I\n" +
+	"\fPortResponse\x129\n" +
+	"\bobserved\x18\x01 \x01(\v2\x1d.k8labs.agent.v1.PortObservedR\bobserved\"$\n" +
+	"\x12AllocateIPResponse\x12\x0e\n" +
+	"\x02ip\x18\x01 \x01(\tR\x02ip\"Y\n" +
+	"\x10ReleaseIPRequest\x125\n" +
+	"\bmutation\x18\x01 \x01(\v2\x19.k8labs.agent.v1.MutationR\bmutation\x12\x0e\n" +
+	"\x02ip\x18\x02 \x01(\tR\x02ip\"\x87\x01\n" +
+	"\x12PublishPortRequest\x125\n" +
+	"\bmutation\x18\x01 \x01(\v2\x19.k8labs.agent.v1.MutationR\bmutation\x12\x1d\n" +
+	"\n" +
+	"guest_port\x18\x02 \x01(\rR\tguestPort\x12\x1b\n" +
+	"\thost_port\x18\x03 \x01(\rR\bhostPort\"2\n" +
+	"\x13PublishPortResponse\x12\x1b\n" +
+	"\thost_port\x18\x01 \x01(\rR\bhostPort\"\x87\x01\n" +
+	"\x12ReleasePortRequest\x125\n" +
+	"\bmutation\x18\x01 \x01(\v2\x19.k8labs.agent.v1.MutationR\bmutation\x12\x1d\n" +
+	"\n" +
+	"guest_port\x18\x02 \x01(\rR\tguestPort\x12\x1b\n" +
+	"\thost_port\x18\x03 \x01(\rR\bhostPort\"i\n" +
+	"\x12DiagnosticsRequest\x12,\n" +
+	"\x05owner\x18\x01 \x01(\v2\x16.k8labs.agent.v1.OwnerR\x05owner\x12%\n" +
+	"\x0eprotocol_major\x18\x02 \x01(\rR\rprotocolMajor\"U\n" +
+	"\x13DiagnosticsResponse\x12>\n" +
+	"\vdiagnostics\x18\x01 \x01(\v2\x1c.k8labs.agent.v1.DiagnosticsR\vdiagnostics\"f\n" +
+	"\x13AcquireProbeRequest\x125\n" +
+	"\bmutation\x18\x01 \x01(\v2\x19.k8labs.agent.v1.MutationR\bmutation\x12\x18\n" +
+	"\anetwork\x18\x02 \x01(\tR\anetwork\"B\n" +
+	"\rProbeResponse\x121\n" +
+	"\x05lease\x18\x01 \x01(\v2\x1b.k8labs.agent.v1.ProbeLeaseR\x05lease\"^\n" +
+	"\x13ReleaseProbeRequest\x125\n" +
+	"\bmutation\x18\x01 \x01(\v2\x19.k8labs.agent.v1.MutationR\bmutation\x12\x10\n" +
+	"\x03uid\x18\x02 \x01(\tR\x03uid\"\a\n" +
+	"\x05Empty2\xe3\t\n" +
 	"\tHostAgent\x12G\n" +
 	"\x06Health\x12\x1e.k8labs.agent.v1.HealthRequest\x1a\x1d.k8labs.agent.v1.Capabilities\x12I\n" +
 	"\bEnsureVM\x12 .k8labs.agent.v1.EnsureVMRequest\x1a\x1b.k8labs.agent.v1.VMResponse\x12C\n" +
 	"\x05GetVM\x12\x1d.k8labs.agent.v1.GetVMRequest\x1a\x1b.k8labs.agent.v1.VMResponse\x12B\n" +
 	"\x06StopVM\x12 .k8labs.agent.v1.MutationRequest\x1a\x16.k8labs.agent.v1.Empty\x12D\n" +
-	"\bDeleteVM\x12 .k8labs.agent.v1.MutationRequest\x1a\x16.k8labs.agent.v1.EmptyBDZBgithub.com/moeryomenko/cluster-api-hypervisor/api/agent/v1;agentv1b\x06proto3"
+	"\bDeleteVM\x12 .k8labs.agent.v1.MutationRequest\x1a\x16.k8labs.agent.v1.Empty\x12N\n" +
+	"\rEnsureNetwork\x12%.k8labs.agent.v1.EnsureNetworkRequest\x1a\x16.k8labs.agent.v1.Empty\x12I\n" +
+	"\rDeleteNetwork\x12 .k8labs.agent.v1.MutationRequest\x1a\x16.k8labs.agent.v1.Empty\x12O\n" +
+	"\n" +
+	"EnsurePort\x12\".k8labs.agent.v1.EnsurePortRequest\x1a\x1d.k8labs.agent.v1.PortResponse\x12F\n" +
+	"\n" +
+	"DeletePort\x12 .k8labs.agent.v1.MutationRequest\x1a\x16.k8labs.agent.v1.Empty\x12S\n" +
+	"\n" +
+	"AllocateIP\x12 .k8labs.agent.v1.MutationRequest\x1a#.k8labs.agent.v1.AllocateIPResponse\x12F\n" +
+	"\tReleaseIP\x12!.k8labs.agent.v1.ReleaseIPRequest\x1a\x16.k8labs.agent.v1.Empty\x12X\n" +
+	"\vPublishPort\x12#.k8labs.agent.v1.PublishPortRequest\x1a$.k8labs.agent.v1.PublishPortResponse\x12J\n" +
+	"\vReleasePort\x12#.k8labs.agent.v1.ReleasePortRequest\x1a\x16.k8labs.agent.v1.Empty\x12X\n" +
+	"\vDiagnostics\x12#.k8labs.agent.v1.DiagnosticsRequest\x1a$.k8labs.agent.v1.DiagnosticsResponse\x12T\n" +
+	"\fAcquireProbe\x12$.k8labs.agent.v1.AcquireProbeRequest\x1a\x1e.k8labs.agent.v1.ProbeResponse\x12L\n" +
+	"\fReleaseProbe\x12$.k8labs.agent.v1.ReleaseProbeRequest\x1a\x16.k8labs.agent.v1.EmptyBDZBgithub.com/moeryomenko/cluster-api-hypervisor/api/agent/v1;agentv1b\x06proto3"
 
 var (
-	file_agent_proto_rawDescOnce sync.Once
-	file_agent_proto_rawDescData []byte
+	file_api_agent_v1_agent_proto_rawDescOnce sync.Once
+	file_api_agent_v1_agent_proto_rawDescData []byte
 )
 
-func file_agent_proto_rawDescGZIP() []byte {
-	file_agent_proto_rawDescOnce.Do(func() {
-		file_agent_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)))
+func file_api_agent_v1_agent_proto_rawDescGZIP() []byte {
+	file_api_agent_v1_agent_proto_rawDescOnce.Do(func() {
+		file_api_agent_v1_agent_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_api_agent_v1_agent_proto_rawDesc), len(file_api_agent_v1_agent_proto_rawDesc)))
 	})
-	return file_agent_proto_rawDescData
+	return file_api_agent_v1_agent_proto_rawDescData
 }
 
-var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
-var file_agent_proto_goTypes = []any{
-	(*Owner)(nil),           // 0: k8labs.agent.v1.Owner
-	(*Mutation)(nil),        // 1: k8labs.agent.v1.Mutation
-	(*HealthRequest)(nil),   // 2: k8labs.agent.v1.HealthRequest
-	(*Capabilities)(nil),    // 3: k8labs.agent.v1.Capabilities
-	(*VMDesired)(nil),       // 4: k8labs.agent.v1.VMDesired
-	(*VMObserved)(nil),      // 5: k8labs.agent.v1.VMObserved
-	(*EnsureVMRequest)(nil), // 6: k8labs.agent.v1.EnsureVMRequest
-	(*GetVMRequest)(nil),    // 7: k8labs.agent.v1.GetVMRequest
-	(*VMResponse)(nil),      // 8: k8labs.agent.v1.VMResponse
-	(*MutationRequest)(nil), // 9: k8labs.agent.v1.MutationRequest
-	(*Empty)(nil),           // 10: k8labs.agent.v1.Empty
+var file_api_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
+var file_api_agent_v1_agent_proto_goTypes = []any{
+	(*Owner)(nil),                // 0: k8labs.agent.v1.Owner
+	(*Mutation)(nil),             // 1: k8labs.agent.v1.Mutation
+	(*HealthRequest)(nil),        // 2: k8labs.agent.v1.HealthRequest
+	(*Capabilities)(nil),         // 3: k8labs.agent.v1.Capabilities
+	(*VMDesired)(nil),            // 4: k8labs.agent.v1.VMDesired
+	(*VMObserved)(nil),           // 5: k8labs.agent.v1.VMObserved
+	(*NetworkRequest)(nil),       // 6: k8labs.agent.v1.NetworkRequest
+	(*PortRequest)(nil),          // 7: k8labs.agent.v1.PortRequest
+	(*PortObserved)(nil),         // 8: k8labs.agent.v1.PortObserved
+	(*Diagnostics)(nil),          // 9: k8labs.agent.v1.Diagnostics
+	(*ProbeLease)(nil),           // 10: k8labs.agent.v1.ProbeLease
+	(*EnsureVMRequest)(nil),      // 11: k8labs.agent.v1.EnsureVMRequest
+	(*GetVMRequest)(nil),         // 12: k8labs.agent.v1.GetVMRequest
+	(*VMResponse)(nil),           // 13: k8labs.agent.v1.VMResponse
+	(*MutationRequest)(nil),      // 14: k8labs.agent.v1.MutationRequest
+	(*EnsureNetworkRequest)(nil), // 15: k8labs.agent.v1.EnsureNetworkRequest
+	(*EnsurePortRequest)(nil),    // 16: k8labs.agent.v1.EnsurePortRequest
+	(*PortResponse)(nil),         // 17: k8labs.agent.v1.PortResponse
+	(*AllocateIPResponse)(nil),   // 18: k8labs.agent.v1.AllocateIPResponse
+	(*ReleaseIPRequest)(nil),     // 19: k8labs.agent.v1.ReleaseIPRequest
+	(*PublishPortRequest)(nil),   // 20: k8labs.agent.v1.PublishPortRequest
+	(*PublishPortResponse)(nil),  // 21: k8labs.agent.v1.PublishPortResponse
+	(*ReleasePortRequest)(nil),   // 22: k8labs.agent.v1.ReleasePortRequest
+	(*DiagnosticsRequest)(nil),   // 23: k8labs.agent.v1.DiagnosticsRequest
+	(*DiagnosticsResponse)(nil),  // 24: k8labs.agent.v1.DiagnosticsResponse
+	(*AcquireProbeRequest)(nil),  // 25: k8labs.agent.v1.AcquireProbeRequest
+	(*ProbeResponse)(nil),        // 26: k8labs.agent.v1.ProbeResponse
+	(*ReleaseProbeRequest)(nil),  // 27: k8labs.agent.v1.ReleaseProbeRequest
+	(*Empty)(nil),                // 28: k8labs.agent.v1.Empty
+	nil,                          // 29: k8labs.agent.v1.PortObserved.PublishedEntry
 }
-var file_agent_proto_depIdxs = []int32{
+var file_api_agent_v1_agent_proto_depIdxs = []int32{
 	0,  // 0: k8labs.agent.v1.Mutation.owner:type_name -> k8labs.agent.v1.Owner
-	1,  // 1: k8labs.agent.v1.EnsureVMRequest.mutation:type_name -> k8labs.agent.v1.Mutation
-	4,  // 2: k8labs.agent.v1.EnsureVMRequest.desired:type_name -> k8labs.agent.v1.VMDesired
-	0,  // 3: k8labs.agent.v1.GetVMRequest.owner:type_name -> k8labs.agent.v1.Owner
-	5,  // 4: k8labs.agent.v1.VMResponse.observed:type_name -> k8labs.agent.v1.VMObserved
-	1,  // 5: k8labs.agent.v1.MutationRequest.mutation:type_name -> k8labs.agent.v1.Mutation
-	2,  // 6: k8labs.agent.v1.HostAgent.Health:input_type -> k8labs.agent.v1.HealthRequest
-	6,  // 7: k8labs.agent.v1.HostAgent.EnsureVM:input_type -> k8labs.agent.v1.EnsureVMRequest
-	7,  // 8: k8labs.agent.v1.HostAgent.GetVM:input_type -> k8labs.agent.v1.GetVMRequest
-	9,  // 9: k8labs.agent.v1.HostAgent.StopVM:input_type -> k8labs.agent.v1.MutationRequest
-	9,  // 10: k8labs.agent.v1.HostAgent.DeleteVM:input_type -> k8labs.agent.v1.MutationRequest
-	3,  // 11: k8labs.agent.v1.HostAgent.Health:output_type -> k8labs.agent.v1.Capabilities
-	8,  // 12: k8labs.agent.v1.HostAgent.EnsureVM:output_type -> k8labs.agent.v1.VMResponse
-	8,  // 13: k8labs.agent.v1.HostAgent.GetVM:output_type -> k8labs.agent.v1.VMResponse
-	10, // 14: k8labs.agent.v1.HostAgent.StopVM:output_type -> k8labs.agent.v1.Empty
-	10, // 15: k8labs.agent.v1.HostAgent.DeleteVM:output_type -> k8labs.agent.v1.Empty
-	11, // [11:16] is the sub-list for method output_type
-	6,  // [6:11] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	29, // 1: k8labs.agent.v1.PortObserved.published:type_name -> k8labs.agent.v1.PortObserved.PublishedEntry
+	1,  // 2: k8labs.agent.v1.EnsureVMRequest.mutation:type_name -> k8labs.agent.v1.Mutation
+	4,  // 3: k8labs.agent.v1.EnsureVMRequest.desired:type_name -> k8labs.agent.v1.VMDesired
+	0,  // 4: k8labs.agent.v1.GetVMRequest.owner:type_name -> k8labs.agent.v1.Owner
+	5,  // 5: k8labs.agent.v1.VMResponse.observed:type_name -> k8labs.agent.v1.VMObserved
+	1,  // 6: k8labs.agent.v1.MutationRequest.mutation:type_name -> k8labs.agent.v1.Mutation
+	1,  // 7: k8labs.agent.v1.EnsureNetworkRequest.mutation:type_name -> k8labs.agent.v1.Mutation
+	6,  // 8: k8labs.agent.v1.EnsureNetworkRequest.network:type_name -> k8labs.agent.v1.NetworkRequest
+	1,  // 9: k8labs.agent.v1.EnsurePortRequest.mutation:type_name -> k8labs.agent.v1.Mutation
+	7,  // 10: k8labs.agent.v1.EnsurePortRequest.port:type_name -> k8labs.agent.v1.PortRequest
+	8,  // 11: k8labs.agent.v1.PortResponse.observed:type_name -> k8labs.agent.v1.PortObserved
+	1,  // 12: k8labs.agent.v1.ReleaseIPRequest.mutation:type_name -> k8labs.agent.v1.Mutation
+	1,  // 13: k8labs.agent.v1.PublishPortRequest.mutation:type_name -> k8labs.agent.v1.Mutation
+	1,  // 14: k8labs.agent.v1.ReleasePortRequest.mutation:type_name -> k8labs.agent.v1.Mutation
+	0,  // 15: k8labs.agent.v1.DiagnosticsRequest.owner:type_name -> k8labs.agent.v1.Owner
+	9,  // 16: k8labs.agent.v1.DiagnosticsResponse.diagnostics:type_name -> k8labs.agent.v1.Diagnostics
+	1,  // 17: k8labs.agent.v1.AcquireProbeRequest.mutation:type_name -> k8labs.agent.v1.Mutation
+	10, // 18: k8labs.agent.v1.ProbeResponse.lease:type_name -> k8labs.agent.v1.ProbeLease
+	1,  // 19: k8labs.agent.v1.ReleaseProbeRequest.mutation:type_name -> k8labs.agent.v1.Mutation
+	2,  // 20: k8labs.agent.v1.HostAgent.Health:input_type -> k8labs.agent.v1.HealthRequest
+	11, // 21: k8labs.agent.v1.HostAgent.EnsureVM:input_type -> k8labs.agent.v1.EnsureVMRequest
+	12, // 22: k8labs.agent.v1.HostAgent.GetVM:input_type -> k8labs.agent.v1.GetVMRequest
+	14, // 23: k8labs.agent.v1.HostAgent.StopVM:input_type -> k8labs.agent.v1.MutationRequest
+	14, // 24: k8labs.agent.v1.HostAgent.DeleteVM:input_type -> k8labs.agent.v1.MutationRequest
+	15, // 25: k8labs.agent.v1.HostAgent.EnsureNetwork:input_type -> k8labs.agent.v1.EnsureNetworkRequest
+	14, // 26: k8labs.agent.v1.HostAgent.DeleteNetwork:input_type -> k8labs.agent.v1.MutationRequest
+	16, // 27: k8labs.agent.v1.HostAgent.EnsurePort:input_type -> k8labs.agent.v1.EnsurePortRequest
+	14, // 28: k8labs.agent.v1.HostAgent.DeletePort:input_type -> k8labs.agent.v1.MutationRequest
+	14, // 29: k8labs.agent.v1.HostAgent.AllocateIP:input_type -> k8labs.agent.v1.MutationRequest
+	19, // 30: k8labs.agent.v1.HostAgent.ReleaseIP:input_type -> k8labs.agent.v1.ReleaseIPRequest
+	20, // 31: k8labs.agent.v1.HostAgent.PublishPort:input_type -> k8labs.agent.v1.PublishPortRequest
+	22, // 32: k8labs.agent.v1.HostAgent.ReleasePort:input_type -> k8labs.agent.v1.ReleasePortRequest
+	23, // 33: k8labs.agent.v1.HostAgent.Diagnostics:input_type -> k8labs.agent.v1.DiagnosticsRequest
+	25, // 34: k8labs.agent.v1.HostAgent.AcquireProbe:input_type -> k8labs.agent.v1.AcquireProbeRequest
+	27, // 35: k8labs.agent.v1.HostAgent.ReleaseProbe:input_type -> k8labs.agent.v1.ReleaseProbeRequest
+	3,  // 36: k8labs.agent.v1.HostAgent.Health:output_type -> k8labs.agent.v1.Capabilities
+	13, // 37: k8labs.agent.v1.HostAgent.EnsureVM:output_type -> k8labs.agent.v1.VMResponse
+	13, // 38: k8labs.agent.v1.HostAgent.GetVM:output_type -> k8labs.agent.v1.VMResponse
+	28, // 39: k8labs.agent.v1.HostAgent.StopVM:output_type -> k8labs.agent.v1.Empty
+	28, // 40: k8labs.agent.v1.HostAgent.DeleteVM:output_type -> k8labs.agent.v1.Empty
+	28, // 41: k8labs.agent.v1.HostAgent.EnsureNetwork:output_type -> k8labs.agent.v1.Empty
+	28, // 42: k8labs.agent.v1.HostAgent.DeleteNetwork:output_type -> k8labs.agent.v1.Empty
+	17, // 43: k8labs.agent.v1.HostAgent.EnsurePort:output_type -> k8labs.agent.v1.PortResponse
+	28, // 44: k8labs.agent.v1.HostAgent.DeletePort:output_type -> k8labs.agent.v1.Empty
+	18, // 45: k8labs.agent.v1.HostAgent.AllocateIP:output_type -> k8labs.agent.v1.AllocateIPResponse
+	28, // 46: k8labs.agent.v1.HostAgent.ReleaseIP:output_type -> k8labs.agent.v1.Empty
+	21, // 47: k8labs.agent.v1.HostAgent.PublishPort:output_type -> k8labs.agent.v1.PublishPortResponse
+	28, // 48: k8labs.agent.v1.HostAgent.ReleasePort:output_type -> k8labs.agent.v1.Empty
+	24, // 49: k8labs.agent.v1.HostAgent.Diagnostics:output_type -> k8labs.agent.v1.DiagnosticsResponse
+	26, // 50: k8labs.agent.v1.HostAgent.AcquireProbe:output_type -> k8labs.agent.v1.ProbeResponse
+	28, // 51: k8labs.agent.v1.HostAgent.ReleaseProbe:output_type -> k8labs.agent.v1.Empty
+	36, // [36:52] is the sub-list for method output_type
+	20, // [20:36] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
-func init() { file_agent_proto_init() }
-func file_agent_proto_init() {
-	if File_agent_proto != nil {
+func init() { file_api_agent_v1_agent_proto_init() }
+func file_api_agent_v1_agent_proto_init() {
+	if File_api_agent_v1_agent_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_agent_v1_agent_proto_rawDesc), len(file_api_agent_v1_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_agent_proto_goTypes,
-		DependencyIndexes: file_agent_proto_depIdxs,
-		MessageInfos:      file_agent_proto_msgTypes,
+		GoTypes:           file_api_agent_v1_agent_proto_goTypes,
+		DependencyIndexes: file_api_agent_v1_agent_proto_depIdxs,
+		MessageInfos:      file_api_agent_v1_agent_proto_msgTypes,
 	}.Build()
-	File_agent_proto = out.File
-	file_agent_proto_goTypes = nil
-	file_agent_proto_depIdxs = nil
+	File_api_agent_v1_agent_proto = out.File
+	file_api_agent_v1_agent_proto_goTypes = nil
+	file_api_agent_v1_agent_proto_depIdxs = nil
 }

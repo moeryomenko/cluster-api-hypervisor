@@ -249,7 +249,10 @@ func newControlPlaneFixtureWithPKI(t *testing.T, c client.Client, pk pki.Cluster
 		CreateMachine:        createMachine.create,
 		GeneratePKI:          genPKI.gen,
 		CheckAPIServerHealth: health.check,
-		K8Netd:               k8netd.NewClient(sock),
+		CaptureEtcdSnapshot: func(context.Context, string, int32) ([]byte, error) {
+			return []byte("test etcd snapshot"), nil
+		},
+		K8Netd: k8netd.NewClient(sock),
 	}
 
 	return &controlPlaneFixture{r: r, newConfig: newConfig, createMachine: createMachine, genPKI: genPKI, health: health}
@@ -1889,16 +1892,23 @@ func TestControlPlaneScaleCounters(t *testing.T) {
 func TestControlPlaneScaleVersion(t *testing.T) {
 	c := mustReconcileClient(t)
 	fx := newControlPlaneFixture(t, c)
+	fx.r.Config.StateDir = t.TempDir()
 	lc := newLinkedCluster(t, c, "cp-scale-version", "capi-cluster")
 	lcp := newLinkedControlPlane(t, c, lc, lc.name+"-cp", 1, nil)
 
 	fx.reconcileControlPlane(t, lcp.cp)
 	wantControlPlaneVersion(t, getControlPlane(t, c, lcp.cp), "v1.35.4")
 
+	hm := newControlPlaneInfraMachine(t, c, lcp, lc.name+"-cp-0", testReservedCPIP)
+	setHMPublishedPorts(t, c, hm, infrastructurev1alpha1.MachinePublishedPort{VMPort: 2379, HostPort: 22379})
+
 	lcp.cp = updateControlPlaneSpec(t, c, lcp.cp, func(cp *controlplanev1alpha1.HypervisorControlPlane) {
 		cp.Spec.Version = "v1.36.0"
 	})
-	fx.reconcileControlPlane(t, lcp.cp)
+	for range 3 {
+		fx.reconcileControlPlane(t, lcp.cp)
+	}
+
 	wantControlPlaneVersion(t, getControlPlane(t, c, lcp.cp), "v1.36.0")
 }
 

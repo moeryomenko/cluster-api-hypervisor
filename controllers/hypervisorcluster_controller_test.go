@@ -168,10 +168,12 @@ func capiCRDDirectory() (string, error) {
 	if dir := os.Getenv("CAPI_CRD_DIRECTORY"); dir != "" {
 		return dir, nil
 	}
+
 	_, file, _, ok := stdruntime.Caller(0)
 	if !ok {
 		return "", fmt.Errorf("locate controller test source")
 	}
+
 	return filepath.Join(filepath.Dir(file), "..", "testdata", "capi-crds"), nil
 }
 

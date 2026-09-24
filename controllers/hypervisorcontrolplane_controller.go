@@ -684,27 +684,25 @@ func (r *HypervisorControlPlaneReconciler) reconcileVersionDrift(
 	}
 
 	// No drift remains. A recorded replacement whose Machine is back at the
-	// desired version is finished; one whose Machine is still missing waits
-	// for the creation loop to recreate it.
+	// desired version is finished; a missing Machine proceeds to the creation
+	// loop below, which recreates it from the recorded snapshot.
 	if rep := cp.Status.Replacement; rep != nil {
 		machine := &clusterv1.Machine{}
 
 		err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: rep.MachineName}, machine)
-		if apierrors.IsNotFound(err) {
-			return ctrl.Result{RequeueAfter: replacementPollInterval}, nil
-		}
-
-		if err != nil {
+		if err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("get replaced Machine %q: %w", rep.MachineName, err)
 		}
 
-		if machineDrifted(machine, cp.Spec.Version) {
-			return ctrl.Result{}, nil
-		}
+		if err == nil {
+			if machineDrifted(machine, cp.Spec.Version) {
+				return ctrl.Result{}, nil
+			}
 
-		cp.Status.Replacement = nil
-		if err := r.Status().Update(ctx, cp); err != nil {
-			return ctrl.Result{}, fmt.Errorf("clear HypervisorControlPlane replacement status: %w", err)
+			cp.Status.Replacement = nil
+			if err := r.Status().Update(ctx, cp); err != nil {
+				return ctrl.Result{}, fmt.Errorf("clear HypervisorControlPlane replacement status: %w", err)
+			}
 		}
 	}
 
