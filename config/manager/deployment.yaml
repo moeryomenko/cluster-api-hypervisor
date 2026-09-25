@@ -22,7 +22,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
       - name: manager
-        image: localhost/cluster-api-hypervisor:v0.2.0-agentcutover1
+        image: localhost/cluster-api-hypervisor:v0.2.0-agentcutover2
         imagePullPolicy: IfNotPresent
         args:
         - --webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs

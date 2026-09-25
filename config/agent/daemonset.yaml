@@ -32,7 +32,7 @@ spec:
         k8labs.io/agent: "true"
       containers:
       - name: agent
-        image: localhost/cluster-api-hypervisor-agent:v0.2.0-agent3
+        image: localhost/cluster-api-hypervisor-agent:v0.2.0-agent4
         imagePullPolicy: IfNotPresent
         args:
         - --listen=:9444
@@ -75,6 +75,8 @@ spec:
           mountPath: /run/user/1000/k8snet
         - name: vm-state
           mountPath: /host-state
+        - name: user-units
+          mountPath: /home/eryoma/.config/systemd/user
       volumes:
       - name: server-tls
         secret:
@@ -104,6 +106,10 @@ spec:
         hostPath:
           path: /host-state
           type: DirectoryOrCreate
+      - name: user-units
+        hostPath:
+          path: /home/eryoma/.config/systemd/user
+          type: Directory
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

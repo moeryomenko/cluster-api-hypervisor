@@ -48,7 +48,7 @@ func main() {
 	flag.StringVar(&kvmPath, "kvm", "/dev/kvm", "KVM device path")
 	flag.StringVar(&k8netdSocket, "k8netd-socket", "/run/user/1000/k8snet/control.sock", "k8netd control socket")
 	flag.StringVar(&artifactRoot, "artifact-root", "/host-state/vms", "owned VM artifact root")
-	flag.StringVar(&unitDir, "unit-dir", "/host-state/systemd/user", "persistent user systemd unit directory")
+	flag.StringVar(&unitDir, "unit-dir", "/home/eryoma/.config/systemd/user", "persistent user systemd unit directory")
 	flag.StringVar(
 		&cloudHypervisorPath,
 		"cloud-hypervisor",
