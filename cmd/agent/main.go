@@ -41,7 +41,12 @@ func main() {
 	flag.StringVar(&userDBusAddress, "user-dbus-address", "unix:path=/run/user/1000/bus", "host user D-Bus address")
 	flag.StringVar(&kvmPath, "kvm", "/dev/kvm", "KVM device path")
 	flag.StringVar(&k8netdSocket, "k8netd-socket", "/run/user/1000/k8snet/control.sock", "k8netd control socket")
-	flag.StringVar(&cloudHypervisorPath, "cloud-hypervisor", "/usr/bin/cloud-hypervisor", "Cloud Hypervisor executable path")
+	flag.StringVar(
+		&cloudHypervisorPath,
+		"cloud-hypervisor",
+		"/usr/bin/cloud-hypervisor",
+		"Cloud Hypervisor executable path",
+	)
 	flag.Parse()
 
 	store, err := inventory.Open(inventoryPath)
