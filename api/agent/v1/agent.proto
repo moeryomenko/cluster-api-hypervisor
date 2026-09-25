@@ -17,7 +17,9 @@ message Mutation {
   string idempotency_key = 4;
 }
 
-message HealthRequest { uint32 protocol_major = 1; }
+message HealthRequest {
+  uint32 protocol_major = 1;
+}
 
 message Capabilities {
   uint32 protocol_major = 1;
@@ -88,54 +90,114 @@ message ProbeLease {
   int64 expires_at = 6;
 }
 
-message EnsureVMRequest { Mutation mutation = 1; VMDesired desired = 2; }
-message GetVMRequest { Owner owner = 1; uint32 protocol_major = 2; }
-message VMResponse { VMObserved observed = 1; }
-message MutationRequest { Mutation mutation = 1; }
-message EnsureNetworkRequest { Mutation mutation = 1; NetworkRequest network = 2; }
-message EnsurePortRequest { Mutation mutation = 1; PortRequest port = 2; }
-message PortResponse { PortObserved observed = 1; }
-message AllocateIPResponse { string ip = 1; }
-message ReleaseIPRequest { Mutation mutation = 1; string ip = 2; }
+message EnsureVMRequest {
+  Mutation mutation = 1;
+  VMDesired desired = 2;
+}
+
+message GetVMRequest {
+  Owner owner = 1;
+  uint32 protocol_major = 2;
+}
+
+message VMResponse {
+  VMObserved observed = 1;
+}
+
+message MutationRequest {
+  Mutation mutation = 1;
+}
+
+message EnsureNetworkRequest {
+  Mutation mutation = 1;
+  NetworkRequest network = 2;
+}
+
+message EnsurePortRequest {
+  Mutation mutation = 1;
+  PortRequest port = 2;
+}
+
+message PortResponse {
+  PortObserved observed = 1;
+}
+
+message AllocateIPResponse {
+  string ip = 1;
+}
+
+message ReleaseIPRequest {
+  Mutation mutation = 1;
+  string ip = 2;
+}
+
 message PublishPortRequest {
   Mutation mutation = 1;
   uint32 guest_port = 2;
   uint32 host_port = 3;
 }
-message PublishPortResponse { uint32 host_port = 1; }
+
+message PublishPortResponse {
+  uint32 host_port = 1;
+}
+
 message ReleasePortRequest {
   Mutation mutation = 1;
   uint32 guest_port = 2;
   uint32 host_port = 3;
 }
-message DiagnosticsRequest { Owner owner = 1; uint32 protocol_major = 2; }
-message DiagnosticsResponse { Diagnostics diagnostics = 1; }
-message AcquireProbeRequest { Mutation mutation = 1; string network = 2; }
-message ProbeResponse { ProbeLease lease = 1; }
-message ReleaseProbeRequest { Mutation mutation = 1; string uid = 2; }
+
+message DiagnosticsRequest {
+  Owner owner = 1;
+  uint32 protocol_major = 2;
+}
+
+message DiagnosticsResponse {
+  Diagnostics diagnostics = 1;
+}
+
+message AcquireProbeRequest {
+  Mutation mutation = 1;
+  string network = 2;
+}
+
+message ProbeResponse {
+  ProbeLease lease = 1;
+}
+
+message ReleaseProbeRequest {
+  Mutation mutation = 1;
+  string uid = 2;
+}
+
 message ArtifactFile {
   string name = 1;
   bytes content = 2;
 }
+
 message PrepareRootDiskRequest {
   Mutation mutation = 1;
   string name = 2;
   string source_image = 3;
 }
+
 message PrepareCIDATARequest {
   Mutation mutation = 1;
   string name = 2;
   repeated ArtifactFile files = 3;
 }
+
 message PrepareConfextRequest {
   Mutation mutation = 1;
   string name = 2;
   repeated ArtifactFile files = 3;
 }
+
 message ArtifactResponse {
   repeated string paths = 1;
   repeated string sha256 = 2;
 }
+
 message Empty {}
 
 service HostAgent {
