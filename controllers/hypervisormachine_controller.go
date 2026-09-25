@@ -739,6 +739,18 @@ func (r *HypervisorMachineReconciler) reconcileRootDisk(
 	hm *infrastructurev1alpha1.HypervisorMachine,
 	baseImage, previousImage string,
 ) error {
+	if r.Agent != nil {
+		mutation := hostagent.Mutation{
+			ProtocolMajor:  hostagent.ProtocolMajor,
+			Owner:          hostagent.Owner{InstallationID: "agent", NodeID: "k8labs-mgmt-control-plane", UID: string(hm.UID)},
+			Generation:     uint64(hm.Generation),
+			IdempotencyKey: string(hm.UID) + "-root-" + fmt.Sprint(hm.Generation),
+		}
+		_, err := r.Agent.PrepareRootDisk(ctx, mutation, hostagent.RootDiskRequest{Name: hm.Name, SourceImage: baseImage})
+
+		return err
+	}
+
 	diskPath := filepath.Join(r.Config.VMDiskDir, hm.Name+"-root.qcow2")
 
 	wantSize := int64(hm.Spec.Disk) * 1024 * 1024
@@ -856,6 +868,25 @@ func (r *HypervisorMachineReconciler) reconcileConfextDataDisk(
 	}
 
 	maps.Copy(tree, restoreTree)
+
+	if r.Agent != nil {
+		files := make([]hostagent.ArtifactFile, 0, len(tree))
+		for name, content := range tree {
+			files = append(files, hostagent.ArtifactFile{Name: name, Content: content})
+		}
+
+		mutation := hostagent.Mutation{
+			ProtocolMajor:  hostagent.ProtocolMajor,
+			Owner:          hostagent.Owner{InstallationID: "agent", NodeID: "k8labs-mgmt-control-plane", UID: string(hm.UID)},
+			Generation:     uint64(hm.Generation),
+			IdempotencyKey: string(hm.UID) + "-confext-" + fmt.Sprint(hm.Generation),
+		}
+		if _, err := r.Agent.PrepareConfext(ctx, mutation, machine.Name, files); err != nil {
+			return fmt.Errorf("agent prepare confext for %q: %w", machine.Name, err)
+		}
+
+		return nil
+	}
 
 	stagingDir := filepath.Join(r.Config.VMDiskDir, machine.Name+"-confext-staging")
 	outDir := filepath.Join(r.Config.VMDiskDir, machine.Name+"-data")
@@ -1020,6 +1051,25 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 	if err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render cloud-init data: %v", err)
 		return fmt.Errorf("render cloud-init data for %q: %w", machine.Name, err)
+	}
+
+	if r.Agent != nil {
+		files := make([]hostagent.ArtifactFile, 0, len(parts))
+		for name, content := range parts {
+			files = append(files, hostagent.ArtifactFile{Name: name, Content: content})
+		}
+
+		mutation := hostagent.Mutation{
+			ProtocolMajor:  hostagent.ProtocolMajor,
+			Owner:          hostagent.Owner{InstallationID: "agent", NodeID: "k8labs-mgmt-control-plane", UID: string(hm.UID)},
+			Generation:     uint64(hm.Generation),
+			IdempotencyKey: string(hm.UID) + "-cidata-" + fmt.Sprint(hm.Generation),
+		}
+		if _, err := r.Agent.PrepareCIDATA(ctx, mutation, hm.Name, files); err != nil {
+			return fmt.Errorf("agent prepare CIDATA for %q: %w", machine.Name, err)
+		}
+
+		return nil
 	}
 
 	if err := r.buildCIDATADisk(ctx, hm, parts); err != nil {
