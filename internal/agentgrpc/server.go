@@ -25,14 +25,17 @@ func (s *Server) PrepareRootDisk(
 	if err != nil {
 		return nil, rpcError(err)
 	}
+
 	if request.GetName() == "" || request.GetSourceImage() == "" {
 		return nil, invalidRequest()
 	}
+
 	result, err := s.host().
 		PrepareRootDisk(ctx, mutation, hostagent.RootDiskRequest{Name: request.GetName(), SourceImage: request.GetSourceImage()})
 	if err != nil {
 		return nil, rpcError(err)
 	}
+
 	return &agentv1.ArtifactResponse{Paths: result.Paths, Sha256: result.SHA256s}, nil
 }
 
@@ -44,14 +47,17 @@ func (s *Server) PrepareCIDATA(
 	if err != nil {
 		return nil, rpcError(err)
 	}
+
 	files := artifactFiles(request.GetFiles())
 	if request.GetName() == "" || len(files) == 0 {
 		return nil, invalidRequest()
 	}
+
 	result, err := s.host().PrepareCIDATA(ctx, mutation, request.GetName(), files)
 	if err != nil {
 		return nil, rpcError(err)
 	}
+
 	return &agentv1.ArtifactResponse{Paths: result.Paths, Sha256: result.SHA256s}, nil
 }
 
@@ -63,14 +69,17 @@ func (s *Server) PrepareConfext(
 	if err != nil {
 		return nil, rpcError(err)
 	}
+
 	files := artifactFiles(request.GetFiles())
 	if request.GetName() == "" || len(files) == 0 {
 		return nil, invalidRequest()
 	}
+
 	result, err := s.host().PrepareConfext(ctx, mutation, request.GetName(), files)
 	if err != nil {
 		return nil, rpcError(err)
 	}
+
 	return &agentv1.ArtifactResponse{Paths: result.Paths, Sha256: result.SHA256s}, nil
 }
 
@@ -79,6 +88,7 @@ func artifactFiles(files []*agentv1.ArtifactFile) []hostagent.ArtifactFile {
 	for _, file := range files {
 		result = append(result, hostagent.ArtifactFile{Name: file.GetName(), Content: file.GetContent()})
 	}
+
 	return result
 }
 

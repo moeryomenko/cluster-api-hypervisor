@@ -375,6 +375,7 @@ func (c *Client) PrepareRootDisk(
 	if err := mutation.Validate(); err != nil {
 		return hostagent.ArtifactResult{}, err
 	}
+
 	response, err := c.service.PrepareRootDisk(
 		ctx,
 		&agentv1.PrepareRootDiskRequest{Mutation: mutationTo(mutation), Name: request.Name, SourceImage: request.SourceImage},
@@ -382,6 +383,7 @@ func (c *Client) PrepareRootDisk(
 	if err != nil {
 		return hostagent.ArtifactResult{}, mapError(err)
 	}
+
 	return artifactResult(response), nil
 }
 
@@ -394,6 +396,7 @@ func (c *Client) PrepareCIDATA(
 	if err := mutation.Validate(); err != nil {
 		return hostagent.ArtifactResult{}, err
 	}
+
 	response, err := c.service.PrepareCIDATA(
 		ctx,
 		&agentv1.PrepareCIDATARequest{Mutation: mutationTo(mutation), Name: name, Files: artifactFilesTo(files)},
@@ -401,6 +404,7 @@ func (c *Client) PrepareCIDATA(
 	if err != nil {
 		return hostagent.ArtifactResult{}, mapError(err)
 	}
+
 	return artifactResult(response), nil
 }
 
@@ -413,6 +417,7 @@ func (c *Client) PrepareConfext(
 	if err := mutation.Validate(); err != nil {
 		return hostagent.ArtifactResult{}, err
 	}
+
 	response, err := c.service.PrepareConfext(
 		ctx,
 		&agentv1.PrepareConfextRequest{Mutation: mutationTo(mutation), Name: name, Files: artifactFilesTo(files)},
@@ -420,6 +425,7 @@ func (c *Client) PrepareConfext(
 	if err != nil {
 		return hostagent.ArtifactResult{}, mapError(err)
 	}
+
 	return artifactResult(response), nil
 }
 
@@ -428,6 +434,7 @@ func artifactFilesTo(files []hostagent.ArtifactFile) []*agentv1.ArtifactFile {
 	for _, file := range files {
 		result = append(result, &agentv1.ArtifactFile{Name: file.Name, Content: file.Content})
 	}
+
 	return result
 }
 
