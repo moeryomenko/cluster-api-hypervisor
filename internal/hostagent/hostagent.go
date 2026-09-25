@@ -114,6 +114,21 @@ type PortObserved struct {
 	Published map[uint32]uint32
 }
 
+type ArtifactFile struct {
+	Name    string
+	Content []byte
+}
+
+type RootDiskRequest struct {
+	Name        string
+	SourceImage string
+}
+
+type ArtifactResult struct {
+	Paths   []string
+	SHA256s []string
+}
+
 type Diagnostics struct {
 	OwnerUID string
 	Messages []string
@@ -145,6 +160,9 @@ type HostAgent interface {
 	Diagnostics(context.Context, Owner) (Diagnostics, error)
 	AcquireProbe(context.Context, Mutation, string) (ProbeLease, error)
 	ReleaseProbe(context.Context, Mutation, string) error
+	PrepareRootDisk(context.Context, Mutation, RootDiskRequest) (ArtifactResult, error)
+	PrepareCIDATA(context.Context, Mutation, string, []ArtifactFile) (ArtifactResult, error)
+	PrepareConfext(context.Context, Mutation, string, []ArtifactFile) (ArtifactResult, error)
 }
 
 type Fake struct{}
@@ -175,3 +193,14 @@ func (*Fake) AcquireProbe(context.Context, Mutation, string) (ProbeLease, error)
 	return ProbeLease{}, nil
 }
 func (*Fake) ReleaseProbe(context.Context, Mutation, string) error { return nil }
+func (*Fake) PrepareRootDisk(context.Context, Mutation, RootDiskRequest) (ArtifactResult, error) {
+	return ArtifactResult{}, nil
+}
+
+func (*Fake) PrepareCIDATA(context.Context, Mutation, string, []ArtifactFile) (ArtifactResult, error) {
+	return ArtifactResult{}, nil
+}
+
+func (*Fake) PrepareConfext(context.Context, Mutation, string, []ArtifactFile) (ArtifactResult, error) {
+	return ArtifactResult{}, nil
+}

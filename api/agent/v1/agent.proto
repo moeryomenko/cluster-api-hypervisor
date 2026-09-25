@@ -113,6 +113,29 @@ message DiagnosticsResponse { Diagnostics diagnostics = 1; }
 message AcquireProbeRequest { Mutation mutation = 1; string network = 2; }
 message ProbeResponse { ProbeLease lease = 1; }
 message ReleaseProbeRequest { Mutation mutation = 1; string uid = 2; }
+message ArtifactFile {
+  string name = 1;
+  bytes content = 2;
+}
+message PrepareRootDiskRequest {
+  Mutation mutation = 1;
+  string name = 2;
+  string source_image = 3;
+}
+message PrepareCIDATARequest {
+  Mutation mutation = 1;
+  string name = 2;
+  repeated ArtifactFile files = 3;
+}
+message PrepareConfextRequest {
+  Mutation mutation = 1;
+  string name = 2;
+  repeated ArtifactFile files = 3;
+}
+message ArtifactResponse {
+  repeated string paths = 1;
+  repeated string sha256 = 2;
+}
 message Empty {}
 
 service HostAgent {
@@ -132,4 +155,7 @@ service HostAgent {
   rpc Diagnostics(DiagnosticsRequest) returns (DiagnosticsResponse);
   rpc AcquireProbe(AcquireProbeRequest) returns (ProbeResponse);
   rpc ReleaseProbe(ReleaseProbeRequest) returns (Empty);
+  rpc PrepareRootDisk(PrepareRootDiskRequest) returns (ArtifactResponse);
+  rpc PrepareCIDATA(PrepareCIDATARequest) returns (ArtifactResponse);
+  rpc PrepareConfext(PrepareConfextRequest) returns (ArtifactResponse);
 }

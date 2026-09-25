@@ -342,6 +342,32 @@ func (a unavailableAgent) ReleaseProbe(context.Context, hostagent.Mutation, stri
 	return a.unavailable()
 }
 
+func (a unavailableAgent) PrepareRootDisk(
+	context.Context,
+	hostagent.Mutation,
+	hostagent.RootDiskRequest,
+) (hostagent.ArtifactResult, error) {
+	return hostagent.ArtifactResult{}, a.unavailable()
+}
+
+func (a unavailableAgent) PrepareCIDATA(
+	context.Context,
+	hostagent.Mutation,
+	string,
+	[]hostagent.ArtifactFile,
+) (hostagent.ArtifactResult, error) {
+	return hostagent.ArtifactResult{}, a.unavailable()
+}
+
+func (a unavailableAgent) PrepareConfext(
+	context.Context,
+	hostagent.Mutation,
+	string,
+	[]hostagent.ArtifactFile,
+) (hostagent.ArtifactResult, error) {
+	return hostagent.ArtifactResult{}, a.unavailable()
+}
+
 func mutationFrom(value *agentv1.Mutation) (hostagent.Mutation, error) {
 	if value == nil || value.GetOwner() == nil {
 		return hostagent.Mutation{}, hostagent.ErrInvalidRequest

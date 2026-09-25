@@ -68,6 +68,32 @@ func (*recordingAgent) AcquireProbe(context.Context, hostagent.Mutation, string)
 
 func (*recordingAgent) ReleaseProbe(context.Context, hostagent.Mutation, string) error { return nil }
 
+func (*recordingAgent) PrepareRootDisk(
+	context.Context,
+	hostagent.Mutation,
+	hostagent.RootDiskRequest,
+) (hostagent.ArtifactResult, error) {
+	return hostagent.ArtifactResult{}, nil
+}
+
+func (*recordingAgent) PrepareCIDATA(
+	context.Context,
+	hostagent.Mutation,
+	string,
+	[]hostagent.ArtifactFile,
+) (hostagent.ArtifactResult, error) {
+	return hostagent.ArtifactResult{}, nil
+}
+
+func (*recordingAgent) PrepareConfext(
+	context.Context,
+	hostagent.Mutation,
+	string,
+	[]hostagent.ArtifactFile,
+) (hostagent.ArtifactResult, error) {
+	return hostagent.ArtifactResult{}, nil
+}
+
 func request() *agentv1.EnsureVMRequest {
 	return &agentv1.EnsureVMRequest{
 		Mutation: &agentv1.Mutation{

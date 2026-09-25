@@ -367,4 +367,30 @@ func mapError(err error) error {
 	return err
 }
 
+func (*Client) PrepareRootDisk(
+	context.Context,
+	hostagent.Mutation,
+	hostagent.RootDiskRequest,
+) (hostagent.ArtifactResult, error) {
+	return hostagent.ArtifactResult{}, hostagent.ErrUnavailable
+}
+
+func (*Client) PrepareCIDATA(
+	context.Context,
+	hostagent.Mutation,
+	string,
+	[]hostagent.ArtifactFile,
+) (hostagent.ArtifactResult, error) {
+	return hostagent.ArtifactResult{}, hostagent.ErrUnavailable
+}
+
+func (*Client) PrepareConfext(
+	context.Context,
+	hostagent.Mutation,
+	string,
+	[]hostagent.ArtifactFile,
+) (hostagent.ArtifactResult, error) {
+	return hostagent.ArtifactResult{}, hostagent.ErrUnavailable
+}
+
 var _ hostagent.HostAgent = (*Client)(nil)

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/artifact"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/inventory"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/systemd"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
@@ -21,6 +22,7 @@ import (
 type Executor struct {
 	Store           *inventory.Store
 	Systemd         systemd.Client
+	Artifacts       artifact.Builder
 	NodeID          string
 	CloudHypervisor string
 	K8netdSocket    string
@@ -189,6 +191,80 @@ func (e *Executor) AcquireProbe(context.Context, hostagent.Mutation, string) (ho
 
 func (e *Executor) ReleaseProbe(context.Context, hostagent.Mutation, string) error {
 	return e.notImplemented("ReleaseProbe requires k8netd and VM adapters")
+}
+
+func (e *Executor) PrepareRootDisk(
+	ctx context.Context,
+	mutation hostagent.Mutation,
+	request hostagent.RootDiskRequest,
+) (hostagent.ArtifactResult, error) {
+	if err := mutation.Validate(); err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
+	operation, err := e.begin(mutation, "PrepareRootDisk")
+	if err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
+	if operation.State == inventory.OperationCompleted {
+		var result hostagent.ArtifactResult
+		if err := json.Unmarshal([]byte(operation.Result), &result); err != nil {
+			return hostagent.ArtifactResult{}, err
+		}
+		return result, nil
+	}
+	path, err := e.Artifacts.PrepareRootDisk(ctx, request.Name, request.SourceImage)
+	if err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
+	result := hostagent.ArtifactResult{Paths: []string{path}}
+	encoded, _ := json.Marshal(result)
+	if err := e.complete(mutation, "PrepareRootDisk", operation.RequestHash, inventory.OperationCompleted, string(encoded), ""); err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
+	return result, nil
+}
+
+func (e *Executor) PrepareCIDATA(
+	ctx context.Context,
+	mutation hostagent.Mutation,
+	name string,
+	files []hostagent.ArtifactFile,
+) (hostagent.ArtifactResult, error) {
+	if err := mutation.Validate(); err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
+	parts := map[string][]byte{}
+	for _, file := range files {
+		parts[file.Name] = file.Content
+	}
+	operation, err := e.begin(mutation, "PrepareCIDATA")
+	if err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
+	if operation.State == inventory.OperationCompleted {
+		var result hostagent.ArtifactResult
+		_ = json.Unmarshal([]byte(operation.Result), &result)
+		return result, nil
+	}
+	result, err := e.Artifacts.PrepareCIDATA(ctx, name, parts)
+	if err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
+	response := hostagent.ArtifactResult{Paths: []string{result.Path}, SHA256s: []string{result.SHA256}}
+	encoded, _ := json.Marshal(response)
+	if err := e.complete(mutation, "PrepareCIDATA", operation.RequestHash, inventory.OperationCompleted, string(encoded), ""); err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
+	return response, nil
+}
+
+func (e *Executor) PrepareConfext(
+	context.Context,
+	hostagent.Mutation,
+	string,
+	[]hostagent.ArtifactFile,
+) (hostagent.ArtifactResult, error) {
+	return hostagent.ArtifactResult{}, e.notImplemented("PrepareConfext requires confext packager adapter")
 }
 
 func (e *Executor) Diagnostics(ctx context.Context, owner hostagent.Owner) (hostagent.Diagnostics, error) {

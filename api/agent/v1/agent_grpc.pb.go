@@ -19,22 +19,25 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	HostAgent_Health_FullMethodName        = "/k8labs.agent.v1.HostAgent/Health"
-	HostAgent_EnsureVM_FullMethodName      = "/k8labs.agent.v1.HostAgent/EnsureVM"
-	HostAgent_GetVM_FullMethodName         = "/k8labs.agent.v1.HostAgent/GetVM"
-	HostAgent_StopVM_FullMethodName        = "/k8labs.agent.v1.HostAgent/StopVM"
-	HostAgent_DeleteVM_FullMethodName      = "/k8labs.agent.v1.HostAgent/DeleteVM"
-	HostAgent_EnsureNetwork_FullMethodName = "/k8labs.agent.v1.HostAgent/EnsureNetwork"
-	HostAgent_DeleteNetwork_FullMethodName = "/k8labs.agent.v1.HostAgent/DeleteNetwork"
-	HostAgent_EnsurePort_FullMethodName    = "/k8labs.agent.v1.HostAgent/EnsurePort"
-	HostAgent_DeletePort_FullMethodName    = "/k8labs.agent.v1.HostAgent/DeletePort"
-	HostAgent_AllocateIP_FullMethodName    = "/k8labs.agent.v1.HostAgent/AllocateIP"
-	HostAgent_ReleaseIP_FullMethodName     = "/k8labs.agent.v1.HostAgent/ReleaseIP"
-	HostAgent_PublishPort_FullMethodName   = "/k8labs.agent.v1.HostAgent/PublishPort"
-	HostAgent_ReleasePort_FullMethodName   = "/k8labs.agent.v1.HostAgent/ReleasePort"
-	HostAgent_Diagnostics_FullMethodName   = "/k8labs.agent.v1.HostAgent/Diagnostics"
-	HostAgent_AcquireProbe_FullMethodName  = "/k8labs.agent.v1.HostAgent/AcquireProbe"
-	HostAgent_ReleaseProbe_FullMethodName  = "/k8labs.agent.v1.HostAgent/ReleaseProbe"
+	HostAgent_Health_FullMethodName          = "/k8labs.agent.v1.HostAgent/Health"
+	HostAgent_EnsureVM_FullMethodName        = "/k8labs.agent.v1.HostAgent/EnsureVM"
+	HostAgent_GetVM_FullMethodName           = "/k8labs.agent.v1.HostAgent/GetVM"
+	HostAgent_StopVM_FullMethodName          = "/k8labs.agent.v1.HostAgent/StopVM"
+	HostAgent_DeleteVM_FullMethodName        = "/k8labs.agent.v1.HostAgent/DeleteVM"
+	HostAgent_EnsureNetwork_FullMethodName   = "/k8labs.agent.v1.HostAgent/EnsureNetwork"
+	HostAgent_DeleteNetwork_FullMethodName   = "/k8labs.agent.v1.HostAgent/DeleteNetwork"
+	HostAgent_EnsurePort_FullMethodName      = "/k8labs.agent.v1.HostAgent/EnsurePort"
+	HostAgent_DeletePort_FullMethodName      = "/k8labs.agent.v1.HostAgent/DeletePort"
+	HostAgent_AllocateIP_FullMethodName      = "/k8labs.agent.v1.HostAgent/AllocateIP"
+	HostAgent_ReleaseIP_FullMethodName       = "/k8labs.agent.v1.HostAgent/ReleaseIP"
+	HostAgent_PublishPort_FullMethodName     = "/k8labs.agent.v1.HostAgent/PublishPort"
+	HostAgent_ReleasePort_FullMethodName     = "/k8labs.agent.v1.HostAgent/ReleasePort"
+	HostAgent_Diagnostics_FullMethodName     = "/k8labs.agent.v1.HostAgent/Diagnostics"
+	HostAgent_AcquireProbe_FullMethodName    = "/k8labs.agent.v1.HostAgent/AcquireProbe"
+	HostAgent_ReleaseProbe_FullMethodName    = "/k8labs.agent.v1.HostAgent/ReleaseProbe"
+	HostAgent_PrepareRootDisk_FullMethodName = "/k8labs.agent.v1.HostAgent/PrepareRootDisk"
+	HostAgent_PrepareCIDATA_FullMethodName   = "/k8labs.agent.v1.HostAgent/PrepareCIDATA"
+	HostAgent_PrepareConfext_FullMethodName  = "/k8labs.agent.v1.HostAgent/PrepareConfext"
 )
 
 // HostAgentClient is the client API for HostAgent service.
@@ -57,6 +60,9 @@ type HostAgentClient interface {
 	Diagnostics(ctx context.Context, in *DiagnosticsRequest, opts ...grpc.CallOption) (*DiagnosticsResponse, error)
 	AcquireProbe(ctx context.Context, in *AcquireProbeRequest, opts ...grpc.CallOption) (*ProbeResponse, error)
 	ReleaseProbe(ctx context.Context, in *ReleaseProbeRequest, opts ...grpc.CallOption) (*Empty, error)
+	PrepareRootDisk(ctx context.Context, in *PrepareRootDiskRequest, opts ...grpc.CallOption) (*ArtifactResponse, error)
+	PrepareCIDATA(ctx context.Context, in *PrepareCIDATARequest, opts ...grpc.CallOption) (*ArtifactResponse, error)
+	PrepareConfext(ctx context.Context, in *PrepareConfextRequest, opts ...grpc.CallOption) (*ArtifactResponse, error)
 }
 
 type hostAgentClient struct {
@@ -227,6 +233,36 @@ func (c *hostAgentClient) ReleaseProbe(ctx context.Context, in *ReleaseProbeRequ
 	return out, nil
 }
 
+func (c *hostAgentClient) PrepareRootDisk(ctx context.Context, in *PrepareRootDiskRequest, opts ...grpc.CallOption) (*ArtifactResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ArtifactResponse)
+	err := c.cc.Invoke(ctx, HostAgent_PrepareRootDisk_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostAgentClient) PrepareCIDATA(ctx context.Context, in *PrepareCIDATARequest, opts ...grpc.CallOption) (*ArtifactResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ArtifactResponse)
+	err := c.cc.Invoke(ctx, HostAgent_PrepareCIDATA_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostAgentClient) PrepareConfext(ctx context.Context, in *PrepareConfextRequest, opts ...grpc.CallOption) (*ArtifactResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ArtifactResponse)
+	err := c.cc.Invoke(ctx, HostAgent_PrepareConfext_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HostAgentServer is the server API for HostAgent service.
 // All implementations must embed UnimplementedHostAgentServer
 // for forward compatibility.
@@ -247,6 +283,9 @@ type HostAgentServer interface {
 	Diagnostics(context.Context, *DiagnosticsRequest) (*DiagnosticsResponse, error)
 	AcquireProbe(context.Context, *AcquireProbeRequest) (*ProbeResponse, error)
 	ReleaseProbe(context.Context, *ReleaseProbeRequest) (*Empty, error)
+	PrepareRootDisk(context.Context, *PrepareRootDiskRequest) (*ArtifactResponse, error)
+	PrepareCIDATA(context.Context, *PrepareCIDATARequest) (*ArtifactResponse, error)
+	PrepareConfext(context.Context, *PrepareConfextRequest) (*ArtifactResponse, error)
 	mustEmbedUnimplementedHostAgentServer()
 }
 
@@ -304,6 +343,15 @@ func (UnimplementedHostAgentServer) AcquireProbe(context.Context, *AcquireProbeR
 }
 func (UnimplementedHostAgentServer) ReleaseProbe(context.Context, *ReleaseProbeRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReleaseProbe not implemented")
+}
+func (UnimplementedHostAgentServer) PrepareRootDisk(context.Context, *PrepareRootDiskRequest) (*ArtifactResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PrepareRootDisk not implemented")
+}
+func (UnimplementedHostAgentServer) PrepareCIDATA(context.Context, *PrepareCIDATARequest) (*ArtifactResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PrepareCIDATA not implemented")
+}
+func (UnimplementedHostAgentServer) PrepareConfext(context.Context, *PrepareConfextRequest) (*ArtifactResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PrepareConfext not implemented")
 }
 func (UnimplementedHostAgentServer) mustEmbedUnimplementedHostAgentServer() {}
 func (UnimplementedHostAgentServer) testEmbeddedByValue()                   {}
@@ -614,6 +662,60 @@ func _HostAgent_ReleaseProbe_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HostAgent_PrepareRootDisk_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareRootDiskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).PrepareRootDisk(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_PrepareRootDisk_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).PrepareRootDisk(ctx, req.(*PrepareRootDiskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostAgent_PrepareCIDATA_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareCIDATARequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).PrepareCIDATA(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_PrepareCIDATA_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).PrepareCIDATA(ctx, req.(*PrepareCIDATARequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostAgent_PrepareConfext_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareConfextRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostAgentServer).PrepareConfext(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HostAgent_PrepareConfext_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostAgentServer).PrepareConfext(ctx, req.(*PrepareConfextRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // HostAgent_ServiceDesc is the grpc.ServiceDesc for HostAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -684,6 +786,18 @@ var HostAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReleaseProbe",
 			Handler:    _HostAgent_ReleaseProbe_Handler,
+		},
+		{
+			MethodName: "PrepareRootDisk",
+			Handler:    _HostAgent_PrepareRootDisk_Handler,
+		},
+		{
+			MethodName: "PrepareCIDATA",
+			Handler:    _HostAgent_PrepareCIDATA_Handler,
+		},
+		{
+			MethodName: "PrepareConfext",
+			Handler:    _HostAgent_PrepareConfext_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
