@@ -1,0 +1,16 @@
+SELECT installation_id
+     , owner_uid
+     , node_id
+     , idempotency_key
+     , operation_kind
+     , request_hash
+     , generation
+     , state
+     , result
+     , failure
+     , created_at
+     , updated_at
+  FROM operation_journal
+ WHERE installation_id=?
+   AND owner_uid=?
+   AND idempotency_key=?

@@ -1,0 +1,9 @@
+UPDATE operation_journal
+   SET state=?
+     , result=?
+     , failure=?
+     , updated_at=?
+WHERE installation_id=?
+  AND owner_uid=?
+  AND idempotency_key=?
+  AND state=?

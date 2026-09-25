@@ -24,17 +24,26 @@ func (s *Store) BeginOperation(operation Operation) (stored Operation, completed
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	_, err = tx.Exec(`INSERT OR IGNORE INTO operation_journal
-		(installation_id, owner_uid, node_id, idempotency_key, operation_kind, request_hash, generation, state, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, operation.InstallationID, operation.OwnerUID, operation.NodeID, operation.Key, operation.Kind, operation.RequestHash, operation.Generation, OperationIntent, now.Unix(), now.Unix())
+	_, err = tx.Exec(
+		beginOperationQuery,
+		operation.InstallationID,
+		operation.OwnerUID,
+		operation.NodeID,
+		operation.Key,
+		operation.Kind,
+		operation.RequestHash,
+		operation.Generation,
+		OperationIntent,
+		now.Unix(),
+		now.Unix(),
+	)
 	if err != nil {
 		return Operation{}, false, fmt.Errorf("record operation intent: %w", err)
 	}
 
 	stored, err = operationFromRow(
 		tx.QueryRow(
-			`SELECT installation_id, owner_uid, node_id, idempotency_key, operation_kind, request_hash, generation, state, result, failure, created_at, updated_at
-		FROM operation_journal WHERE installation_id=? AND owner_uid=? AND idempotency_key=?`,
+			loadOperationQuery,
 			operation.InstallationID,
 			operation.OwnerUID,
 			operation.Key,
@@ -76,8 +85,17 @@ func (s *Store) CompleteOperation(operation Operation, state OperationState, res
 		return ErrIdempotencyConflict
 	}
 
-	outcome, err := s.db.Exec(`UPDATE operation_journal SET state=?, result=?, failure=?, updated_at=?
-		WHERE installation_id=? AND owner_uid=? AND idempotency_key=? AND state=?`, state, result, failure, time.Now().UTC().Truncate(time.Second).Unix(), operation.InstallationID, operation.OwnerUID, operation.Key, OperationIntent)
+	outcome, err := s.db.Exec(
+		completeOperationQuery,
+		state,
+		result,
+		failure,
+		time.Now().UTC().Truncate(time.Second).Unix(),
+		operation.InstallationID,
+		operation.OwnerUID,
+		operation.Key,
+		OperationIntent,
+	)
 	if err != nil {
 		return fmt.Errorf("record observed operation: %w", err)
 	}
@@ -96,8 +114,7 @@ func (s *Store) CompleteOperation(operation Operation, state OperationState, res
 
 func (s *Store) PendingOperations() ([]Operation, error) {
 	rows, err := s.db.Query(
-		`SELECT installation_id, owner_uid, node_id, idempotency_key, operation_kind, request_hash, generation, state, result, failure, created_at, updated_at
-		FROM operation_journal WHERE state=? ORDER BY created_at, installation_id, owner_uid, idempotency_key`,
+		pendingOperationsQuery,
 		OperationIntent,
 	)
 	if err != nil {
@@ -139,7 +156,22 @@ func operationFromRow(row *sql.Row) (Operation, error) {
 		operation            Operation
 		createdAt, updatedAt int64
 	)
-	if err := row.Scan(&operation.InstallationID, &operation.OwnerUID, &operation.NodeID, &operation.Key, &operation.Kind, &operation.RequestHash, &operation.Generation, &operation.State, &operation.Result, &operation.Failure, &createdAt, &updatedAt); err != nil {
+
+	err := row.Scan(
+		&operation.InstallationID,
+		&operation.OwnerUID,
+		&operation.NodeID,
+		&operation.Key,
+		&operation.Kind,
+		&operation.RequestHash,
+		&operation.Generation,
+		&operation.State,
+		&operation.Result,
+		&operation.Failure,
+		&createdAt,
+		&updatedAt,
+	)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Operation{}, ErrOperationNotFound
 		}
@@ -158,7 +190,22 @@ func operationFromRows(rows *sql.Rows) (Operation, error) {
 		operation            Operation
 		createdAt, updatedAt int64
 	)
-	if err := rows.Scan(&operation.InstallationID, &operation.OwnerUID, &operation.NodeID, &operation.Key, &operation.Kind, &operation.RequestHash, &operation.Generation, &operation.State, &operation.Result, &operation.Failure, &createdAt, &updatedAt); err != nil {
+
+	err := rows.Scan(
+		&operation.InstallationID,
+		&operation.OwnerUID,
+		&operation.NodeID,
+		&operation.Key,
+		&operation.Kind,
+		&operation.RequestHash,
+		&operation.Generation,
+		&operation.State,
+		&operation.Result,
+		&operation.Failure,
+		&createdAt,
+		&updatedAt,
+	)
+	if err != nil {
 		return Operation{}, fmt.Errorf("load pending operation: %w", err)
 	}
 

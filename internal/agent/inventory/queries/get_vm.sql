@@ -1,0 +1,16 @@
+SELECT installation_id
+     , owner_uid
+     , node_id
+     , unit
+     , generation
+     , pid
+     , disk
+     , api_socket
+     , vhost_socket
+     , network
+     , port
+     , mac
+     , ip
+  FROM vms
+ WHERE installation_id=?
+   AND owner_uid=?
