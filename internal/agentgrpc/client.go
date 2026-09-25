@@ -294,18 +294,20 @@ func mutationTo(mutation hostagent.Mutation) *agentv1.Mutation {
 
 func vmDesiredTo(value hostagent.VMDesired) *agentv1.VMDesired {
 	return &agentv1.VMDesired{
-		Uid:             value.UID,
-		Name:            value.Name,
-		Image:           value.Image,
-		Firmware:        value.Firmware,
-		ApiSocket:       value.APISocket,
-		VhostSocket:     value.VhostSocket,
-		Disk:            value.Disk,
-		Mac:             value.MAC,
-		Ip:              value.IP,
-		Cpus:            value.CPUs,
-		MemoryMib:       value.MemoryMiB,
-		AdditionalDisks: value.AdditionalDisks,
+		Uid:                  value.UID,
+		Name:                 value.Name,
+		Image:                value.Image,
+		Firmware:             value.Firmware,
+		ApiSocket:            value.APISocket,
+		VhostSocket:          value.VhostSocket,
+		Disk:                 value.Disk,
+		Mac:                  value.MAC,
+		Ip:                   value.IP,
+		Cpus:                 value.CPUs,
+		MemoryMib:            value.MemoryMiB,
+		AdditionalDisks:      value.AdditionalDisks,
+		DiskSha256:           value.DiskSHA256,
+		AdditionalDiskSha256: value.AdditionalDiskSHA256s,
 	}
 }
 

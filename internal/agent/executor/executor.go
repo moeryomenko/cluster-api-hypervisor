@@ -144,6 +144,14 @@ func (e *Executor) EnsureVM(
 		disks = append(disks, ch.DiskConfig{Path: path, Readonly: true})
 	}
 
+	checksums := append([]string{desired.DiskSHA256}, desired.AdditionalDiskSHA256s...)
+
+	paths := append([]string{desired.Disk}, desired.AdditionalDisks...)
+	if err := e.Artifacts.Verify(paths, checksums); err != nil {
+		_ = e.complete(mutation, "EnsureVM", operation.RequestHash, inventory.OperationFailed, "", err.Error())
+		return hostagent.VMObserved{}, fmt.Errorf("verify VM disks: %w", err)
+	}
+
 	err = api.Create(ctx, ch.VmConfig{
 		Payload: &ch.PayloadConfig{
 			Firmware: desired.Firmware,
@@ -607,6 +615,10 @@ func (e *Executor) PrepareRootDisk(
 			return hostagent.ArtifactResult{}, err
 		}
 
+		if err := addArtifactChecksums(&result); err != nil {
+			return hostagent.ArtifactResult{}, err
+		}
+
 		return result, nil
 	}
 
@@ -616,6 +628,9 @@ func (e *Executor) PrepareRootDisk(
 	}
 
 	result := hostagent.ArtifactResult{Paths: []string{path}}
+	if err := addArtifactChecksums(&result); err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
 
 	encoded, _ := json.Marshal(result)
 	if err := e.complete(mutation, "PrepareRootDisk", operation.RequestHash, inventory.OperationCompleted, string(encoded), ""); err != nil {
@@ -623,6 +638,25 @@ func (e *Executor) PrepareRootDisk(
 	}
 
 	return result, nil
+}
+
+func addArtifactChecksums(result *hostagent.ArtifactResult) error {
+	if len(result.Paths) == 0 {
+		return hostagent.ErrInvalidRequest
+	}
+
+	result.SHA256s = make([]string, 0, len(result.Paths))
+	for _, path := range result.Paths {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read artifact %q: %w", path, err)
+		}
+
+		digest := sha256.Sum256(contents)
+		result.SHA256s = append(result.SHA256s, hex.EncodeToString(digest[:]))
+	}
+
+	return nil
 }
 
 func (e *Executor) PrepareCIDATA(

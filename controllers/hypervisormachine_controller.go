@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -243,19 +244,29 @@ func (r *HypervisorMachineReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileRootDisk(ctx, hm, baseImage, previousImage); err != nil {
+	rootDisk, err := r.reconcileRootDisk(ctx, hm, baseImage, previousImage)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileConfextDataDisk(ctx, hm, machine); err != nil {
+	confextDisks, err := r.reconcileConfextDataDisk(ctx, hm, machine)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileCIDATA(ctx, hm, machine); err != nil {
+	cidataDisk, err := r.reconcileCIDATA(ctx, hm, machine)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileVMLifecycle(ctx, hm, machine, mac); err != nil {
+	artifacts := append(rootDisk.Paths, cidataDisk.Paths...)
+	artifacts = append(artifacts, confextDisks.Paths...)
+	checksums := append(rootDisk.SHA256s, cidataDisk.SHA256s...)
+
+	checksums = append(checksums, confextDisks.SHA256s...)
+
+	err = r.reconcileVMLifecycle(ctx, hm, machine, mac, hostagent.ArtifactResult{Paths: artifacts, SHA256s: checksums})
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -738,7 +749,7 @@ func (r *HypervisorMachineReconciler) reconcileRootDisk(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
 	baseImage, previousImage string,
-) error {
+) (hostagent.ArtifactResult, error) {
 	if r.Agent != nil {
 		mutation := hostagent.Mutation{
 			ProtocolMajor:  hostagent.ProtocolMajor,
@@ -746,9 +757,13 @@ func (r *HypervisorMachineReconciler) reconcileRootDisk(
 			Generation:     uint64(hm.Generation),
 			IdempotencyKey: string(hm.UID) + "-root-" + fmt.Sprint(hm.Generation),
 		}
-		_, err := r.Agent.PrepareRootDisk(ctx, mutation, hostagent.RootDiskRequest{Name: hm.Name, SourceImage: baseImage})
+		result, err := r.Agent.PrepareRootDisk(
+			ctx,
+			mutation,
+			hostagent.RootDiskRequest{Name: hm.Name, SourceImage: baseImage},
+		)
 
-		return err
+		return result, err
 	}
 
 	diskPath := filepath.Join(r.Config.VMDiskDir, hm.Name+"-root.qcow2")
@@ -757,11 +772,11 @@ func (r *HypervisorMachineReconciler) reconcileRootDisk(
 
 	size, err := r.rootDiskSize(ctx, diskPath)
 	if err == nil && size == wantSize && (previousImage == "" || previousImage == baseImage) {
-		return nil
+		return hostagent.ArtifactResult{}, nil
 	}
 
 	if errors.Is(err, errQemuImgInfoParse) {
-		return fmt.Errorf("root disk size probe for %q: %w", diskPath, err)
+		return hostagent.ArtifactResult{}, fmt.Errorf("root disk size probe for %q: %w", diskPath, err)
 	}
 
 	out, err := r.QemuImg(ctx, "qemu-img", "convert", "-O", "qcow2", baseImage, diskPath)
@@ -769,7 +784,7 @@ func (r *HypervisorMachineReconciler) reconcileRootDisk(
 		err = wrapQemuImgErr(err, out)
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to convert root disk %q: %v", diskPath, err)
 
-		return fmt.Errorf("convert root disk %q: %w", diskPath, err)
+		return hostagent.ArtifactResult{}, fmt.Errorf("convert root disk %q: %w", diskPath, err)
 	}
 
 	out, err = r.QemuImg(ctx, "qemu-img", "resize", diskPath, fmt.Sprintf("%dM", hm.Spec.Disk))
@@ -777,10 +792,10 @@ func (r *HypervisorMachineReconciler) reconcileRootDisk(
 		err = wrapQemuImgErr(err, out)
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to resize root disk %q: %v", diskPath, err)
 
-		return fmt.Errorf("resize root disk %q: %w", diskPath, err)
+		return hostagent.ArtifactResult{}, fmt.Errorf("resize root disk %q: %w", diskPath, err)
 	}
 
-	return nil
+	return hostagent.ArtifactResult{}, nil
 }
 
 // wrapQemuImgErr appends the qemu-img CombinedOutput (which carries stderr)
@@ -834,10 +849,10 @@ func (r *HypervisorMachineReconciler) reconcileConfextDataDisk(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
 	machine *clusterv1.Machine,
-) error {
+) (hostagent.ArtifactResult, error) {
 	secretName, err := r.bootstrapDataSecretName(ctx, machine)
 	if err != nil || secretName == "" {
-		return err
+		return hostagent.ArtifactResult{}, err
 	}
 
 	secret := &corev1.Secret{}
@@ -845,26 +860,26 @@ func (r *HypervisorMachineReconciler) reconcileConfextDataDisk(
 	secretKey := client.ObjectKey{Namespace: machine.Namespace, Name: secretName}
 	if err := r.Get(ctx, secretKey, secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil
+			return hostagent.ArtifactResult{}, nil
 		}
 
-		return fmt.Errorf("get bootstrap Secret %q: %w", secretKey, err)
+		return hostagent.ArtifactResult{}, fmt.Errorf("get bootstrap Secret %q: %w", secretKey, err)
 	}
 
 	tree, err := decodeConfextTree(secret)
 	if err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to decode confext tree: %v", err)
-		return fmt.Errorf("decode confext tree for %q: %w", machine.Name, err)
+		return hostagent.ArtifactResult{}, fmt.Errorf("decode confext tree for %q: %w", machine.Name, err)
 	}
 
 	if len(tree) == 0 {
-		return nil
+		return hostagent.ArtifactResult{}, nil
 	}
 
 	restoreTree, err := r.etcdRestoreTree(ctx, machine)
 	if err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render etcd restore tree: %v", err)
-		return fmt.Errorf("render etcd restore tree for %q: %w", machine.Name, err)
+		return hostagent.ArtifactResult{}, fmt.Errorf("render etcd restore tree for %q: %w", machine.Name, err)
 	}
 
 	maps.Copy(tree, restoreTree)
@@ -881,11 +896,13 @@ func (r *HypervisorMachineReconciler) reconcileConfextDataDisk(
 			Generation:     uint64(hm.Generation),
 			IdempotencyKey: string(hm.UID) + "-confext-" + fmt.Sprint(hm.Generation),
 		}
-		if _, err := r.Agent.PrepareConfext(ctx, mutation, machine.Name, files); err != nil {
-			return fmt.Errorf("agent prepare confext for %q: %w", machine.Name, err)
+
+		result, err := r.Agent.PrepareConfext(ctx, mutation, machine.Name, files)
+		if err != nil {
+			return hostagent.ArtifactResult{}, fmt.Errorf("agent prepare confext for %q: %w", machine.Name, err)
 		}
 
-		return nil
+		return result, nil
 	}
 
 	stagingDir := filepath.Join(r.Config.VMDiskDir, machine.Name+"-confext-staging")
@@ -893,15 +910,20 @@ func (r *HypervisorMachineReconciler) reconcileConfextDataDisk(
 
 	if err := r.Confext.WriteTree(tree, stagingDir); err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to materialize confext tree: %v", err)
-		return fmt.Errorf("materialize confext tree for %q: %w", machine.Name, err)
+		return hostagent.ArtifactResult{}, fmt.Errorf("materialize confext tree for %q: %w", machine.Name, err)
 	}
 
 	if _, err := r.Confext.BuildRaws(ctx, stagingDir, outDir); err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to build confext raws: %v", err)
-		return fmt.Errorf("build confext raws for %q: %w", machine.Name, err)
+		return hostagent.ArtifactResult{}, fmt.Errorf("build confext raws for %q: %w", machine.Name, err)
 	}
 
-	return nil
+	paths, err := confextRawPaths(r.Config.VMDiskDir, machine.Name)
+	if err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
+
+	return artifactResultForPaths(paths)
 }
 
 // etcdRestoreTree renders the z-etcd-restore confext tree when the machine's
@@ -1020,10 +1042,10 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
 	machine *clusterv1.Machine,
-) error {
+) (hostagent.ArtifactResult, error) {
 	ref := machine.Spec.Bootstrap.ConfigRef
 	if !ref.IsDefined() || ref.Kind != "HypervisorConfig" || ref.Name == "" {
-		return nil
+		return hostagent.ArtifactResult{}, nil
 	}
 
 	config := &bootstrapv1alpha1.HypervisorConfig{}
@@ -1031,16 +1053,16 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 	key := client.ObjectKey{Namespace: machine.Namespace, Name: ref.Name}
 	if err := r.Get(ctx, key, config); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil
+			return hostagent.ArtifactResult{}, nil
 		}
 
-		return fmt.Errorf("get bootstrap config %q: %w", key, err)
+		return hostagent.ArtifactResult{}, fmt.Errorf("get bootstrap config %q: %w", key, err)
 	}
 
 	sshPublicKey, err := r.resolveSSHPublicKey(config)
 	if err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render cloud-init data: %v", err)
-		return fmt.Errorf("render cloud-init data for %q: %w", machine.Name, err)
+		return hostagent.ArtifactResult{}, fmt.Errorf("render cloud-init data for %q: %w", machine.Name, err)
 	}
 
 	parts, err := r.RenderCloudInit(cloudinit.Data{
@@ -1050,7 +1072,7 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 	})
 	if err != nil {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to render cloud-init data: %v", err)
-		return fmt.Errorf("render cloud-init data for %q: %w", machine.Name, err)
+		return hostagent.ArtifactResult{}, fmt.Errorf("render cloud-init data for %q: %w", machine.Name, err)
 	}
 
 	if r.Agent != nil {
@@ -1065,11 +1087,13 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 			Generation:     uint64(hm.Generation),
 			IdempotencyKey: string(hm.UID) + "-cidata-" + fmt.Sprint(hm.Generation),
 		}
-		if _, err := r.Agent.PrepareCIDATA(ctx, mutation, hm.Name, files); err != nil {
-			return fmt.Errorf("agent prepare CIDATA for %q: %w", machine.Name, err)
+
+		result, err := r.Agent.PrepareCIDATA(ctx, mutation, hm.Name, files)
+		if err != nil {
+			return hostagent.ArtifactResult{}, fmt.Errorf("agent prepare CIDATA for %q: %w", machine.Name, err)
 		}
 
-		return nil
+		return result, nil
 	}
 
 	if err := r.buildCIDATADisk(ctx, hm, parts); err != nil {
@@ -1082,10 +1106,10 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 			err,
 		)
 
-		return fmt.Errorf("build CIDATA disk for %q: %w", machine.Name, err)
+		return hostagent.ArtifactResult{}, fmt.Errorf("build CIDATA disk for %q: %w", machine.Name, err)
 	}
 
-	return nil
+	return artifactResultForPaths([]string{filepath.Join(r.Config.VMDiskDir, hm.Name+"-cidata.img")})
 }
 
 // buildCIDATADisk produces the machine's CIDATA disk image
@@ -1168,6 +1192,7 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 	hm *infrastructurev1alpha1.HypervisorMachine,
 	machine *clusterv1.Machine,
 	mac string,
+	artifacts hostagent.ArtifactResult,
 ) error {
 	netConfig, err := chclient.VhostUserNetConfig(chclient.VhostUserSocketPath(hm.Name), mac)
 	if err != nil {
@@ -1181,6 +1206,65 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 		)
 
 		return fmt.Errorf("render vhost-user net config for %q: %w", hm.Name, err)
+	}
+
+	if r.Agent != nil {
+		generation := uint64(hm.Generation)
+		if generation == 0 {
+			generation = 1
+		}
+
+		mutation := hostagent.Mutation{
+			ProtocolMajor:  hostagent.ProtocolMajor,
+			Owner:          hostagent.Owner{InstallationID: "agent", NodeID: "k8labs-mgmt-control-plane", UID: string(hm.UID)},
+			Generation:     generation,
+			IdempotencyKey: string(hm.UID) + "-vm-" + fmt.Sprint(generation),
+		}
+		if len(artifacts.Paths) == 0 || len(artifacts.Paths) != len(artifacts.SHA256s) {
+			return fmt.Errorf("invalid VM artifact result for %q", hm.Name)
+		}
+
+		ip := ""
+
+		for _, address := range hm.Status.Addresses {
+			if address.Type == clusterv1.MachineInternalIP {
+				ip = address.Address
+				break
+			}
+		}
+
+		if ip == "" {
+			return fmt.Errorf("machine %q has no internal IP", hm.Name)
+		}
+
+		desired := hostagent.VMDesired{
+			UID:                   string(hm.UID),
+			Name:                  hm.Name,
+			Image:                 hm.Status.Image,
+			Firmware:              r.Config.Firmware,
+			APISocket:             filepath.Join(r.Config.SocketDir, hm.Name, "api.sock"),
+			VhostSocket:           chclient.VhostUserSocketPath(hm.Name),
+			Disk:                  artifacts.Paths[0],
+			MAC:                   mac,
+			IP:                    ip,
+			CPUs:                  uint32(hm.Spec.CPU),
+			MemoryMiB:             uint32(hm.Spec.RAM),
+			AdditionalDisks:       artifacts.Paths[1:],
+			DiskSHA256:            artifacts.SHA256s[0],
+			AdditionalDiskSHA256s: artifacts.SHA256s[1:],
+		}
+		if _, err := r.Agent.EnsureVM(ctx, mutation, desired); err != nil {
+			return fmt.Errorf("ensure VM for %q: %w", hm.Name, err)
+		}
+
+		providerID := fmt.Sprintf("hypervisor://%s/%s", machine.Spec.ClusterName, hm.Name)
+		hm.Spec.ProviderID = &providerID
+		hm.Status.ProviderID = &providerID
+		markVMProvisioned(hm)
+		hm.Status.Ready = true
+		hm.Status.Initialization = &infrastructurev1alpha1.InitializationStatus{Provisioned: true}
+
+		return r.Status().Update(ctx, hm)
 	}
 
 	vm := r.vmClientFor(hm)
@@ -1338,6 +1422,20 @@ func confextRawPaths(vmDisksDir, name string) ([]string, error) {
 	}
 
 	return paths, nil
+}
+
+func artifactResultForPaths(paths []string) (hostagent.ArtifactResult, error) {
+	checksums := make([]string, 0, len(paths))
+	for _, path := range paths {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return hostagent.ArtifactResult{}, fmt.Errorf("read artifact %q: %w", path, err)
+		}
+
+		checksums = append(checksums, fmt.Sprintf("%x", sha256.Sum256(contents)))
+	}
+
+	return hostagent.ArtifactResult{Paths: paths, SHA256s: checksums}, nil
 }
 
 // markVMProvisioned upserts the VMProvisioned condition as true on the

@@ -24,6 +24,52 @@ type CIDATA struct {
 	SHA256 string
 }
 
+func (b Builder) Verify(paths, checksums []string) error {
+	if len(paths) != len(checksums) || len(paths) == 0 {
+		return fmt.Errorf("artifact paths and checksums must have equal non-zero lengths")
+	}
+
+	root, err := filepath.EvalSymlinks(b.Root)
+	if err != nil {
+		return fmt.Errorf("resolve artifact root: %w", err)
+	}
+
+	for index, path := range paths {
+		if !filepath.IsAbs(path) || !within(root, path) {
+			return fmt.Errorf("artifact path is outside owned root: %q", path)
+		}
+
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil || !within(root, resolved) || !regularFile(resolved) {
+			return fmt.Errorf("artifact path is not an owned regular file: %q", path)
+		}
+
+		if len(checksums[index]) != sha256.Size*2 {
+			return fmt.Errorf("invalid artifact checksum for %q", path)
+		}
+
+		actual, err := fileSHA256(resolved)
+		if err != nil {
+			return err
+		}
+
+		if actual != strings.ToLower(checksums[index]) {
+			return fmt.Errorf("artifact checksum mismatch: %q", path)
+		}
+	}
+
+	return nil
+}
+
+func fileSHA256(path string) (string, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read artifact %q: %w", path, err)
+	}
+
+	return fmt.Sprintf("%x", sha256.Sum256(contents)), nil
+}
+
 func (b Builder) PrepareRootDisk(ctx context.Context, name, source string) (string, error) {
 	if err := b.validName(name); err != nil {
 		return "", err

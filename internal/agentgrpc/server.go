@@ -474,18 +474,20 @@ func ownerFrom(value *agentv1.Owner, protocol uint32) (hostagent.Owner, error) {
 
 func vmDesiredFrom(value *agentv1.VMDesired) hostagent.VMDesired {
 	return hostagent.VMDesired{
-		UID:             value.GetUid(),
-		Name:            value.GetName(),
-		Image:           value.GetImage(),
-		Firmware:        value.GetFirmware(),
-		APISocket:       value.GetApiSocket(),
-		VhostSocket:     value.GetVhostSocket(),
-		Disk:            value.GetDisk(),
-		MAC:             value.GetMac(),
-		IP:              value.GetIp(),
-		CPUs:            value.GetCpus(),
-		MemoryMiB:       value.GetMemoryMib(),
-		AdditionalDisks: value.GetAdditionalDisks(),
+		UID:                   value.GetUid(),
+		Name:                  value.GetName(),
+		Image:                 value.GetImage(),
+		Firmware:              value.GetFirmware(),
+		APISocket:             value.GetApiSocket(),
+		VhostSocket:           value.GetVhostSocket(),
+		Disk:                  value.GetDisk(),
+		MAC:                   value.GetMac(),
+		IP:                    value.GetIp(),
+		CPUs:                  value.GetCpus(),
+		MemoryMiB:             value.GetMemoryMib(),
+		AdditionalDisks:       value.GetAdditionalDisks(),
+		DiskSHA256:            value.GetDiskSha256(),
+		AdditionalDiskSHA256s: value.GetAdditionalDiskSha256(),
 	}
 }
 
