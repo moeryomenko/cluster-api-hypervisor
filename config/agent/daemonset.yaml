@@ -32,7 +32,7 @@ spec:
         k8labs.io/agent: "true"
       containers:
       - name: agent
-        image: localhost/cluster-api-hypervisor-agent:v0.2.0-agent1
+        image: localhost/cluster-api-hypervisor-agent:v0.2.0-agent2
         imagePullPolicy: IfNotPresent
         args:
         - --listen=:9444
@@ -46,8 +46,10 @@ spec:
             fieldRef:
               fieldPath: spec.nodeName
         securityContext:
-          privileged: true
-          allowPrivilegeEscalation: true
+          privileged: false
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
         readinessProbe:
           exec:
             command:
