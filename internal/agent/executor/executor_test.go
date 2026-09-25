@@ -31,6 +31,7 @@ func (*fakeNetwork) AllocateIP(context.Context, string, string) (string, error) 
 }
 func (*fakeNetwork) ReleaseIP(context.Context, string, string) error           { return nil }
 func (*fakeNetwork) PublishPort(context.Context, string, int32) (int32, error) { return 20000, nil }
+func (*fakeNetwork) UnpublishPort(context.Context, string, int32) error        { return nil }
 
 type fakeSystemd struct {
 	units   map[string]systemd.Unit

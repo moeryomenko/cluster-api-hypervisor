@@ -33,6 +33,7 @@ type NetworkClient interface {
 	AllocateIP(context.Context, string, string) (string, error)
 	ReleaseIP(context.Context, string, string) error
 	PublishPort(context.Context, string, int32) (int32, error)
+	UnpublishPort(context.Context, string, int32) error
 }
 
 type Executor struct {
@@ -361,8 +362,21 @@ func (e *Executor) PublishPort(
 	return uint32(result), err
 }
 
-func (e *Executor) ReleasePort(context.Context, hostagent.Mutation, uint32, uint32) error {
-	return e.notImplemented("ReleasePort requires k8netd adapter")
+func (e *Executor) ReleasePort(ctx context.Context, mutation hostagent.Mutation, guestPort, hostPort uint32) error {
+	if err := mutation.Validate(); err != nil {
+		return err
+	}
+	if guestPort == 0 || guestPort > 65535 || hostPort == 0 || e.Network == nil || e.Store == nil {
+		return hostagent.ErrInvalidRequest
+	}
+	resource, err := e.Store.GetNetworkResource(mutation.Owner.InstallationID, mutation.Owner.UID)
+	if err != nil {
+		return err
+	}
+	if resource.NodeID != mutation.Owner.NodeID {
+		return hostagent.ErrUnauthorized
+	}
+	return e.Network.UnpublishPort(ctx, resource.Port, int32(guestPort))
 }
 
 func (e *Executor) AcquireProbe(context.Context, hostagent.Mutation, string) (hostagent.ProbeLease, error) {

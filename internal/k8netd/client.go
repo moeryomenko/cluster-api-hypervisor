@@ -208,6 +208,14 @@ func (c *Client) PublishPort(ctx context.Context, port string, vmPort int32) (in
 	return *envelope.HostPort, nil
 }
 
+// UnpublishPort removes exactly one published port mapping without deleting the owning port.
+func (c *Client) UnpublishPort(ctx context.Context, port string, vmPort int32) error {
+	if vmPort <= 0 || vmPort > 65535 {
+		return fmt.Errorf("%w: invalid VM port", ErrInvalidParams)
+	}
+	return c.call(ctx, "UnpublishPort", map[string]any{"port": port, "vm_port": vmPort}, nil)
+}
+
 // rpcRequest is the wire request envelope.
 type rpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`
