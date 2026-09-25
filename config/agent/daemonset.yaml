@@ -32,7 +32,7 @@ spec:
         k8labs.io/agent: "true"
       containers:
       - name: agent
-        image: localhost/cluster-api-hypervisor-agent:v0.2.0-agent2
+        image: localhost/cluster-api-hypervisor-agent:v0.2.0-agent3
         imagePullPolicy: IfNotPresent
         args:
         - --listen=:9444
