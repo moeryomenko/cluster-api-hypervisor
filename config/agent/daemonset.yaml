@@ -49,8 +49,11 @@ spec:
           privileged: true
           allowPrivilegeEscalation: true
         readinessProbe:
-          tcpSocket:
-            port: grpc
+          exec:
+            command:
+            - /bin/sh
+            - -ec
+            - test -c /dev/kvm && test -S /run/user/1000/bus && test -S /run/user/1000/k8snet/control.sock && test -w /state
           initialDelaySeconds: 3
           periodSeconds: 5
         volumeMounts:
