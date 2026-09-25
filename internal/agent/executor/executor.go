@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/artifact"
@@ -276,6 +277,13 @@ func (e *Executor) StopVM(ctx context.Context, mutation hostagent.Mutation) erro
 		return hostagent.ErrUnauthorized
 	}
 
+	if err := ch.NewClient(vm.APISocket).Shutdown(ctx); err != nil {
+		var statusError *ch.StatusError
+		if _, statErr := os.Stat(vm.APISocket); statErr == nil && !errors.As(err, &statusError) {
+			return fmt.Errorf("graceful VM shutdown: %w", err)
+		}
+	}
+
 	if err := e.Systemd.StopUnit(ctx, vm.Unit); err != nil {
 		_ = e.complete(mutation, "StopVM", operation.RequestHash, inventory.OperationFailed, "", err.Error())
 		return fmt.Errorf("stop owned VM unit: %w", err)
@@ -284,8 +292,44 @@ func (e *Executor) StopVM(ctx context.Context, mutation hostagent.Mutation) erro
 	return e.complete(mutation, "StopVM", operation.RequestHash, inventory.OperationCompleted, "stopped", "")
 }
 
-func (e *Executor) DeleteVM(context.Context, hostagent.Mutation) error {
-	return e.notImplemented("DeleteVM requires disk, network, and unit-file cleanup adapters")
+func (e *Executor) DeleteVM(ctx context.Context, mutation hostagent.Mutation) error {
+	if err := mutation.Validate(); err != nil {
+		return err
+	}
+
+	if err := e.StopVM(ctx, mutation); err != nil {
+		return err
+	}
+
+	vm, err := e.Store.GetVM(mutation.Owner.InstallationID, mutation.Owner.UID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if vm.NodeID != mutation.Owner.NodeID {
+		return hostagent.ErrUnauthorized
+	}
+
+	if e.Network != nil {
+		if err := e.DeletePort(ctx, mutation); err != nil {
+			return err
+		}
+	}
+
+	if e.Artifacts.Root != "" {
+		for _, path := range []string{vm.Disk, vm.APISocket} {
+			if relative, err := filepath.Rel(e.Artifacts.Root, path); err == nil && relative != ".." &&
+				!strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				_ = os.RemoveAll(path)
+			}
+		}
+	}
+
+	return e.Store.DeleteVM(mutation.Owner.InstallationID, mutation.Owner.UID)
 }
 
 func (e *Executor) EnsureNetwork(

@@ -203,6 +203,14 @@ func (s *Store) UpsertVM(vm VM) error {
 	return nil
 }
 
+func (s *Store) DeleteVM(installationID, ownerUID string) error {
+	if _, err := s.db.Exec(`DELETE FROM vms WHERE installation_id=? AND owner_uid=?`, installationID, ownerUID); err != nil {
+		return fmt.Errorf("delete VM inventory: %w", err)
+	}
+
+	return nil
+}
+
 func (s *Store) GetVM(installationID, ownerUID string) (VM, error) {
 	var vm VM
 
