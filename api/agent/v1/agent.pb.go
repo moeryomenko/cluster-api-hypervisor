@@ -278,20 +278,21 @@ func (x *Capabilities) GetCanUseUserDbus() bool {
 }
 
 type VMDesired struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Uid           string                 `protobuf:"bytes,1,opt,name=uid,proto3" json:"uid,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Image         string                 `protobuf:"bytes,3,opt,name=image,proto3" json:"image,omitempty"`
-	Firmware      string                 `protobuf:"bytes,4,opt,name=firmware,proto3" json:"firmware,omitempty"`
-	ApiSocket     string                 `protobuf:"bytes,5,opt,name=api_socket,json=apiSocket,proto3" json:"api_socket,omitempty"`
-	VhostSocket   string                 `protobuf:"bytes,6,opt,name=vhost_socket,json=vhostSocket,proto3" json:"vhost_socket,omitempty"`
-	Disk          string                 `protobuf:"bytes,7,opt,name=disk,proto3" json:"disk,omitempty"`
-	Mac           string                 `protobuf:"bytes,8,opt,name=mac,proto3" json:"mac,omitempty"`
-	Ip            string                 `protobuf:"bytes,9,opt,name=ip,proto3" json:"ip,omitempty"`
-	Cpus          uint32                 `protobuf:"varint,10,opt,name=cpus,proto3" json:"cpus,omitempty"`
-	MemoryMib     uint32                 `protobuf:"varint,11,opt,name=memory_mib,json=memoryMib,proto3" json:"memory_mib,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Uid             string                 `protobuf:"bytes,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	Name            string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Image           string                 `protobuf:"bytes,3,opt,name=image,proto3" json:"image,omitempty"`
+	Firmware        string                 `protobuf:"bytes,4,opt,name=firmware,proto3" json:"firmware,omitempty"`
+	ApiSocket       string                 `protobuf:"bytes,5,opt,name=api_socket,json=apiSocket,proto3" json:"api_socket,omitempty"`
+	VhostSocket     string                 `protobuf:"bytes,6,opt,name=vhost_socket,json=vhostSocket,proto3" json:"vhost_socket,omitempty"`
+	Disk            string                 `protobuf:"bytes,7,opt,name=disk,proto3" json:"disk,omitempty"`
+	Mac             string                 `protobuf:"bytes,8,opt,name=mac,proto3" json:"mac,omitempty"`
+	Ip              string                 `protobuf:"bytes,9,opt,name=ip,proto3" json:"ip,omitempty"`
+	Cpus            uint32                 `protobuf:"varint,10,opt,name=cpus,proto3" json:"cpus,omitempty"`
+	MemoryMib       uint32                 `protobuf:"varint,11,opt,name=memory_mib,json=memoryMib,proto3" json:"memory_mib,omitempty"`
+	AdditionalDisks []string               `protobuf:"bytes,12,rep,name=additional_disks,json=additionalDisks,proto3" json:"additional_disks,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *VMDesired) Reset() {
@@ -399,6 +400,13 @@ func (x *VMDesired) GetMemoryMib() uint32 {
 		return x.MemoryMib
 	}
 	return 0
+}
+
+func (x *VMDesired) GetAdditionalDisks() []string {
+	if x != nil {
+		return x.AdditionalDisks
+	}
+	return nil
 }
 
 type VMObserved struct {
@@ -2029,7 +2037,7 @@ const file_api_agent_v1_agent_proto_rawDesc = "" +
 	"\x10cloud_hypervisor\x18\x03 \x01(\tR\x0fcloudHypervisor\x122\n" +
 	"\x15k8netd_protocol_major\x18\x04 \x01(\rR\x13k8netdProtocolMajor\x12\x1e\n" +
 	"\vcan_use_kvm\x18\x05 \x01(\bR\tcanUseKvm\x12)\n" +
-	"\x11can_use_user_dbus\x18\x06 \x01(\bR\x0ecanUseUserDbus\"\x8e\x02\n" +
+	"\x11can_use_user_dbus\x18\x06 \x01(\bR\x0ecanUseUserDbus\"\xb9\x02\n" +
 	"\tVMDesired\x12\x10\n" +
 	"\x03uid\x18\x01 \x01(\tR\x03uid\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -2044,7 +2052,8 @@ const file_api_agent_v1_agent_proto_rawDesc = "" +
 	"\x04cpus\x18\n" +
 	" \x01(\rR\x04cpus\x12\x1d\n" +
 	"\n" +
-	"memory_mib\x18\v \x01(\rR\tmemoryMib\"\x85\x02\n" +
+	"memory_mib\x18\v \x01(\rR\tmemoryMib\x12)\n" +
+	"\x10additional_disks\x18\f \x03(\tR\x0fadditionalDisks\"\x85\x02\n" +
 	"\n" +
 	"VMObserved\x12\x10\n" +
 	"\x03uid\x18\x01 \x01(\tR\x03uid\x12\x12\n" +

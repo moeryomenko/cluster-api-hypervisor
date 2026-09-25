@@ -69,17 +69,18 @@ type Capabilities struct {
 }
 
 type VMDesired struct {
-	UID         string
-	Name        string
-	Image       string
-	Firmware    string
-	APISocket   string
-	VhostSocket string
-	Disk        string
-	MAC         string
-	IP          string
-	CPUs        uint32
-	MemoryMiB   uint32
+	UID             string
+	Name            string
+	Image           string
+	Firmware        string
+	APISocket       string
+	VhostSocket     string
+	Disk            string
+	MAC             string
+	IP              string
+	CPUs            uint32
+	MemoryMiB       uint32
+	AdditionalDisks []string
 }
 
 type VMObserved struct {

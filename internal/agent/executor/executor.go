@@ -135,7 +135,38 @@ func (e *Executor) EnsureVM(
 		return hostagent.VMObserved{}, err
 	}
 
-	if err := api.Create(ctx, ch.VmConfig{Payload: &ch.PayloadConfig{Firmware: desired.Firmware}, Cpus: &ch.CpusConfig{BootVCPUs: int(desired.CPUs), MaxVCPUs: int(desired.CPUs)}, Memory: &ch.MemoryConfig{Size: int64(desired.MemoryMiB) * 1024 * 1024, Shared: true}, Disks: []ch.DiskConfig{{Path: desired.Disk}}, Net: []ch.NetConfig{{VhostUser: true, VhostSocket: desired.VhostSocket, MAC: desired.MAC, NumQueues: 2}}}); err != nil {
+	disks := []ch.DiskConfig{{Path: desired.Disk}}
+	for _, path := range desired.AdditionalDisks {
+		if path == "" {
+			return hostagent.VMObserved{}, hostagent.ErrInvalidRequest
+		}
+
+		disks = append(disks, ch.DiskConfig{Path: path, Readonly: true})
+	}
+
+	err = api.Create(ctx, ch.VmConfig{
+		Payload: &ch.PayloadConfig{
+			Firmware: desired.Firmware,
+		},
+		Cpus: &ch.CpusConfig{
+			BootVCPUs: int(desired.CPUs),
+			MaxVCPUs:  int(desired.CPUs),
+		},
+		Memory: &ch.MemoryConfig{
+			Size:   int64(desired.MemoryMiB) * 1024 * 1024,
+			Shared: true,
+		},
+		Disks: disks,
+		Net: []ch.NetConfig{
+			{
+				VhostUser:   true,
+				VhostSocket: desired.VhostSocket,
+				MAC:         desired.MAC,
+				NumQueues:   2,
+			},
+		},
+	})
+	if err != nil {
 		return hostagent.VMObserved{}, err
 	}
 
