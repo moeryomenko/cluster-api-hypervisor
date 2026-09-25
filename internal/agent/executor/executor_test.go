@@ -88,15 +88,21 @@ func testExecutor(t *testing.T) (*Executor, *fakeSystemd, *inventory.Store) {
 		units: map[string]systemd.Unit{"k8slab-vm-machine-a.service": {Name: "k8slab-vm-machine-a.service", PID: 41}},
 	}
 
-	return &Executor{Store: store, Systemd: systemdClient, NodeID: "node-a"}, systemdClient, store
+	return &Executor{
+		Store:           store,
+		Systemd:         systemdClient,
+		NodeID:          "node-a",
+		UnitDir:         filepath.Join(t.TempDir(), "systemd"),
+		CloudHypervisor: "/bin/true",
+	}, systemdClient, store
 }
 
 func TestExecutorNeverReturnsFakeSuccessForUnimplementedHostOperations(t *testing.T) {
 	executor, _, _ := testExecutor(t)
 
 	_, err := executor.EnsureVM(context.Background(), mutation(), hostagent.VMDesired{})
-	if !errors.Is(err, hostagent.ErrUnavailable) {
-		t.Fatalf("EnsureVM() error=%v, want unavailable", err)
+	if !errors.Is(err, hostagent.ErrInvalidRequest) {
+		t.Fatalf("EnsureVM() error=%v, want invalid request", err)
 	}
 
 	if err := executor.DeleteNetwork(context.Background(), mutation()); !errors.Is(err, hostagent.ErrUnavailable) {

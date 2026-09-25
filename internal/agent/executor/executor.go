@@ -45,6 +45,7 @@ type Executor struct {
 	CloudHypervisor string
 	K8netdSocket    string
 	KVMPath         string
+	UnitDir         string
 }
 
 var _ hostagent.HostAgent = (*Executor)(nil)
@@ -74,10 +75,93 @@ func (e *Executor) Health(context.Context) (hostagent.Capabilities, error) {
 	}, nil
 }
 
-func (e *Executor) EnsureVM(context.Context, hostagent.Mutation, hostagent.VMDesired) (hostagent.VMObserved, error) {
-	return hostagent.VMObserved{}, e.notImplemented(
-		"EnsureVM requires disk, CIDATA, Cloud Hypervisor API, and k8netd transaction adapters",
+func (e *Executor) EnsureVM(
+	ctx context.Context,
+	mutation hostagent.Mutation,
+	desired hostagent.VMDesired,
+) (hostagent.VMObserved, error) {
+	if err := mutation.Validate(); err != nil {
+		return hostagent.VMObserved{}, err
+	}
+
+	if e.Systemd == nil || e.Store == nil || e.UnitDir == "" || e.CloudHypervisor == "" {
+		return hostagent.VMObserved{}, e.notImplemented(
+			"EnsureVM requires user systemd, inventory, unit directory, and Cloud Hypervisor",
+		)
+	}
+
+	if desired.UID == "" || desired.Disk == "" || desired.Firmware == "" || desired.APISocket == "" ||
+		desired.VhostSocket == "" ||
+		desired.MAC == "" ||
+		desired.CPUs == 0 ||
+		desired.MemoryMiB == 0 {
+		return hostagent.VMObserved{}, hostagent.ErrInvalidRequest
+	}
+
+	operation, err := e.begin(mutation, "EnsureVM")
+	if err != nil {
+		return hostagent.VMObserved{}, err
+	}
+
+	if operation.State == inventory.OperationCompleted {
+		return e.GetVM(ctx, mutation.Owner)
+	}
+
+	unitName := "k8slab-vm-" + mutation.Owner.UID + ".service"
+	arguments := []string{e.CloudHypervisor, "--api-socket", "path=" + desired.APISocket}
+
+	unit, err := systemd.Install(
+		ctx,
+		e.Systemd,
+		e.UnitDir,
+		systemd.PersistentUnit{
+			InstallationID: mutation.Owner.InstallationID,
+			OwnerUID:       mutation.Owner.UID,
+			NodeID:         mutation.Owner.NodeID,
+			Name:           unitName,
+			ExecStart:      arguments,
+		},
 	)
+	if err != nil {
+		_ = e.complete(mutation, "EnsureVM", operation.RequestHash, inventory.OperationFailed, "", err.Error())
+		return hostagent.VMObserved{}, err
+	}
+
+	vm := inventory.VM{
+		InstallationID: mutation.Owner.InstallationID,
+		OwnerUID:       mutation.Owner.UID,
+		NodeID:         mutation.Owner.NodeID,
+		Unit:           unitName,
+		Generation:     mutation.Generation,
+		PID:            int64(unit.PID),
+		Disk:           desired.Disk,
+		APISocket:      desired.APISocket,
+		VhostSocket:    desired.VhostSocket,
+		MAC:            desired.MAC,
+		IP:             desired.IP,
+	}
+	if err := e.Store.UpsertVM(vm); err != nil {
+		return hostagent.VMObserved{}, err
+	}
+
+	observed := hostagent.VMObserved{
+		UID:         desired.UID,
+		Unit:        unitName,
+		PID:         int(unit.PID),
+		Running:     unit.PID != 0,
+		APISocket:   desired.APISocket,
+		VhostSocket: desired.VhostSocket,
+		MAC:         desired.MAC,
+		IP:          desired.IP,
+		Generation:  mutation.Generation,
+	}
+
+	encoded, _ := json.Marshal(observed)
+	if err := e.complete(mutation, "EnsureVM", operation.RequestHash, inventory.OperationCompleted, string(encoded), ""); err != nil {
+		return hostagent.VMObserved{}, err
+	}
+
+	return observed, nil
 }
 
 func (e *Executor) GetVM(ctx context.Context, owner hostagent.Owner) (hostagent.VMObserved, error) {
