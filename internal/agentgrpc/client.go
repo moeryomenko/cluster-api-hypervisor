@@ -367,30 +367,72 @@ func mapError(err error) error {
 	return err
 }
 
-func (*Client) PrepareRootDisk(
-	context.Context,
-	hostagent.Mutation,
-	hostagent.RootDiskRequest,
+func (c *Client) PrepareRootDisk(
+	ctx context.Context,
+	mutation hostagent.Mutation,
+	request hostagent.RootDiskRequest,
 ) (hostagent.ArtifactResult, error) {
-	return hostagent.ArtifactResult{}, hostagent.ErrUnavailable
+	if err := mutation.Validate(); err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
+	response, err := c.service.PrepareRootDisk(
+		ctx,
+		&agentv1.PrepareRootDiskRequest{Mutation: mutationTo(mutation), Name: request.Name, SourceImage: request.SourceImage},
+	)
+	if err != nil {
+		return hostagent.ArtifactResult{}, mapError(err)
+	}
+	return artifactResult(response), nil
 }
 
-func (*Client) PrepareCIDATA(
-	context.Context,
-	hostagent.Mutation,
-	string,
-	[]hostagent.ArtifactFile,
+func (c *Client) PrepareCIDATA(
+	ctx context.Context,
+	mutation hostagent.Mutation,
+	name string,
+	files []hostagent.ArtifactFile,
 ) (hostagent.ArtifactResult, error) {
-	return hostagent.ArtifactResult{}, hostagent.ErrUnavailable
+	if err := mutation.Validate(); err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
+	response, err := c.service.PrepareCIDATA(
+		ctx,
+		&agentv1.PrepareCIDATARequest{Mutation: mutationTo(mutation), Name: name, Files: artifactFilesTo(files)},
+	)
+	if err != nil {
+		return hostagent.ArtifactResult{}, mapError(err)
+	}
+	return artifactResult(response), nil
 }
 
-func (*Client) PrepareConfext(
-	context.Context,
-	hostagent.Mutation,
-	string,
-	[]hostagent.ArtifactFile,
+func (c *Client) PrepareConfext(
+	ctx context.Context,
+	mutation hostagent.Mutation,
+	name string,
+	files []hostagent.ArtifactFile,
 ) (hostagent.ArtifactResult, error) {
-	return hostagent.ArtifactResult{}, hostagent.ErrUnavailable
+	if err := mutation.Validate(); err != nil {
+		return hostagent.ArtifactResult{}, err
+	}
+	response, err := c.service.PrepareConfext(
+		ctx,
+		&agentv1.PrepareConfextRequest{Mutation: mutationTo(mutation), Name: name, Files: artifactFilesTo(files)},
+	)
+	if err != nil {
+		return hostagent.ArtifactResult{}, mapError(err)
+	}
+	return artifactResult(response), nil
+}
+
+func artifactFilesTo(files []hostagent.ArtifactFile) []*agentv1.ArtifactFile {
+	result := make([]*agentv1.ArtifactFile, 0, len(files))
+	for _, file := range files {
+		result = append(result, &agentv1.ArtifactFile{Name: file.Name, Content: file.Content})
+	}
+	return result
+}
+
+func artifactResult(response *agentv1.ArtifactResponse) hostagent.ArtifactResult {
+	return hostagent.ArtifactResult{Paths: response.GetPaths(), SHA256s: response.GetSha256()}
 }
 
 var _ hostagent.HostAgent = (*Client)(nil)
