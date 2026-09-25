@@ -43,6 +43,8 @@ message VMDesired {
   uint32 cpus = 10;
   uint32 memory_mib = 11;
   repeated string additional_disks = 12;
+  string disk_sha256 = 13;
+  repeated string additional_disk_sha256 = 14;
 }
 
 message VMObserved {
