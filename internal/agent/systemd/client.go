@@ -28,7 +28,12 @@ type AuxiliaryUnit struct {
 	Properties []Property
 }
 
+// Client deliberately models only typed Manager API calls. Persistent unit
+// files are rendered atomically before Reload/Enable/Start are invoked.
 type Client interface {
+	Reload(context.Context) error
+	EnableUnitFiles(context.Context, []string) error
+	StartUnit(context.Context, string) (Unit, error)
 	StartTransientUnit(context.Context, string, []Property) (Unit, error)
 	StopUnit(context.Context, string) error
 	GetUnit(context.Context, string) (Unit, error)
@@ -60,6 +65,64 @@ func ConnectUser(address string) (*DBusClient, error) {
 
 func (c *DBusClient) Close() error { return c.conn.Close() }
 
+func (c *DBusClient) Reload(ctx context.Context) error {
+	call := c.conn.Object(managerInterface, managerPath).CallWithContext(ctx, managerInterface+".Reload", 0)
+	if call.Err != nil {
+		return fmt.Errorf("reload user systemd manager: %w", call.Err)
+	}
+
+	return nil
+}
+
+func (c *DBusClient) EnableUnitFiles(ctx context.Context, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+
+	var (
+		carriesInstallInfo bool
+		changes            []struct {
+			Type        string
+			Path        string
+			Source      string
+			Destination string
+		}
+	)
+
+	call := c.conn.Object(managerInterface, managerPath).
+		CallWithContext(ctx, managerInterface+".EnableUnitFiles", 0, names, false, true)
+	if call.Err != nil {
+		return fmt.Errorf("enable user units: %w", call.Err)
+	}
+
+	if err := call.Store(&carriesInstallInfo, &changes); err != nil {
+		return fmt.Errorf("decode enable user units: %w", err)
+	}
+
+	return nil
+}
+
+func (c *DBusClient) StartUnit(ctx context.Context, name string) (Unit, error) {
+	var job dbus.ObjectPath
+
+	call := c.conn.Object(managerInterface, managerPath).
+		CallWithContext(ctx, managerInterface+".StartUnit", 0, name, "replace")
+	if call.Err != nil {
+		return Unit{}, fmt.Errorf("start unit %q: %w", name, call.Err)
+	}
+
+	if err := call.Store(&job); err != nil {
+		return Unit{}, fmt.Errorf("decode start unit %q: %w", name, err)
+	}
+
+	unit, err := c.GetUnit(ctx, name)
+	if err != nil {
+		return Unit{}, err
+	}
+
+	return unit, nil
+}
+
 func (c *DBusClient) StartTransientUnit(ctx context.Context, name string, properties []Property) (Unit, error) {
 	var path dbus.ObjectPath
 
@@ -85,7 +148,11 @@ func (c *DBusClient) StopUnit(ctx context.Context, name string) error {
 		return fmt.Errorf("stop unit %q: %w", name, call.Err)
 	}
 
-	return call.Store(&ignored)
+	if err := call.Store(&ignored); err != nil {
+		return fmt.Errorf("decode stop unit %q: %w", name, err)
+	}
+
+	return nil
 }
 
 func (c *DBusClient) GetUnit(ctx context.Context, name string) (Unit, error) {
@@ -113,16 +180,11 @@ func (c *DBusClient) GetUnit(ctx context.Context, name string) (Unit, error) {
 
 func (c *DBusClient) ListUnits(ctx context.Context) ([]Unit, error) {
 	var values []struct {
-		Name        string
-		Description string
-		LoadState   string
-		ActiveState string
-		SubState    string
-		Followed    string
-		Path        dbus.ObjectPath
-		JobID       uint32
-		JobType     string
-		JobPath     dbus.ObjectPath
+		Name, Description, LoadState, ActiveState, SubState, Followed string
+		Path                                                          dbus.ObjectPath
+		JobID                                                         uint32
+		JobType                                                       string
+		JobPath                                                       dbus.ObjectPath
 	}
 
 	call := c.conn.Object(managerInterface, managerPath).CallWithContext(ctx, managerInterface+".ListUnits", 0)

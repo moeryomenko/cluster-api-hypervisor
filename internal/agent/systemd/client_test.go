@@ -10,6 +10,17 @@ type fakeClient struct {
 	units   map[string]Unit
 }
 
+func (*fakeClient) Reload(context.Context) error { return nil }
+
+func (*fakeClient) EnableUnitFiles(context.Context, []string) error { return nil }
+
+func (f *fakeClient) StartUnit(_ context.Context, name string) (Unit, error) {
+	unit := Unit{Name: name, Path: "/org/freedesktop/systemd1/unit/test"}
+	f.units[name] = unit
+
+	return unit, nil
+}
+
 func (f *fakeClient) StartTransientUnit(_ context.Context, name string, _ []Property) (Unit, error) {
 	unit := Unit{Name: name, Path: "/org/freedesktop/systemd1/unit/test"}
 	f.started = append(f.started, name)
