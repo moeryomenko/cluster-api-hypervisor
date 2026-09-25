@@ -241,6 +241,19 @@ func (e *Executor) EnsurePort(
 		return hostagent.PortObserved{}, err
 	}
 
+	resource := inventory.NetworkResource{
+		InstallationID: mutation.Owner.InstallationID,
+		OwnerUID:       mutation.Owner.UID,
+		NodeID:         mutation.Owner.NodeID,
+		Network:        request.Network,
+		Port:           request.Name,
+		MAC:            request.MAC,
+		IP:             ip,
+	}
+	if err := e.Store.UpsertNetworkResource(resource); err != nil {
+		return hostagent.PortObserved{}, err
+	}
+
 	return hostagent.PortObserved{
 		Name:      request.Name,
 		Network:   request.Network,
@@ -255,32 +268,97 @@ func (e *Executor) DeletePort(ctx context.Context, mutation hostagent.Mutation) 
 		return err
 	}
 
-	if e.Network == nil {
-		return e.notImplemented("DeletePort requires k8netd")
+	if e.Network == nil || e.Store == nil {
+		return e.notImplemented("DeletePort requires k8netd inventory")
 	}
 
-	if err := e.Network.DetachPort(ctx, mutation.Owner.UID); err != nil && !errors.Is(err, k8netd.ErrNotFound) {
-		return err
-	}
-
-	err := e.Network.DeletePort(ctx, mutation.Owner.UID)
-	if errors.Is(err, k8netd.ErrNotFound) {
+	resource, err := e.Store.GetNetworkResource(mutation.Owner.InstallationID, mutation.Owner.UID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 
-	return err
+	if err != nil {
+		return err
+	}
+
+	if resource.NodeID != mutation.Owner.NodeID {
+		return hostagent.ErrUnauthorized
+	}
+
+	if err := e.Network.ReleaseIP(ctx, resource.Network, resource.MAC); err != nil && !errors.Is(err, k8netd.ErrNotFound) {
+		return err
+	}
+
+	if err := e.Network.DetachPort(ctx, resource.Port); err != nil && !errors.Is(err, k8netd.ErrNotFound) {
+		return err
+	}
+
+	if err := e.Network.DeletePort(ctx, resource.Port); err != nil && !errors.Is(err, k8netd.ErrNotFound) {
+		return err
+	}
+
+	return e.Store.DeleteNetworkResource(mutation.Owner.InstallationID, mutation.Owner.UID)
 }
 
-func (e *Executor) AllocateIP(context.Context, hostagent.Mutation) (string, error) {
-	return "", e.notImplemented("AllocateIP requires k8netd adapter")
+func (e *Executor) AllocateIP(ctx context.Context, mutation hostagent.Mutation) (string, error) {
+	if err := mutation.Validate(); err != nil {
+		return "", err
+	}
+
+	resource, err := e.Store.GetNetworkResource(mutation.Owner.InstallationID, mutation.Owner.UID)
+	if err != nil {
+		return "", err
+	}
+
+	if resource.NodeID != mutation.Owner.NodeID {
+		return "", hostagent.ErrUnauthorized
+	}
+
+	return e.Network.AllocateIP(ctx, resource.Network, resource.MAC)
 }
 
-func (e *Executor) ReleaseIP(context.Context, hostagent.Mutation, string) error {
-	return e.notImplemented("ReleaseIP requires k8netd adapter")
+func (e *Executor) ReleaseIP(ctx context.Context, mutation hostagent.Mutation, ip string) error {
+	if err := mutation.Validate(); err != nil {
+		return err
+	}
+
+	resource, err := e.Store.GetNetworkResource(mutation.Owner.InstallationID, mutation.Owner.UID)
+	if err != nil {
+		return err
+	}
+
+	if resource.IP != ip || resource.NodeID != mutation.Owner.NodeID {
+		return hostagent.ErrUnauthorized
+	}
+
+	return e.Network.ReleaseIP(ctx, resource.Network, resource.MAC)
 }
 
-func (e *Executor) PublishPort(context.Context, hostagent.Mutation, uint32, uint32) (uint32, error) {
-	return 0, e.notImplemented("PublishPort requires k8netd adapter")
+func (e *Executor) PublishPort(
+	ctx context.Context,
+	mutation hostagent.Mutation,
+	guestPort, hostPort uint32,
+) (uint32, error) {
+	if err := mutation.Validate(); err != nil {
+		return 0, err
+	}
+
+	if hostPort != 0 {
+		return 0, hostagent.ErrInvalidRequest
+	}
+
+	resource, err := e.Store.GetNetworkResource(mutation.Owner.InstallationID, mutation.Owner.UID)
+	if err != nil {
+		return 0, err
+	}
+
+	if resource.NodeID != mutation.Owner.NodeID {
+		return 0, hostagent.ErrUnauthorized
+	}
+
+	result, err := e.Network.PublishPort(ctx, resource.Port, int32(guestPort))
+
+	return uint32(result), err
 }
 
 func (e *Executor) ReleasePort(context.Context, hostagent.Mutation, uint32, uint32) error {

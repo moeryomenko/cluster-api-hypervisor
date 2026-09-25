@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -146,6 +147,36 @@ func TestEnsureNetworkAndPortUseTypedK8netdAdapter(t *testing.T) {
 
 	if network.createdNetwork != "network-a" || network.createdPort != "port-a" || port.IP != "192.168.124.10" {
 		t.Fatalf("network=%#v port=%#v", network, port)
+	}
+}
+
+func TestNetworkResourceOwnershipSupportsPublishAndCleanup(t *testing.T) {
+	executor, _, store := testExecutor(t)
+	executor.Network = &fakeNetwork{}
+
+	mutation := mutation()
+	if err := store.UpsertNetworkResource(inventory.NetworkResource{InstallationID: mutation.Owner.InstallationID, OwnerUID: mutation.Owner.UID, NodeID: mutation.Owner.NodeID, Network: "network-a", Port: "port-a", MAC: "02:00:00:00:00:01", IP: "192.168.124.10"}); err != nil {
+		t.Fatal(err)
+	}
+
+	hostPort, err := executor.PublishPort(context.Background(), mutation, 6443, 0)
+	if err != nil || hostPort != 20000 {
+		t.Fatalf("PublishPort()=%d,%v", hostPort, err)
+	}
+
+	if ip, err := executor.AllocateIP(context.Background(), mutation); err != nil || ip != "192.168.124.10" {
+		t.Fatalf("AllocateIP()=%q,%v", ip, err)
+	}
+
+	if err := executor.DeletePort(context.Background(), mutation); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.GetNetworkResource(mutation.Owner.InstallationID, mutation.Owner.UID); !errors.Is(
+		err,
+		sql.ErrNoRows,
+	) {
+		t.Fatalf("network resource remains: %v", err)
 	}
 }
 

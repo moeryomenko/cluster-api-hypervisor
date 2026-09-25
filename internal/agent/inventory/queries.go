@@ -12,6 +12,15 @@ var (
 	//go:embed queries/get_operation_generation.sql
 	operationGenerationQuery string
 
+	//go:embed queries/upsert_network_resource.sql
+	upsertNetworkResourceQuery string
+
+	//go:embed queries/get_network_resource.sql
+	getNetworkResourceQuery string
+
+	//go:embed queries/delete_network_resource.sql
+	deleteNetworkResourceQuery string
+
 	//go:embed queries/upsert_vm.sql
 	upsertVMQuery string
 

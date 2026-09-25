@@ -57,6 +57,16 @@ type VM struct {
 	IP             string
 }
 
+type NetworkResource struct {
+	InstallationID string
+	OwnerUID       string
+	NodeID         string
+	Network        string
+	Port           string
+	MAC            string
+	IP             string
+}
+
 type Store struct {
 	db *sql.DB
 }
@@ -124,6 +134,45 @@ func (s *Store) RecordOperation(installationID, ownerUID, key string, generation
 
 	if existing != generation {
 		return ErrIdempotencyConflict
+	}
+
+	return nil
+}
+
+func (s *Store) UpsertNetworkResource(resource NetworkResource) error {
+	_, err := s.db.Exec(
+		upsertNetworkResourceQuery,
+		resource.InstallationID,
+		resource.OwnerUID,
+		resource.NodeID,
+		resource.Network,
+		resource.Port,
+		resource.MAC,
+		resource.IP,
+		time.Now().Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert network resource: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) GetNetworkResource(installationID, ownerUID string) (NetworkResource, error) {
+	var resource NetworkResource
+
+	err := s.db.QueryRow(getNetworkResourceQuery, installationID, ownerUID).
+		Scan(&resource.InstallationID, &resource.OwnerUID, &resource.NodeID, &resource.Network, &resource.Port, &resource.MAC, &resource.IP)
+	if err != nil {
+		return NetworkResource{}, err
+	}
+
+	return resource, nil
+}
+
+func (s *Store) DeleteNetworkResource(installationID, ownerUID string) error {
+	if _, err := s.db.Exec(deleteNetworkResourceQuery, installationID, ownerUID); err != nil {
+		return fmt.Errorf("delete network resource: %w", err)
 	}
 
 	return nil

@@ -1,0 +1,10 @@
+SELECT installation_id
+     , owner_uid
+     , node_id
+     , network
+     , port
+     , mac
+     , ip
+  FROM network_resources
+ WHERE installation_id=?
+   AND owner_uid=?
