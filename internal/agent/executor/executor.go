@@ -11,10 +11,12 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/artifact"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/inventory"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/systemd"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/ch"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
@@ -127,6 +129,19 @@ func (e *Executor) EnsureVM(
 		return hostagent.VMObserved{}, err
 	}
 
+	api := ch.NewClient(desired.APISocket)
+	if err := waitForSocket(ctx, desired.APISocket); err != nil {
+		return hostagent.VMObserved{}, err
+	}
+
+	if err := api.Create(ctx, ch.VmConfig{Payload: &ch.PayloadConfig{Firmware: desired.Firmware}, Cpus: &ch.CpusConfig{BootVCPUs: int(desired.CPUs), MaxVCPUs: int(desired.CPUs)}, Memory: &ch.MemoryConfig{Size: int64(desired.MemoryMiB) * 1024 * 1024, Shared: true}, Disks: []ch.DiskConfig{{Path: desired.Disk}}, Net: []ch.NetConfig{{VhostUser: true, VhostSocket: desired.VhostSocket, MAC: desired.MAC, NumQueues: 2}}}); err != nil {
+		return hostagent.VMObserved{}, err
+	}
+
+	if err := api.Boot(ctx); err != nil {
+		return hostagent.VMObserved{}, err
+	}
+
 	vm := inventory.VM{
 		InstallationID: mutation.Owner.InstallationID,
 		OwnerUID:       mutation.Owner.UID,
@@ -162,6 +177,28 @@ func (e *Executor) EnsureVM(
 	}
 
 	return observed, nil
+}
+
+func waitForSocket(ctx context.Context, path string) error {
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if info, err := os.Stat(path); err == nil && info.Mode()&os.ModeSocket != 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("%w: Cloud Hypervisor API socket %q did not appear", hostagent.ErrUnavailable, path)
+		case <-ticker.C:
+		}
+	}
 }
 
 func (e *Executor) GetVM(ctx context.Context, owner hostagent.Owner) (hostagent.VMObserved, error) {
