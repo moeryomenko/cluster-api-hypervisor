@@ -13,7 +13,9 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	agentv1 "github.com/moeryomenko/cluster-api-hypervisor/api/agent/v1"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/executor"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/inventory"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/systemd"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agentgrpc"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
 )
@@ -25,6 +27,10 @@ func main() {
 		clientCAFile         string
 		inventoryPath        string
 		nodeID               string
+		userDBusAddress      string
+		kvmPath              string
+		k8netdSocket         string
+		cloudHypervisorPath  string
 	)
 
 	flag.StringVar(&listenAddress, "listen", ":9444", "gRPC listen address")
@@ -32,6 +38,10 @@ func main() {
 	flag.StringVar(&clientCAFile, "client-ca", "/tls/ca/ca.crt", "PEM client CA certificate")
 	flag.StringVar(&nodeID, "node-id", "", "Kubernetes node identity")
 	flag.StringVar(&inventoryPath, "inventory", "/state/inventory.db", "SQLite inventory path")
+	flag.StringVar(&userDBusAddress, "user-dbus-address", "unix:path=/run/user/1000/bus", "host user D-Bus address")
+	flag.StringVar(&kvmPath, "kvm", "/dev/kvm", "KVM device path")
+	flag.StringVar(&k8netdSocket, "k8netd-socket", "/run/user/1000/k8snet/control.sock", "k8netd control socket")
+	flag.StringVar(&cloudHypervisorPath, "cloud-hypervisor", "/usr/bin/cloud-hypervisor", "Cloud Hypervisor executable path")
 	flag.Parse()
 
 	store, err := inventory.Open(inventoryPath)
@@ -40,7 +50,20 @@ func main() {
 	}
 	defer func() { _ = store.Close() }()
 
-	_ = store
+	userSystemd, err := systemd.ConnectUser(userDBusAddress)
+	if err != nil {
+		fatalf("connect user systemd: %v", err)
+	}
+	defer func() { _ = userSystemd.Close() }()
+
+	host := &executor.Executor{
+		Store:           store,
+		Systemd:         userSystemd,
+		NodeID:          nodeID,
+		CloudHypervisor: cloudHypervisorPath,
+		K8netdSocket:    k8netdSocket,
+		KVMPath:         kvmPath,
+	}
 
 	certificate, err := tls.LoadX509KeyPair(
 		filepath.Join(certificateDirectory, "tls.crt"),
@@ -70,7 +93,7 @@ func main() {
 		grpc.UnaryInterceptor(agentgrpc.ManagerAuthInterceptor),
 	)
 	agentv1.RegisterHostAgentServer(server, &agentgrpc.Server{
-		Host:         &hostagent.Fake{},
+		Host:         host,
 		Capabilities: hostagent.Capabilities{NodeID: nodeID},
 	})
 
