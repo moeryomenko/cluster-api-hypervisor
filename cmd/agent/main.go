@@ -1,23 +1,27 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
 	agentv1 "github.com/moeryomenko/cluster-api-hypervisor/api/agent/v1"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/artifact"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/executor"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/inventory"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/systemd"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agentgrpc"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
 )
 
 func main() {
@@ -31,6 +35,7 @@ func main() {
 		kvmPath              string
 		k8netdSocket         string
 		cloudHypervisorPath  string
+		artifactRoot         string
 	)
 
 	flag.StringVar(&listenAddress, "listen", ":9444", "gRPC listen address")
@@ -41,6 +46,7 @@ func main() {
 	flag.StringVar(&userDBusAddress, "user-dbus-address", "unix:path=/run/user/1000/bus", "host user D-Bus address")
 	flag.StringVar(&kvmPath, "kvm", "/dev/kvm", "KVM device path")
 	flag.StringVar(&k8netdSocket, "k8netd-socket", "/run/user/1000/k8snet/control.sock", "k8netd control socket")
+	flag.StringVar(&artifactRoot, "artifact-root", "/host-state/vms", "owned VM artifact root")
 	flag.StringVar(
 		&cloudHypervisorPath,
 		"cloud-hypervisor",
@@ -62,8 +68,16 @@ func main() {
 	defer func() { _ = userSystemd.Close() }()
 
 	host := &executor.Executor{
-		Store:           store,
-		Systemd:         userSystemd,
+		Store:   store,
+		Systemd: userSystemd,
+		Artifacts: artifact.Builder{
+			Root:    artifactRoot,
+			QemuImg: "qemu-img",
+			Mkdosfs: "mkdosfs",
+			Mcopy:   "mcopy",
+			Run:     commandRunner{},
+		},
+		Network:         k8netd.NewClient(k8netdSocket),
 		NodeID:          nodeID,
 		CloudHypervisor: cloudHypervisorPath,
 		K8netdSocket:    k8netdSocket,
@@ -105,6 +119,12 @@ func main() {
 	if err := server.Serve(listener); err != nil {
 		fatalf("serve gRPC: %v", err)
 	}
+}
+
+type commandRunner struct{}
+
+func (commandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 func fatalf(format string, args ...any) {

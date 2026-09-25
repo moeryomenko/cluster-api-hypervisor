@@ -11,6 +11,26 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
 )
 
+type fakeNetwork struct{ createdNetwork, createdPort string }
+
+func (f *fakeNetwork) CreateNetwork(_ context.Context, name, _, _, _, _ string) error {
+	f.createdNetwork = name
+	return nil
+}
+func (*fakeNetwork) DeleteNetwork(context.Context, string) error { return nil }
+func (f *fakeNetwork) CreatePort(_ context.Context, name string) error {
+	f.createdPort = name
+	return nil
+}
+func (*fakeNetwork) DeletePort(context.Context, string) error                 { return nil }
+func (*fakeNetwork) AttachPort(context.Context, string, string, string) error { return nil }
+func (*fakeNetwork) DetachPort(context.Context, string) error                 { return nil }
+func (*fakeNetwork) AllocateIP(context.Context, string, string) (string, error) {
+	return "192.168.124.10", nil
+}
+func (*fakeNetwork) ReleaseIP(context.Context, string, string) error           { return nil }
+func (*fakeNetwork) PublishPort(context.Context, string, int32) (int32, error) { return 20000, nil }
+
 type fakeSystemd struct {
 	units   map[string]systemd.Unit
 	stopped []string
@@ -102,6 +122,30 @@ func TestStopVMUsesJournalAndStopsOnlyOwnedInventoryUnit(t *testing.T) {
 
 	if len(systemdClient.stopped) != 1 {
 		t.Fatalf("replay stopped=%v, want one call", systemdClient.stopped)
+	}
+}
+
+func TestEnsureNetworkAndPortUseTypedK8netdAdapter(t *testing.T) {
+	executor, _, _ := testExecutor(t)
+	network := &fakeNetwork{}
+	executor.Network = network
+
+	mutation := mutation()
+	if err := executor.EnsureNetwork(context.Background(), mutation, hostagent.NetworkRequest{Name: "network-a", CIDR: "192.168.124.0/24"}); err != nil {
+		t.Fatal(err)
+	}
+
+	port, err := executor.EnsurePort(
+		context.Background(),
+		mutation,
+		hostagent.PortRequest{Name: "port-a", Network: "network-a", MAC: "02:00:00:00:00:01"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if network.createdNetwork != "network-a" || network.createdPort != "port-a" || port.IP != "192.168.124.10" {
+		t.Fatalf("network=%#v port=%#v", network, port)
 	}
 }
 
