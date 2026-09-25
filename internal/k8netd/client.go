@@ -213,6 +213,7 @@ func (c *Client) UnpublishPort(ctx context.Context, port string, vmPort int32) e
 	if vmPort <= 0 || vmPort > 65535 {
 		return fmt.Errorf("%w: invalid VM port", ErrInvalidParams)
 	}
+
 	return c.call(ctx, "UnpublishPort", map[string]any{"port": port, "vm_port": vmPort}, nil)
 }
 

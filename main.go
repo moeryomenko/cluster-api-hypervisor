@@ -59,6 +59,7 @@ import (
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
 	infrav1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
 	"github.com/moeryomenko/cluster-api-hypervisor/controllers"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/agentgrpc"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confexttree"
@@ -121,6 +122,10 @@ var (
 	hypervisorConfigConcurrency       int
 	hypervisorControlPlaneConcurrency int
 	upgradePlanConcurrency            int
+	agentAddress                      string
+	agentServerName                   string
+	agentClientCertDir                string
+	agentCAFile                       string
 )
 
 // init registers the scheme: the client-go core types, the CAPI core types
@@ -162,6 +167,15 @@ func initFlags(fs *pflag.FlagSet) {
 		defaultHealthAddr,
 		"The address the health and readiness endpoints bind to.",
 	)
+	fs.StringVar(&agentAddress, "agent-address", "", "HostAgent gRPC address")
+	fs.StringVar(
+		&agentServerName,
+		"agent-server-name",
+		"hypervisor-agent.hypervisor-system.svc",
+		"HostAgent TLS server name",
+	)
+	fs.StringVar(&agentClientCertDir, "agent-client-cert-dir", "", "directory containing HostAgent tls.crt and tls.key")
+	fs.StringVar(&agentCAFile, "agent-ca", "", "HostAgent CA PEM path")
 	fs.StringVar(
 		&metricsBindAddr,
 		"metrics-bind-addr",
@@ -357,6 +371,30 @@ func addHealthChecks(mgr ctrl.Manager) error {
 // the control-plane Machine set and polls the workload apiserver for
 // readiness.
 func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
+	var agent *agentgrpc.Client
+
+	if agentAddress != "" {
+		certificate, err := tls.LoadX509KeyPair(agentClientCertDir+"/tls.crt", agentClientCertDir+"/tls.key")
+		if err != nil {
+			return fmt.Errorf("load agent client certificate: %w", err)
+		}
+
+		ca, err := os.ReadFile(agentCAFile)
+		if err != nil {
+			return fmt.Errorf("read agent CA: %w", err)
+		}
+
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(ca) {
+			return fmt.Errorf("parse agent CA")
+		}
+
+		agent, err = agentgrpc.Dial(context.Background(), agentAddress, agentServerName, certificate, roots)
+		if err != nil {
+			return err
+		}
+	}
+
 	if err := (&controllers.HypervisorClusterReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
@@ -371,6 +409,7 @@ func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("hypervisormachine-controller"),
 		Config:   cfg,
+		Agent:    agent,
 		K8Netd:   k8netd.NewClient(cfg.K8NetdSocket),
 		QemuImg: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, name, args...).CombinedOutput()

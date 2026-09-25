@@ -22,7 +22,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
       - name: manager
-        image: localhost/cluster-api-hypervisor:v0.2.0
+        image: localhost/cluster-api-hypervisor:v0.2.0-agentcutover1
         imagePullPolicy: IfNotPresent
         args:
         - --webhook-cert-dir=/tmp/k8s-webhook-server/serving-certs
@@ -33,6 +33,10 @@ spec:
         - --hypervisorconfig-concurrency=1
         - --hypervisorcontrolplane-concurrency=1
         - --upgradeplan-concurrency=1
+        - --agent-address=hypervisor-agent.hypervisor-system.svc:9444
+        - --agent-server-name=hypervisor-agent.hypervisor-system.svc
+        - --agent-client-cert-dir=/tls/agent-client
+        - --agent-ca=/tls/agent-ca/ca.crt
         ports:
         - name: webhook
           containerPort: 9443
@@ -62,10 +66,25 @@ spec:
         - name: webhook-certs
           mountPath: /tmp/k8s-webhook-server/serving-certs
           readOnly: true
+        - name: agent-client-certs
+          mountPath: /tls/agent-client
+          readOnly: true
+        - name: agent-ca
+          mountPath: /tls/agent-ca
+          readOnly: true
       volumes:
       - name: webhook-certs
         secret:
           secretName: hypervisor-webhook-serving-cert
+      - name: agent-client-certs
+        secret:
+          secretName: hypervisor-manager-agent-client-cert
+      - name: agent-ca
+        secret:
+          secretName: hypervisor-webhook-ca
+          items:
+          - key: tls.crt
+            path: ca.crt
 ---
 apiVersion: v1
 kind: Service

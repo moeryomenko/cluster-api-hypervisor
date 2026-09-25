@@ -48,6 +48,7 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confexttree"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
 )
 
@@ -119,8 +120,11 @@ type HypervisorMachineReconciler struct {
 	// fakes.
 	NewVMClient func(socketDir, binary string) chclient.Client
 
-	// K8Netd is the k8netd JSON-RPC client used to create ports and allocate
-	// IPs. It is injected from main.go via cfg.K8NetdSocket.
+	// Agent performs host-side mutations through the authenticated remote boundary.
+	// When nil, the legacy direct seams remain available only for isolated tests.
+	Agent hostagent.HostAgent
+
+	// K8Netd is retained only for isolated legacy tests while agent cutover proceeds.
 	K8Netd *k8netd.Client
 
 	// QemuImg executes the qemu-img binary: Run(ctx, name, args...).
@@ -524,7 +528,31 @@ func (r *HypervisorMachineReconciler) reconcileIdentity(
 	mac string,
 ) (string, error) {
 	network := k8netdNetworkName(hc)
+
 	port := hm.Name
+	if r.Agent != nil {
+		mutation := hostagent.Mutation{
+			ProtocolMajor: hostagent.ProtocolMajor,
+			Owner: hostagent.Owner{
+				InstallationID: string(hc.UID),
+				NodeID:         "k8labs-mgmt-control-plane",
+				UID:            string(hm.UID),
+			},
+			Generation:     uint64(hm.Generation),
+			IdempotencyKey: string(hm.UID) + "-port-" + fmt.Sprint(hm.Generation),
+		}
+
+		observed, err := r.Agent.EnsurePort(ctx, mutation, hostagent.PortRequest{Name: port, Network: network, MAC: mac})
+		if err != nil {
+			return "", fmt.Errorf("agent ensure port %q: %w", port, err)
+		}
+
+		if err := r.recordAddresses(ctx, hm, machine, observed.IP); err != nil {
+			return "", err
+		}
+
+		return observed.IP, nil
+	}
 
 	if err := r.K8Netd.CreatePort(ctx, port); err != nil {
 		if errors.Is(err, k8netd.ErrAlreadyExists) {

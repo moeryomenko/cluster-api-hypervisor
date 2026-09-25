@@ -366,16 +366,20 @@ func (e *Executor) ReleasePort(ctx context.Context, mutation hostagent.Mutation,
 	if err := mutation.Validate(); err != nil {
 		return err
 	}
+
 	if guestPort == 0 || guestPort > 65535 || hostPort == 0 || e.Network == nil || e.Store == nil {
 		return hostagent.ErrInvalidRequest
 	}
+
 	resource, err := e.Store.GetNetworkResource(mutation.Owner.InstallationID, mutation.Owner.UID)
 	if err != nil {
 		return err
 	}
+
 	if resource.NodeID != mutation.Owner.NodeID {
 		return hostagent.ErrUnauthorized
 	}
+
 	return e.Network.UnpublishPort(ctx, resource.Port, int32(guestPort))
 }
 
