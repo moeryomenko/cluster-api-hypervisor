@@ -49,6 +49,7 @@ type Executor struct {
 	K8netdSocket    string
 	KVMPath         string
 	UnitDir         string
+	FirmwareRoot    string
 }
 
 var _ hostagent.HostAgent = (*Executor)(nil)
@@ -87,16 +88,14 @@ func (e *Executor) EnsureVM(
 		return hostagent.VMObserved{}, err
 	}
 
-	if e.Systemd == nil || e.Store == nil || e.UnitDir == "" || e.CloudHypervisor == "" {
+	if e.Systemd == nil || e.Store == nil || e.UnitDir == "" || e.CloudHypervisor == "" || e.FirmwareRoot == "" {
 		return hostagent.VMObserved{}, e.notImplemented(
-			"EnsureVM requires user systemd, inventory, unit directory, and Cloud Hypervisor",
+			"EnsureVM requires user systemd, inventory, unit directory, firmware root, and Cloud Hypervisor",
 		)
 	}
 
-	if desired.UID == "" || desired.Disk == "" || desired.Firmware == "" || desired.APISocket == "" ||
-		desired.VhostSocket == "" ||
-		desired.MAC == "" ||
-		desired.CPUs == 0 ||
+	if desired.UID == "" || desired.Disk == "" || desired.Firmware == "" || desired.FirmwareSHA256 == "" ||
+		desired.APISocket == "" || desired.VhostSocket == "" || desired.MAC == "" || desired.CPUs == 0 ||
 		desired.MemoryMiB == 0 {
 		return hostagent.VMObserved{}, hostagent.ErrInvalidRequest
 	}
@@ -150,6 +149,11 @@ func (e *Executor) EnsureVM(
 	if err := e.Artifacts.Verify(paths, checksums); err != nil {
 		_ = e.complete(mutation, "EnsureVM", operation.RequestHash, inventory.OperationFailed, "", err.Error())
 		return hostagent.VMObserved{}, fmt.Errorf("verify VM disks: %w", err)
+	}
+
+	if err := artifact.VerifyOwnedFile(e.FirmwareRoot, desired.Firmware, desired.FirmwareSHA256); err != nil {
+		_ = e.complete(mutation, "EnsureVM", operation.RequestHash, inventory.OperationFailed, "", err.Error())
+		return hostagent.VMObserved{}, fmt.Errorf("verify VM firmware: %w", err)
 	}
 
 	err = api.Create(ctx, ch.VmConfig{
@@ -359,11 +363,23 @@ func (e *Executor) DeleteVM(ctx context.Context, mutation hostagent.Mutation) er
 		}
 	}
 
-	if e.Artifacts.Root != "" {
-		for _, path := range []string{vm.Disk, vm.APISocket} {
+	if !mutation.RetainDisk && e.Artifacts.Root != "" {
+		removeOwnedArtifact := func(path string) {
 			if relative, err := filepath.Rel(e.Artifacts.Root, path); err == nil && relative != ".." &&
 				!strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 				_ = os.RemoveAll(path)
+			}
+		}
+
+		removeOwnedArtifact(vm.Disk)
+		removeOwnedArtifact(vm.APISocket)
+
+		prefix := strings.TrimSuffix(filepath.Base(vm.Disk), "-root.qcow2") + "-"
+		if entries, err := os.ReadDir(filepath.Dir(vm.Disk)); err == nil {
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), prefix) {
+					removeOwnedArtifact(filepath.Join(filepath.Dir(vm.Disk), entry.Name()))
+				}
 			}
 		}
 	}
@@ -490,6 +506,22 @@ func (e *Executor) DeletePort(ctx context.Context, mutation hostagent.Mutation) 
 		return hostagent.ErrUnauthorized
 	}
 
+	published, err := e.Store.ListPublishedPorts(mutation.Owner.InstallationID, mutation.Owner.UID)
+	if err != nil {
+		return err
+	}
+
+	for _, mapping := range published {
+		if err := e.Network.UnpublishPort(ctx, resource.Port, int32(mapping.GuestPort)); err != nil &&
+			!errors.Is(err, k8netd.ErrNotFound) {
+			return err
+		}
+
+		if err := e.Store.DeletePublishedPort(mutation.Owner.InstallationID, mutation.Owner.UID, mapping.GuestPort); err != nil {
+			return err
+		}
+	}
+
 	if err := e.Network.ReleaseIP(ctx, resource.Network, resource.MAC); err != nil && !errors.Is(err, k8netd.ErrNotFound) {
 		return err
 	}
@@ -548,7 +580,7 @@ func (e *Executor) PublishPort(
 		return 0, err
 	}
 
-	if hostPort != 0 {
+	if guestPort == 0 || guestPort > 65535 || hostPort != 0 || e.Network == nil || e.Store == nil {
 		return 0, hostagent.ErrInvalidRequest
 	}
 
@@ -561,9 +593,54 @@ func (e *Executor) PublishPort(
 		return 0, hostagent.ErrUnauthorized
 	}
 
-	result, err := e.Network.PublishPort(ctx, resource.Port, int32(guestPort))
+	operation, err := e.begin(mutation, "PublishPort", guestPort)
+	if err != nil {
+		return 0, err
+	}
 
-	return uint32(result), err
+	if operation.State == inventory.OperationCompleted {
+		var result uint32
+		if err := json.Unmarshal([]byte(operation.Result), &result); err != nil {
+			return 0, fmt.Errorf("decode published host port: %w", err)
+		}
+
+		return result, nil
+	}
+
+	if operation.State == inventory.OperationFailed {
+		return 0, portOperationFailure("PublishPort", operation.Failure)
+	}
+
+	result, err := e.Network.PublishPort(ctx, resource.Port, int32(guestPort))
+	if err != nil {
+		_ = e.complete(mutation, "PublishPort", operation.RequestHash, inventory.OperationFailed, "", err.Error())
+		return 0, err
+	}
+
+	if result <= 0 || result > 65535 {
+		err := hostagent.ErrInvalidRequest
+		_ = e.complete(mutation, "PublishPort", operation.RequestHash, inventory.OperationFailed, "", err.Error())
+
+		return 0, err
+	}
+
+	published := uint32(result)
+	if err := e.Store.UpsertPublishedPort(inventory.PublishedPort{
+		InstallationID: mutation.Owner.InstallationID,
+		OwnerUID:       mutation.Owner.UID,
+		GuestPort:      guestPort,
+		HostPort:       published,
+	}); err != nil {
+		_ = e.complete(mutation, "PublishPort", operation.RequestHash, inventory.OperationFailed, "", err.Error())
+		return 0, err
+	}
+
+	encoded, _ := json.Marshal(published)
+	if err := e.complete(mutation, "PublishPort", operation.RequestHash, inventory.OperationCompleted, string(encoded), ""); err != nil {
+		return 0, err
+	}
+
+	return published, nil
 }
 
 func (e *Executor) ReleasePort(ctx context.Context, mutation hostagent.Mutation, guestPort, hostPort uint32) error {
@@ -571,7 +648,7 @@ func (e *Executor) ReleasePort(ctx context.Context, mutation hostagent.Mutation,
 		return err
 	}
 
-	if guestPort == 0 || guestPort > 65535 || hostPort == 0 || e.Network == nil || e.Store == nil {
+	if guestPort == 0 || guestPort > 65535 || hostPort == 0 || hostPort > 65535 || e.Network == nil || e.Store == nil {
 		return hostagent.ErrInvalidRequest
 	}
 
@@ -584,7 +661,51 @@ func (e *Executor) ReleasePort(ctx context.Context, mutation hostagent.Mutation,
 		return hostagent.ErrUnauthorized
 	}
 
-	return e.Network.UnpublishPort(ctx, resource.Port, int32(guestPort))
+	published, mappingErr := e.Store.GetPublishedPort(mutation.Owner.InstallationID, mutation.Owner.UID, guestPort)
+	if mappingErr != nil && !errors.Is(mappingErr, sql.ErrNoRows) {
+		return mappingErr
+	}
+
+	if mappingErr == nil && published.HostPort != hostPort {
+		return hostagent.ErrInvalidRequest
+	}
+
+	operation, err := e.begin(mutation, "ReleasePort", struct {
+		GuestPort uint32
+		HostPort  uint32
+	}{guestPort, hostPort})
+	if err != nil {
+		return err
+	}
+
+	if operation.State == inventory.OperationCompleted {
+		return nil
+	}
+
+	if operation.State == inventory.OperationFailed {
+		return portOperationFailure("ReleasePort", operation.Failure)
+	}
+
+	if errors.Is(mappingErr, sql.ErrNoRows) {
+		return hostagent.ErrNotFound
+	}
+
+	if err := e.Network.UnpublishPort(ctx, resource.Port, int32(guestPort)); err != nil &&
+		!errors.Is(err, k8netd.ErrNotFound) {
+		_ = e.complete(mutation, "ReleasePort", operation.RequestHash, inventory.OperationFailed, "", err.Error())
+		return err
+	}
+
+	if err := e.Store.DeletePublishedPort(mutation.Owner.InstallationID, mutation.Owner.UID, guestPort); err != nil {
+		_ = e.complete(mutation, "ReleasePort", operation.RequestHash, inventory.OperationFailed, "", err.Error())
+		return err
+	}
+
+	return e.complete(mutation, "ReleasePort", operation.RequestHash, inventory.OperationCompleted, "released", "")
+}
+
+func portOperationFailure(kind, failure string) error {
+	return fmt.Errorf("%w: prior %s failed: %s", hostagent.ErrUnavailable, kind, failure)
 }
 
 func (e *Executor) AcquireProbe(context.Context, hostagent.Mutation, string) (hostagent.ProbeLease, error) {
@@ -787,8 +908,8 @@ func (e *Executor) Diagnostics(ctx context.Context, owner hostagent.Owner) (host
 	}, nil
 }
 
-func (e *Executor) begin(mutation hostagent.Mutation, kind string) (inventory.Operation, error) {
-	requestHash := operationHash(kind, mutation)
+func (e *Executor) begin(mutation hostagent.Mutation, kind string, inputs ...any) (inventory.Operation, error) {
+	requestHash := operationHash(kind, mutation, inputs)
 	operation := inventory.Operation{
 		InstallationID: mutation.Owner.InstallationID,
 		OwnerUID:       mutation.Owner.UID,
@@ -837,11 +958,12 @@ func (e *Executor) notImplemented(detail string) error {
 	return fmt.Errorf("%w: %s", hostagent.ErrUnavailable, detail)
 }
 
-func operationHash(kind string, mutation hostagent.Mutation) string {
+func operationHash(kind string, mutation hostagent.Mutation, inputs []any) string {
 	contents, _ := json.Marshal(struct {
 		Kind     string
 		Mutation hostagent.Mutation
-	}{kind, mutation})
+		Inputs   []any
+	}{kind, mutation, inputs})
 	sum := sha256.Sum256(contents)
 
 	return hex.EncodeToString(sum[:])

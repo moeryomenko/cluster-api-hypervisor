@@ -21,6 +21,18 @@ var (
 	//go:embed queries/delete_network_resource.sql
 	deleteNetworkResourceQuery string
 
+	//go:embed queries/upsert_published_port.sql
+	upsertPublishedPortQuery string
+
+	//go:embed queries/get_published_port.sql
+	getPublishedPortQuery string
+
+	//go:embed queries/list_published_ports.sql
+	listPublishedPortsQuery string
+
+	//go:embed queries/delete_published_port.sql
+	deletePublishedPortQuery string
+
 	//go:embed queries/upsert_vm.sql
 	upsertVMQuery string
 

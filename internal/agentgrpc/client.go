@@ -289,6 +289,7 @@ func mutationTo(mutation hostagent.Mutation) *agentv1.Mutation {
 		Owner:          ownerTo(mutation.Owner),
 		Generation:     mutation.Generation,
 		IdempotencyKey: mutation.IdempotencyKey,
+		RetainDisk:     mutation.RetainDisk,
 	}
 }
 
@@ -298,6 +299,7 @@ func vmDesiredTo(value hostagent.VMDesired) *agentv1.VMDesired {
 		Name:                 value.Name,
 		Image:                value.Image,
 		Firmware:             value.Firmware,
+		FirmwareSha256:       value.FirmwareSHA256,
 		ApiSocket:            value.APISocket,
 		VhostSocket:          value.VhostSocket,
 		Disk:                 value.Disk,

@@ -87,6 +87,7 @@ type Mutation struct {
 	Owner          *Owner                 `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
 	Generation     uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
 	IdempotencyKey string                 `protobuf:"bytes,4,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	RetainDisk     bool                   `protobuf:"varint,5,opt,name=retain_disk,json=retainDisk,proto3" json:"retain_disk,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -147,6 +148,13 @@ func (x *Mutation) GetIdempotencyKey() string {
 		return x.IdempotencyKey
 	}
 	return ""
+}
+
+func (x *Mutation) GetRetainDisk() bool {
+	if x != nil {
+		return x.RetainDisk
+	}
+	return false
 }
 
 type HealthRequest struct {
@@ -293,6 +301,7 @@ type VMDesired struct {
 	AdditionalDisks      []string               `protobuf:"bytes,12,rep,name=additional_disks,json=additionalDisks,proto3" json:"additional_disks,omitempty"`
 	DiskSha256           string                 `protobuf:"bytes,13,opt,name=disk_sha256,json=diskSha256,proto3" json:"disk_sha256,omitempty"`
 	AdditionalDiskSha256 []string               `protobuf:"bytes,14,rep,name=additional_disk_sha256,json=additionalDiskSha256,proto3" json:"additional_disk_sha256,omitempty"`
+	FirmwareSha256       string                 `protobuf:"bytes,15,opt,name=firmware_sha256,json=firmwareSha256,proto3" json:"firmware_sha256,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -423,6 +432,13 @@ func (x *VMDesired) GetAdditionalDiskSha256() []string {
 		return x.AdditionalDiskSha256
 	}
 	return nil
+}
+
+func (x *VMDesired) GetFirmwareSha256() string {
+	if x != nil {
+		return x.FirmwareSha256
+	}
+	return ""
 }
 
 type VMObserved struct {
@@ -2037,14 +2053,16 @@ const file_api_agent_v1_agent_proto_rawDesc = "" +
 	"\x05Owner\x12'\n" +
 	"\x0finstallation_id\x18\x01 \x01(\tR\x0einstallationId\x12\x17\n" +
 	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x10\n" +
-	"\x03uid\x18\x03 \x01(\tR\x03uid\"\xa8\x01\n" +
+	"\x03uid\x18\x03 \x01(\tR\x03uid\"\xc9\x01\n" +
 	"\bMutation\x12%\n" +
 	"\x0eprotocol_major\x18\x01 \x01(\rR\rprotocolMajor\x12,\n" +
 	"\x05owner\x18\x02 \x01(\v2\x16.k8labs.agent.v1.OwnerR\x05owner\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x04R\n" +
 	"generation\x12'\n" +
-	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\"6\n" +
+	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\x12\x1f\n" +
+	"\vretain_disk\x18\x05 \x01(\bR\n" +
+	"retainDisk\"6\n" +
 	"\rHealthRequest\x12%\n" +
 	"\x0eprotocol_major\x18\x01 \x01(\rR\rprotocolMajor\"\xf8\x01\n" +
 	"\fCapabilities\x12%\n" +
@@ -2053,7 +2071,7 @@ const file_api_agent_v1_agent_proto_rawDesc = "" +
 	"\x10cloud_hypervisor\x18\x03 \x01(\tR\x0fcloudHypervisor\x122\n" +
 	"\x15k8netd_protocol_major\x18\x04 \x01(\rR\x13k8netdProtocolMajor\x12\x1e\n" +
 	"\vcan_use_kvm\x18\x05 \x01(\bR\tcanUseKvm\x12)\n" +
-	"\x11can_use_user_dbus\x18\x06 \x01(\bR\x0ecanUseUserDbus\"\x90\x03\n" +
+	"\x11can_use_user_dbus\x18\x06 \x01(\bR\x0ecanUseUserDbus\"\xb9\x03\n" +
 	"\tVMDesired\x12\x10\n" +
 	"\x03uid\x18\x01 \x01(\tR\x03uid\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -2072,7 +2090,8 @@ const file_api_agent_v1_agent_proto_rawDesc = "" +
 	"\x10additional_disks\x18\f \x03(\tR\x0fadditionalDisks\x12\x1f\n" +
 	"\vdisk_sha256\x18\r \x01(\tR\n" +
 	"diskSha256\x124\n" +
-	"\x16additional_disk_sha256\x18\x0e \x03(\tR\x14additionalDiskSha256\"\x85\x02\n" +
+	"\x16additional_disk_sha256\x18\x0e \x03(\tR\x14additionalDiskSha256\x12'\n" +
+	"\x0ffirmware_sha256\x18\x0f \x01(\tR\x0efirmwareSha256\"\x85\x02\n" +
 	"\n" +
 	"VMObserved\x12\x10\n" +
 	"\x03uid\x18\x01 \x01(\tR\x03uid\x12\x12\n" +

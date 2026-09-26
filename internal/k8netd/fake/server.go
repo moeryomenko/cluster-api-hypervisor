@@ -369,6 +369,18 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
+	if req.Method == "UnpublishPort" {
+		perr := s.builtinUnpublishPort(req.Params)
+		if perr != nil {
+			_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Error: perr})
+			return
+		}
+
+		_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Result: nil})
+
+		return
+	}
+
 	_ = enc.Encode(rpcResponse{JSONRPC: "2.0", ID: req.ID, Version: req.Version, Result: nil})
 }
 
@@ -385,7 +397,7 @@ func (s *Server) builtinPublishPort(params json.RawMessage) (any, *RPCError) {
 		return nil, &RPCError{Code: "invalid_params", Message: fmt.Sprintf("decode PublishPort params: %v", err)}
 	}
 
-	if key.Port == "" || key.VMPort <= 0 {
+	if key.Port == "" || key.VMPort <= 0 || key.VMPort > 65535 {
 		return nil, &RPCError{Code: "invalid_params", Message: "PublishPort params must carry port and vm_port"}
 	}
 
@@ -405,4 +417,26 @@ func (s *Server) builtinPublishPort(params json.RawMessage) (any, *RPCError) {
 	s.published[key] = host
 
 	return map[string]int32{"host_port": host}, nil
+}
+
+func (s *Server) builtinUnpublishPort(params json.RawMessage) *RPCError {
+	var key publishKey
+	if err := json.Unmarshal(params, &key); err != nil {
+		return &RPCError{Code: "invalid_params", Message: fmt.Sprintf("decode UnpublishPort params: %v", err)}
+	}
+
+	if key.Port == "" || key.VMPort <= 0 || key.VMPort > 65535 {
+		return &RPCError{Code: "invalid_params", Message: "UnpublishPort params must carry port and vm_port"}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.published[key]; !ok {
+		return &RPCError{Code: "not_found", Message: "published port mapping not found"}
+	}
+
+	delete(s.published, key)
+
+	return nil
 }

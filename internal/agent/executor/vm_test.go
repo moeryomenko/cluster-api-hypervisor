@@ -19,14 +19,15 @@ func TestEnsureVMFailsClosedWhenUnitDoesNotExposeAPISocket(t *testing.T) {
 		ctx,
 		mutation,
 		hostagent.VMDesired{
-			UID:         "machine-a",
-			Disk:        "/host-state/vms/machine-a-root.qcow2",
-			Firmware:    "/host-state/CLOUDHV.fd",
-			APISocket:   "/host-state/vms/machine-a.sock",
-			VhostSocket: "/run/user/1000/k8snet/machine-a.sock",
-			MAC:         "02:00:00:00:00:01",
-			CPUs:        1,
-			MemoryMiB:   512,
+			UID:            "machine-a",
+			Disk:           "/host-state/vms/machine-a-root.qcow2",
+			Firmware:       "/host-state/CLOUDHV.fd",
+			FirmwareSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			APISocket:      "/host-state/vms/machine-a.sock",
+			VhostSocket:    "/run/user/1000/k8snet/machine-a.sock",
+			MAC:            "02:00:00:00:00:01",
+			CPUs:           1,
+			MemoryMiB:      512,
 		},
 	)
 	if !errors.Is(err, context.Canceled) {

@@ -11,7 +11,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 var (
 	ErrIdempotencyConflict = errors.New("inventory idempotency conflict")
@@ -65,6 +65,13 @@ type NetworkResource struct {
 	Port           string
 	MAC            string
 	IP             string
+}
+
+type PublishedPort struct {
+	InstallationID string
+	OwnerUID       string
+	GuestPort      uint32
+	HostPort       uint32
 }
 
 type Store struct {
@@ -173,6 +180,68 @@ func (s *Store) GetNetworkResource(installationID, ownerUID string) (NetworkReso
 func (s *Store) DeleteNetworkResource(installationID, ownerUID string) error {
 	if _, err := s.db.Exec(deleteNetworkResourceQuery, installationID, ownerUID); err != nil {
 		return fmt.Errorf("delete network resource: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) UpsertPublishedPort(port PublishedPort) error {
+	if _, err := s.db.Exec(
+		upsertPublishedPortQuery,
+		port.InstallationID,
+		port.OwnerUID,
+		port.GuestPort,
+		port.HostPort,
+		time.Now().Unix(),
+	); err != nil {
+		return fmt.Errorf("upsert published port: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) GetPublishedPort(installationID, ownerUID string, guestPort uint32) (PublishedPort, error) {
+	var port PublishedPort
+	if err := s.db.QueryRow(getPublishedPortQuery, installationID, ownerUID, guestPort).Scan(
+		&port.InstallationID,
+		&port.OwnerUID,
+		&port.GuestPort,
+		&port.HostPort,
+	); err != nil {
+		return PublishedPort{}, err
+	}
+
+	return port, nil
+}
+
+func (s *Store) ListPublishedPorts(installationID, ownerUID string) ([]PublishedPort, error) {
+	rows, err := s.db.Query(listPublishedPortsQuery, installationID, ownerUID)
+	if err != nil {
+		return nil, fmt.Errorf("list published ports: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	ports := []PublishedPort{}
+
+	for rows.Next() {
+		var port PublishedPort
+		if err := rows.Scan(&port.InstallationID, &port.OwnerUID, &port.GuestPort, &port.HostPort); err != nil {
+			return nil, fmt.Errorf("scan published port: %w", err)
+		}
+
+		ports = append(ports, port)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate published ports: %w", err)
+	}
+
+	return ports, nil
+}
+
+func (s *Store) DeletePublishedPort(installationID, ownerUID string, guestPort uint32) error {
+	if _, err := s.db.Exec(deletePublishedPortQuery, installationID, ownerUID, guestPort); err != nil {
+		return fmt.Errorf("delete published port: %w", err)
 	}
 
 	return nil

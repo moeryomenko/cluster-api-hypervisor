@@ -59,4 +59,19 @@ CREATE TABLE IF NOT EXISTS vms (
   UNIQUE (installation_id, unit)
 );
 
+CREATE TABLE IF NOT EXISTS published_ports (
+  installation_id TEXT NOT NULL,
+  owner_uid TEXT NOT NULL,
+  guest_port INTEGER NOT NULL CHECK(guest_port BETWEEN 1 AND 65535),
+  host_port INTEGER NOT NULL CHECK(host_port BETWEEN 1 AND 65535),
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (installation_id, owner_uid, guest_port),
+  UNIQUE (host_port),
+  FOREIGN KEY (installation_id, owner_uid)
+    REFERENCES network_resources (installation_id, owner_uid)
+    ON DELETE CASCADE
+);
+
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);

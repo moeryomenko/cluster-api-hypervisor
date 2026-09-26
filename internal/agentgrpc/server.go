@@ -452,6 +452,7 @@ func mutationFrom(value *agentv1.Mutation) (hostagent.Mutation, error) {
 		ProtocolMajor:  value.GetProtocolMajor(),
 		Generation:     value.GetGeneration(),
 		IdempotencyKey: value.GetIdempotencyKey(),
+		RetainDisk:     value.GetRetainDisk(),
 		Owner: hostagent.Owner{
 			InstallationID: value.GetOwner().GetInstallationId(),
 			NodeID:         value.GetOwner().GetNodeId(),
@@ -478,6 +479,7 @@ func vmDesiredFrom(value *agentv1.VMDesired) hostagent.VMDesired {
 		Name:                  value.GetName(),
 		Image:                 value.GetImage(),
 		Firmware:              value.GetFirmware(),
+		FirmwareSHA256:        value.GetFirmwareSha256(),
 		APISocket:             value.GetApiSocket(),
 		VhostSocket:           value.GetVhostSocket(),
 		Disk:                  value.GetDisk(),

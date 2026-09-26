@@ -42,6 +42,7 @@ type Mutation struct {
 	Owner          Owner
 	Generation     uint64
 	IdempotencyKey string
+	RetainDisk     bool
 }
 
 func (m Mutation) Validate() error {
@@ -73,6 +74,7 @@ type VMDesired struct {
 	Name                  string
 	Image                 string
 	Firmware              string
+	FirmwareSHA256        string
 	APISocket             string
 	VhostSocket           string
 	Disk                  string

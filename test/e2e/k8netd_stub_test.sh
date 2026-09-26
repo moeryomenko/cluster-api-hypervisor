@@ -22,14 +22,16 @@
 #      echoed id and a null result for void methods;
 #   3. GetNetwork returns the network object (CIDR/gateway/pool fields);
 #   4. AllocateIP returns the allocated address as a JSON string;
-#   5. an unknown port yields the typed error code not_found;
-#   6. a version mismatch yields the typed error code invalid_params;
-#   7. a malformed request line yields an error response with a null id and
+#   5. PublishPort returns an allocated host port and UnpublishPort returns a
+#      void response;
+#   6. an unknown port yields the typed error code not_found;
+#   7. a version mismatch yields the typed error code invalid_params;
+#   8. a malformed request line yields an error response with a null id and
 #      does not take the responder down (the next valid call still works);
-#   8. the method inventory wired in internal/k8netd/client.go is exactly the
-#      ten contract methods (CreateNetwork, DeleteNetwork, CreatePort,
+#   9. the method inventory wired in internal/k8netd/client.go is exactly the
+#      twelve contract methods (CreateNetwork, DeleteNetwork, CreatePort,
 #      DeletePort, AttachPort, DetachPort, GetNetwork, GetPort, AllocateIP,
-#      ReleaseIP).
+#      ReleaseIP, PublishPort, UnpublishPort).
 #
 # Contract 2: no host network tooling. After the migration the provider's
 # host-tool contract must not reference bridge/dnsmasq/nftables binaries at
@@ -73,7 +75,7 @@ scale.sh"
 
 readonly HARNESS_README="${SCRIPT_DIR}/README.md"
 
-# The ten contract methods (k8netd contract spec REQ-001..REQ-004).
+# The twelve contract methods (k8netd contract spec REQ-001..REQ-004).
 readonly CONTRACT_METHODS="AllocateIP
 AttachPort
 CreateNetwork
@@ -83,7 +85,9 @@ DeletePort
 DetachPort
 GetNetwork
 GetPort
-ReleaseIP"
+PublishPort
+ReleaseIP
+UnpublishPort"
 
 # Timeout for the single go build of the stub programs (seconds). The build
 # is standard-library-only; anything slower means the toolchain is broken.
@@ -139,7 +143,7 @@ type rpcReq struct {
 	ID      json.RawMessage   `json:"id"`
 	Version string            `json:"version"`
 	Method  string            `json:"method"`
-	Params  map[string]string `json:"params"`
+	Params  map[string]json.RawMessage `json:"params"`
 }
 
 type rpcErr struct {
@@ -164,6 +168,7 @@ var voidMethods = map[string]bool{
 	"AttachPort":    true,
 	"DetachPort":    true,
 	"ReleaseIP":     true,
+	"UnpublishPort": true,
 }
 
 func respond(id json.RawMessage, result json.RawMessage, rpcError *rpcErr) []byte {
@@ -188,10 +193,12 @@ func handle(line []byte, logf *os.File) []byte {
 	switch {
 	case req.Method == "AllocateIP":
 		return respond(req.ID, json.RawMessage(`"192.168.124.20"`), nil)
+	case req.Method == "PublishPort":
+		return respond(req.ID, json.RawMessage(`{"host_port":20000}`), nil)
 	case req.Method == "GetNetwork":
 		name := ""
 		if req.Params != nil {
-			name = req.Params["name"]
+			_ = json.Unmarshal(req.Params["name"], &name)
 		}
 		network := map[string]string{
 			"name":      name,
@@ -407,9 +414,25 @@ test_socket_roundtrip() {
     missing "AllocateIP response does not carry the allocated address: ${out}"
   fi
 
+  # Publication returns an allocated port and unpublication is a void method.
+  out="$(rpc_call "${bin}" "${sock}" "1.0" PublishPort '{"port":"k8labs-cp-0","vm_port":6443}')"
+  if grep -Fq '"host_port":20000' <<< "${out}"; then
+    ok "PublishPort returned an allocated host port"
+  else
+    missing "PublishPort response does not carry an allocated host port: ${out}"
+  fi
+  out="$(rpc_call "${bin}" "${sock}" "1.0" UnpublishPort '{"port":"k8labs-cp-0","vm_port":6443}')"
+  if grep -Fq '"result":null' <<< "${out}"; then
+    ok "UnpublishPort returned a void response"
+  else
+    missing "UnpublishPort response was not void: ${out}"
+  fi
+
   # Every request reached the stub log with the contract version.
   if grep -Fq 'CreateNetwork 1.0' <<< "$(cat "${reqlog}")" \
-    && grep -Fq 'AllocateIP 1.0' <<< "$(cat "${reqlog}")"; then
+    && grep -Fq 'AllocateIP 1.0' <<< "$(cat "${reqlog}")" \
+    && grep -Fq 'PublishPort 1.0' <<< "$(cat "${reqlog}")" \
+    && grep -Fq 'UnpublishPort 1.0' <<< "$(cat "${reqlog}")"; then
     ok "the stub request log recorded the contract methods and version"
   else
     missing "the stub request log is incomplete: $(tr '\n' '|' < "${reqlog}")"
@@ -468,7 +491,7 @@ test_typed_errors() {
 }
 
 test_method_inventory() {
-  log "test: the client method inventory is exactly the ten contract methods"
+  log "test: the client method inventory is exactly the twelve contract methods"
   local actual=""
   if [[ ! -f "${CLIENT_GO}" ]]; then
     fail "k8netd client source not found: ${CLIENT_GO}" 1
@@ -476,9 +499,9 @@ test_method_inventory() {
   actual="$(grep -oE 'c\.call\(ctx, "[A-Za-z]+"' "${CLIENT_GO}" \
     | sed -E 's/.*"([A-Za-z]+)"$/\1/' | sort -u)"
   if diff <(printf '%s\n' "${CONTRACT_METHODS}") <(printf '%s\n' "${actual}") >/dev/null; then
-    ok "internal/k8netd/client.go wires exactly the ten contract methods"
+    ok "internal/k8netd/client.go wires exactly the twelve contract methods"
   else
-    missing "the client method inventory differs from the ten contract methods: $(printf '%s ' "${actual}")"
+    missing "the client method inventory differs from the twelve contract methods: $(printf '%s ' "${actual}")"
   fi
 }
 

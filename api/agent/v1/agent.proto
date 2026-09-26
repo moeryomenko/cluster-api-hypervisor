@@ -15,6 +15,7 @@ message Mutation {
   Owner owner = 2;
   uint64 generation = 3;
   string idempotency_key = 4;
+  bool retain_disk = 5;
 }
 
 message HealthRequest {
@@ -45,6 +46,7 @@ message VMDesired {
   repeated string additional_disks = 12;
   string disk_sha256 = 13;
   repeated string additional_disk_sha256 = 14;
+  string firmware_sha256 = 15;
 }
 
 message VMObserved {

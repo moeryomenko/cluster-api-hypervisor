@@ -280,3 +280,114 @@ func TestFakePublishPort_DistinctAllocationsPerKey(t *testing.T) {
 		t.Errorf("two different ports share host_port %d for vm_port 6443, want distinct allocations", apiOnCP0)
 	}
 }
+
+func TestUnpublishPort_RequestWireShape(t *testing.T) {
+	t.Parallel()
+	srv := newPublishTestServer(t)
+	srv.SetResult("UnpublishPort", nil)
+
+	client := NewClient(srv.SocketPath())
+	if err := client.UnpublishPort(context.Background(), "lab-cluster-cp-0", 6443); err != nil {
+		t.Fatalf("UnpublishPort error = %v", err)
+	}
+
+	reqs := srv.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("Requests len = %d, want 1", len(reqs))
+	}
+
+	req := reqs[0]
+	if req.Method != "UnpublishPort" || req.JSONRPC != "2.0" || req.Version != k8netdVersion {
+		t.Fatalf("request = %#v", req)
+	}
+
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(req.Params, &keys); err != nil {
+		t.Fatalf("unmarshal params %s: %v", string(req.Params), err)
+	}
+
+	if len(keys) != 2 {
+		t.Fatalf("params carry %d keys (%v), want exactly 2", len(keys), string(req.Params))
+	}
+
+	var params publishParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		t.Fatalf("unmarshal params %s: %v", string(req.Params), err)
+	}
+
+	if params.Port != "lab-cluster-cp-0" || params.VMPort != 6443 {
+		t.Fatalf("params = %#v", params)
+	}
+}
+
+func TestUnpublishPort_RejectsInvalidVMPortWithoutRPC(t *testing.T) {
+	t.Parallel()
+
+	for _, vmPort := range []int32{0, -1, 65536} {
+		t.Run("invalid", func(t *testing.T) {
+			srv := newPublishTestServer(t)
+			client := NewClient(srv.SocketPath())
+
+			err := client.UnpublishPort(context.Background(), "lab-cluster-cp-0", vmPort)
+			if !errors.Is(err, ErrInvalidParams) {
+				t.Fatalf("UnpublishPort(%d) error = %v, want invalid params", vmPort, err)
+			}
+
+			if srv.RequestCount() != 0 {
+				t.Fatalf("UnpublishPort(%d) made %d requests", vmPort, srv.RequestCount())
+			}
+		})
+	}
+}
+
+func TestUnpublishPort_TypedErrorMapping(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		code string
+		want error
+	}{
+		{code: "not_found", want: ErrNotFound},
+		{code: "conflict", want: ErrConflict},
+		{code: "internal", want: ErrInternal},
+	} {
+		t.Run(tt.code, func(t *testing.T) {
+			srv := newPublishTestServer(t)
+			srv.SetError("UnpublishPort", tt.code, tt.code)
+
+			err := NewClient(srv.SocketPath()).UnpublishPort(context.Background(), "lab-cluster-cp-0", 6443)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("UnpublishPort() error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestFakeUnpublishPortRemovesOnlyItsMapping(t *testing.T) {
+	t.Parallel()
+	srv := newPublishTestServer(t)
+	client := NewClient(srv.SocketPath())
+	ctx := context.Background()
+
+	first, err := client.PublishPort(ctx, "lab-cluster-cp-0", 6443)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := client.UnpublishPort(ctx, "lab-cluster-cp-0", 6443); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := client.UnpublishPort(ctx, "lab-cluster-cp-0", 6443); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second UnpublishPort() error = %v, want not found", err)
+	}
+
+	second, err := client.PublishPort(ctx, "lab-cluster-cp-0", 6443)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if second == first {
+		t.Fatalf("re-published host port = %d, want a new allocation after removal", second)
+	}
+}

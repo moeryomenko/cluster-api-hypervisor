@@ -12,7 +12,8 @@ import (
 )
 
 type recordingAgent struct {
-	called bool
+	called  bool
+	desired hostagent.VMDesired
 }
 
 func (r *recordingAgent) Health(context.Context) (hostagent.Capabilities, error) {
@@ -20,11 +21,13 @@ func (r *recordingAgent) Health(context.Context) (hostagent.Capabilities, error)
 }
 
 func (r *recordingAgent) EnsureVM(
-	context.Context,
-	hostagent.Mutation,
-	hostagent.VMDesired,
+	_ context.Context,
+	_ hostagent.Mutation,
+	desired hostagent.VMDesired,
 ) (hostagent.VMObserved, error) {
 	r.called = true
+	r.desired = desired
+
 	return hostagent.VMObserved{UID: "machine-a", Running: true}, nil
 }
 
@@ -120,9 +123,15 @@ func TestEnsureVMRejectsWrongProtocolBeforeHostCall(t *testing.T) {
 func TestEnsureVMCallsHostAfterValidation(t *testing.T) {
 	agent := &recordingAgent{}
 	server := &Server{Host: agent}
+	req := request()
+	req.Desired.FirmwareSha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-	response, err := server.EnsureVM(context.Background(), request())
+	response, err := server.EnsureVM(context.Background(), req)
 	if err != nil || response.GetObserved().GetUid() != "machine-a" || !agent.called {
 		t.Fatalf("EnsureVM() response=%v error=%v called=%v", response, err, agent.called)
+	}
+
+	if agent.desired.FirmwareSHA256 != req.Desired.FirmwareSha256 {
+		t.Fatalf("firmware SHA-256 = %q, want %q", agent.desired.FirmwareSHA256, req.Desired.FirmwareSha256)
 	}
 }

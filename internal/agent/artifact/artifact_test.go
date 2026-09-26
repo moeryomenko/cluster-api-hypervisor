@@ -75,6 +75,84 @@ func TestPrepareCIDATARejectsIncompleteAndUnsafeInput(t *testing.T) {
 	}
 }
 
+func TestVerifyOwnedFileRejectsSymlinksAndChecksumMismatch(t *testing.T) {
+	root := t.TempDir()
+
+	firmware := filepath.Join(root, "CLOUDHV.fd")
+	if err := os.WriteFile(firmware, []byte("firmware"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	digest := sha256.Sum256([]byte("firmware"))
+
+	checksum := fmt.Sprintf("%x", digest)
+	if err := VerifyOwnedFile(root, firmware, checksum); err != nil {
+		t.Fatalf("VerifyOwnedFile() error = %v", err)
+	}
+
+	if err := VerifyOwnedFile(root, firmware, "00"+checksum[2:]); err == nil {
+		t.Fatal("VerifyOwnedFile() accepted a checksum mismatch")
+	}
+
+	link := filepath.Join(root, "firmware-link.fd")
+	if err := os.Symlink(firmware, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := VerifyOwnedFile(root, link, checksum); err == nil {
+		t.Fatal("VerifyOwnedFile() accepted a symbolic link")
+	}
+}
+
+func TestVerifyOwnedFileRejectsInvalidInputAndOutsidePath(t *testing.T) {
+	root := t.TempDir()
+
+	firmware := filepath.Join(root, "CLOUDHV.fd")
+	if err := os.WriteFile(firmware, []byte("firmware"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte("firmware")))
+	for _, test := range []struct {
+		name, path, checksum string
+	}{
+		{name: "relative path", path: "CLOUDHV.fd", checksum: checksum},
+		{name: "short checksum", path: firmware, checksum: checksum[:len(checksum)-1]},
+		{name: "malformed checksum", path: firmware, checksum: "zz" + checksum[2:]},
+		{name: "outside root", path: filepath.Join(t.TempDir(), "CLOUDHV.fd"), checksum: checksum},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := VerifyOwnedFile(root, test.path, test.checksum); err == nil {
+				t.Fatal("VerifyOwnedFile() accepted invalid firmware input")
+			}
+		})
+	}
+}
+
+func TestVerifyOwnedFileAllowsResolvedOwnedRoot(t *testing.T) {
+	parent := t.TempDir()
+
+	root := filepath.Join(parent, "firmware")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	rootLink := filepath.Join(parent, "firmware-root")
+	if err := os.Symlink(root, rootLink); err != nil {
+		t.Fatal(err)
+	}
+
+	firmware := filepath.Join(rootLink, "CLOUDHV.fd")
+	if err := os.WriteFile(firmware, []byte("firmware"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte("firmware")))
+	if err := VerifyOwnedFile(rootLink, firmware, checksum); err != nil {
+		t.Fatalf("VerifyOwnedFile() error = %v", err)
+	}
+}
+
 func TestVerifyRejectsEscapesAndChecksumMismatch(t *testing.T) {
 	root := t.TempDir()
 	owned := filepath.Join(root, "disk.img")

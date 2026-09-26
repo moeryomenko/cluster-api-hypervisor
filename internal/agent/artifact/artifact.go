@@ -29,33 +29,43 @@ func (b Builder) Verify(paths, checksums []string) error {
 		return fmt.Errorf("artifact paths and checksums must have equal non-zero lengths")
 	}
 
-	root, err := filepath.EvalSymlinks(b.Root)
+	for index, path := range paths {
+		if err := VerifyOwnedFile(b.Root, path, checksums[index]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// VerifyOwnedFile verifies a regular file under root against an externally supplied SHA-256.
+func VerifyOwnedFile(root, path, checksum string) error {
+	if !filepath.IsAbs(path) || len(checksum) != sha256.Size*2 {
+		return fmt.Errorf("invalid artifact path or checksum: %q", path)
+	}
+
+	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return fmt.Errorf("resolve artifact root: %w", err)
 	}
 
-	for index, path := range paths {
-		if !filepath.IsAbs(path) || !within(root, path) {
-			return fmt.Errorf("artifact path is outside owned root: %q", path)
-		}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("artifact path is not an owned regular file: %q", path)
+	}
 
-		resolved, err := filepath.EvalSymlinks(path)
-		if err != nil || !within(root, resolved) || !regularFile(resolved) {
-			return fmt.Errorf("artifact path is not an owned regular file: %q", path)
-		}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || !within(resolvedRoot, resolved) {
+		return fmt.Errorf("artifact path is not an owned regular file: %q", path)
+	}
 
-		if len(checksums[index]) != sha256.Size*2 {
-			return fmt.Errorf("invalid artifact checksum for %q", path)
-		}
+	actual, err := fileSHA256(resolved)
+	if err != nil {
+		return err
+	}
 
-		actual, err := fileSHA256(resolved)
-		if err != nil {
-			return err
-		}
-
-		if actual != strings.ToLower(checksums[index]) {
-			return fmt.Errorf("artifact checksum mismatch: %q", path)
-		}
+	if actual != strings.ToLower(checksum) {
+		return fmt.Errorf("artifact checksum mismatch: %q", path)
 	}
 
 	return nil
