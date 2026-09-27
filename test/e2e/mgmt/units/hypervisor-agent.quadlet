@@ -1,0 +1,28 @@
+# hypervisor-agent.quadlet — HostAgent lifecycle boundary for the local E2E lab.
+#
+# apply.sh substitutes the management state and lab-user placeholders. Only this
+# container receives KVM, user D-Bus/systemd, k8netd, VM state, and immutable
+# artifacts. The provider manager remains entirely outside this boundary.
+
+[Unit]
+Description=cluster-api-hypervisor HostAgent quadlet
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=localhost/cluster-api-hypervisor:dev
+Network=host
+User=__HOST_UID__
+Entrypoint=/usr/local/bin/hypervisor-agent
+AddDevice=/dev/kvm
+Mount=type=bind,source=/var/lib/k8slab/mgmt/agent-state,target=/state
+Mount=type=bind,source=/var/lib/k8slab/mgmt/agent-artifacts,target=/host-state,ro
+Mount=type=bind,source=/var/lib/k8slab/mgmt/agent-server,target=/tls/server,ro
+Mount=type=bind,source=/var/lib/k8slab/mgmt/agent-ca/ca.crt,target=/tls/ca/ca.crt,ro
+Mount=type=bind,source=/run/user/__HOST_UID__/bus,target=/run/user/__HOST_UID__/bus
+Mount=type=bind,source=/run/user/__HOST_UID__/k8snet/control.sock,target=/run/user/__HOST_UID__/k8snet/control.sock
+Mount=type=bind,source=__HOST_HOME__/.config/systemd/user,target=/host-user-systemd
+Exec=--listen=127.0.0.1:9444 --tls-cert-dir=/tls/server --client-ca=/tls/ca/ca.crt --inventory=/state/inventory.db --user-dbus-address=unix:path=/run/user/__HOST_UID__/bus --kvm=/dev/kvm --k8netd-socket=/run/user/__HOST_UID__/k8snet/control.sock --artifact-root=/state/vms --base-image-root=/host-state/images --firmware-root=/host-state/firmware --artifact-manifest=/host-state/manifest.json --unit-dir=/host-user-systemd --cloud-hypervisor=/usr/bin/cloud-hypervisor
+
+[Service]
+Restart=always

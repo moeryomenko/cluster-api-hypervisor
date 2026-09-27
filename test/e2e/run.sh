@@ -108,11 +108,9 @@ readonly SCRIPT_DIR
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
 readonly REPO_ROOT
 
-# Defaults pinned by the environment contract (the Makefile tag and the
-# provider environment contract values from docs/install-contract.md).
+# Defaults pinned by the environment contract. Workload image and firmware
+# inputs are deliberately absent: operators must supply immutable sources.
 readonly IMAGE_DEFAULT="cluster-api-hypervisor:dev"
-readonly BASE_IMAGE_DEFAULT="build/k8labs-base.qcow2"
-readonly FIRMWARE_DEFAULT="build/CLOUDHV.fd"
 readonly MGMT_STATE_DIR_DEFAULT="/var/lib/k8slab/mgmt"
 readonly MGMT_BOOTSTRAP_DIR="test/e2e/mgmt"
 
@@ -246,13 +244,15 @@ Environment:
                          cluster-api-hypervisor:dev). A set value must be a
                          syntactically plausible container reference (no
                          whitespace).
-  BASE_IMAGE             k8labs base image path (default
-                         build/k8labs-base.qcow2, resolved against the working
-                         directory the harness is invoked from). Must name an
-                         existing, readable, regular file.
-  FIRMWARE               CLOUDHV.fd path (default build/CLOUDHV.fd, resolved
-                         against the working directory the harness is invoked
-                         from). Must name an existing, readable, regular file.
+  BASE_IMAGE             Required absolute path to the externally supplied,
+                         immutable k8labs base image. Must name a readable,
+                         non-symlink regular file.
+  FIRMWARE               Required absolute path to the externally supplied,
+                         immutable CLOUDHV.fd. Must name a readable,
+                         non-symlink regular file.
+  HYPERVISOR_FIRMWARE_SHA256
+                         Required externally supplied SHA-256 for FIRMWARE.
+                         It is verified before staging and never inferred.
   STATE_DIR              provider state directory (default
                          ~/.local/state/k8slab; /tmp/k8slab-state when HOME is
                          unset). Must name an existing, writable directory.
@@ -290,8 +290,8 @@ EOF
 }
 
 # absolute_path <path> — print the path resolved against the working directory
-# when relative; the contract resolves the relative defaults (build/...) from
-# the directory the harness is invoked from.
+# when relative. It is used only for variables which intentionally support
+# relative values; immutable workload sources must be absolute.
 absolute_path() {
   local p="$1"
   if [[ "${p}" == /* ]]; then
@@ -347,22 +347,43 @@ validate_environment() {
     die "IMAGE must be a syntactically plausible container image reference (no whitespace): ${IMAGE}"
   fi
 
-  # 3. BASE_IMAGE — existing, readable, regular file.
-  BASE_IMAGE_RESOLVED="$(absolute_path "${BASE_IMAGE:-${BASE_IMAGE_DEFAULT}}")"
-  if [[ ! -f "${BASE_IMAGE_RESOLVED}" ]]; then
-    die "BASE_IMAGE must name an existing file: ${BASE_IMAGE_RESOLVED}"
-  fi
-  if [[ ! -r "${BASE_IMAGE_RESOLVED}" ]]; then
-    die "BASE_IMAGE must be readable: ${BASE_IMAGE_RESOLVED}"
+  # 3. BASE_IMAGE — explicitly supplied, absolute, readable regular file. The
+  #    immutable staging path must never accept a symlink or a fallback image.
+  [[ -n "${BASE_IMAGE:-}" ]] || die "BASE_IMAGE must be explicitly supplied as an absolute immutable input"
+  [[ "${BASE_IMAGE}" == /* ]] || die "BASE_IMAGE must be an absolute path: ${BASE_IMAGE}"
+  BASE_IMAGE_RESOLVED="${BASE_IMAGE}"
+  [[ ! -L "${BASE_IMAGE_RESOLVED}" ]] || die "BASE_IMAGE must not be a symlink: ${BASE_IMAGE_RESOLVED}"
+  if [[ ! -f "${BASE_IMAGE_RESOLVED}" || ! -r "${BASE_IMAGE_RESOLVED}" ]]; then
+    die "BASE_IMAGE must name an existing, readable regular file: ${BASE_IMAGE_RESOLVED}"
   fi
 
-  # 4. FIRMWARE — existing, readable, regular file.
-  FIRMWARE_RESOLVED="$(absolute_path "${FIRMWARE:-${FIRMWARE_DEFAULT}}")"
-  if [[ ! -f "${FIRMWARE_RESOLVED}" ]]; then
-    die "FIRMWARE must name an existing file: ${FIRMWARE_RESOLVED}"
+  # 4. FIRMWARE and its integrity value are separately supplied by the
+  #    operator. The digest is never inferred from local bytes as a fallback.
+  [[ -n "${FIRMWARE:-}" ]] || die "FIRMWARE must be explicitly supplied as an absolute immutable input"
+  [[ "${FIRMWARE}" == /* ]] || die "FIRMWARE must be an absolute path: ${FIRMWARE}"
+  FIRMWARE_RESOLVED="${FIRMWARE}"
+  [[ ! -L "${FIRMWARE_RESOLVED}" ]] || die "FIRMWARE must not be a symlink: ${FIRMWARE_RESOLVED}"
+  if [[ ! -f "${FIRMWARE_RESOLVED}" || ! -r "${FIRMWARE_RESOLVED}" ]]; then
+    die "FIRMWARE must name an existing, readable regular file: ${FIRMWARE_RESOLVED}"
   fi
-  if [[ ! -r "${FIRMWARE_RESOLVED}" ]]; then
-    die "FIRMWARE must be readable: ${FIRMWARE_RESOLVED}"
+  [[ "${HYPERVISOR_FIRMWARE_SHA256:-}" =~ ^[A-Fa-f0-9]{64}$ ]] \
+    || die "HYPERVISOR_FIRMWARE_SHA256 must be an externally supplied 64-character hexadecimal SHA-256"
+  command -v sha256sum >/dev/null 2>&1 \
+    || die "required tool not found: sha256sum (needed to verify HYPERVISOR_FIRMWARE_SHA256)"
+  local supplied_firmware_digest="${HYPERVISOR_FIRMWARE_SHA256,,}"
+  local actual_firmware_digest
+  actual_firmware_digest="$(sha256sum -- "${FIRMWARE_RESOLVED}")"
+  actual_firmware_digest="${actual_firmware_digest%% *}"
+  [[ "${actual_firmware_digest}" == "${supplied_firmware_digest}" ]] \
+    || die "HYPERVISOR_FIRMWARE_SHA256 does not match FIRMWARE: ${FIRMWARE_RESOLVED}"
+  HYPERVISOR_FIRMWARE_SHA256="${supplied_firmware_digest}"
+
+  # Local management bootstrap needs sudo to retain the invoking lab user as
+  # the Agent's authority for user D-Bus, k8netd, and user systemd. Running
+  # the runner as root loses that identity and is refused.
+  if [[ "${MGMT_EXTERNAL}" == false ]]; then
+    [[ "${EUID}" -ne 0 ]] || die "run.sh must be invoked as the non-root lab user when bootstrapping the local management plane"
+    command -v sudo >/dev/null 2>&1 || die "required tool not found: sudo (needed to bootstrap the local management plane)"
   fi
 
   # 5. STATE_DIR — existing, writable directory, not a regular file.
@@ -641,6 +662,112 @@ k8netd_get_network() {
     "{\"name\":\"${WORKLOAD_CLUSTER}\"}"
 }
 
+# run_privileged — run a management-bootstrap operation with the minimum
+# privilege required to write system quadlets and the Agent-owned state tree.
+run_privileged() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+# ensure_agent_artifact_directory — create a missing Agent-owned directory.
+# Existing directories retain their owner and mode so reruns cannot alter
+# operator-managed state.
+ensure_agent_artifact_directory() {
+  local directory="$1"
+
+  if run_privileged test -e "${directory}"; then
+    run_privileged test ! -L "${directory}" \
+      || die "HostAgent artifact directory must not be a symlink: ${directory}"
+    run_privileged test -d "${directory}" \
+      || die "HostAgent artifact path is not a directory: ${directory}"
+    return 0
+  fi
+
+  run_privileged install -d -m 0755 -- "${directory}"
+}
+
+# stage_artifact_file — install an immutable source under the Agent-owned root
+# exactly once. Existing staged artifacts must already match; they are never
+# overwritten, which preserves operator-managed state across re-runs.
+stage_artifact_file() {
+  local source="$1"
+  local destination="$2"
+  local expected_digest="$3"
+  local actual_digest=""
+  local temporary_destination="${destination}.new.$$"
+
+  if run_privileged test -e "${destination}"; then
+    run_privileged test ! -L "${destination}" \
+      || die "existing staged artifact is a symlink: ${destination}"
+    run_privileged test -f "${destination}" \
+      || die "existing staged artifact is not a regular file: ${destination}"
+    actual_digest="$(run_privileged sha256sum -- "${destination}")"
+    actual_digest="${actual_digest%% *}"
+    [[ "${actual_digest}" == "${expected_digest}" ]] \
+      || die "existing staged artifact checksum differs from immutable input: ${destination}"
+    return 0
+  fi
+
+  run_privileged install -m 0444 -- "${source}" "${temporary_destination}"
+  if ! run_privileged mv --no-clobber -- "${temporary_destination}" "${destination}"; then
+    die "refusing to replace concurrently created staged artifact: ${destination}"
+  fi
+  actual_digest="$(run_privileged sha256sum -- "${destination}")"
+  actual_digest="${actual_digest%% *}"
+  [[ "${actual_digest}" == "${expected_digest}" ]] \
+    || die "staged artifact checksum mismatch: ${destination}"
+}
+
+# stage_agent_artifacts — make verified immutable workload inputs authoritative
+# to the local HostAgent. The firmware digest remains the operator-supplied
+# value validated above; the base-image digest records staging integrity only.
+stage_agent_artifacts() {
+  if [[ "${MGMT_EXTERNAL}" == true ]]; then
+    return 0
+  fi
+
+  local artifact_root="${MGMT_STATE_DIR}/agent-artifacts"
+  local image_root="${artifact_root}/images"
+  local firmware_root="${artifact_root}/firmware"
+  local staged_image="${image_root}/kubernetes-v1.32.13.qcow2"
+  local staged_firmware="${firmware_root}/CLOUDHV.fd"
+  local base_digest=""
+  local manifest="${artifact_root}/manifest.json"
+  local manifest_tmp=""
+  local manifest_contents=""
+
+  base_digest="$(sha256sum -- "${BASE_IMAGE_RESOLVED}")"
+  base_digest="${base_digest%% *}"
+  ensure_agent_artifact_directory "${artifact_root}"
+  ensure_agent_artifact_directory "${image_root}"
+  ensure_agent_artifact_directory "${firmware_root}"
+
+  stage_artifact_file "${BASE_IMAGE_RESOLVED}" "${staged_image}" "${base_digest}"
+  stage_artifact_file "${FIRMWARE_RESOLVED}" "${staged_firmware}" "${HYPERVISOR_FIRMWARE_SHA256}"
+
+  manifest_contents=$(printf '{"images":{"kubernetes-v1.32.13":{"path":"%s","sha256":"%s"}},"firmware":{"path":"%s","sha256":"%s"}}\n' \
+    "${staged_image}" "${base_digest}" "${staged_firmware}" "${HYPERVISOR_FIRMWARE_SHA256}")
+  if run_privileged test -e "${manifest}"; then
+    run_privileged test ! -L "${manifest}" \
+      || die "HostAgent artifact manifest must not be a symlink: ${manifest}"
+    [[ "$(run_privileged cat -- "${manifest}")" == "${manifest_contents%$'\n'}" ]] \
+      || die "existing HostAgent artifact manifest differs; refusing to overwrite ${manifest}"
+  else
+    manifest_tmp="$(mktemp)"
+    printf '%s' "${manifest_contents}" > "${manifest_tmp}"
+    run_privileged install -m 0444 -- "${manifest_tmp}" "${manifest}.new.$$"
+    rm -f -- "${manifest_tmp}"
+    if ! run_privileged mv --no-clobber -- "${manifest}.new.$$" "${manifest}"; then
+      die "refusing to replace concurrently created HostAgent artifact manifest: ${manifest}"
+    fi
+  fi
+
+  log "verified and staged immutable HostAgent artifacts under ${artifact_root}"
+}
+
 # mgmt_up — bring the management plane up through the committed bootstrap
 # unless an external kubeconfig was given; the mgmt apply flow installs the
 # provider quadlet (test/e2e/mgmt/units/cluster-api-hypervisor.quadlet) so the
@@ -651,8 +778,11 @@ mgmt_up() {
     return 0
   fi
   log "bringing the management plane up via ${MGMT_BOOTSTRAP_DIR}/apply.sh"
-  export MGMT_STATE_DIR
-  bash "${SCRIPT_DIR}/mgmt/apply.sh"
+  run_privileged env \
+    "MGMT_STATE_DIR=${MGMT_STATE_DIR}" \
+    "OUT_DIR=${OUT_DIR_RESOLVED}" \
+    "SUDO_UID=${EUID}" \
+    bash "${SCRIPT_DIR}/mgmt/apply.sh"
   PLANE_STARTED=true
   log "management plane is up (state: ${MGMT_STATE_DIR})"
 }
@@ -671,34 +801,31 @@ wait_for_apiserver_ready() {
   log "management apiserver is ready"
 }
 
-# wait_for_provider — poll the provider user quadlet until systemd reports it
-# active. Both the provider and k8netd run as user units (rootless install
-# contract); the provider client tolerates k8netd starting later via its
-# connection backoff.
+# wait_for_provider — poll the system-scoped provider manager until systemd
+# reports it active. k8netd remains user-scoped and is reached only by the
+# separately authorized HostAgent.
 wait_for_provider() {
   local deadline=$(( $(date +%s) + APISERVER_READY_TIMEOUT ))
-  log "waiting for the provider user quadlet (${PROVIDER_UNIT}) to start"
-  until systemctl --user is-active --quiet "${PROVIDER_UNIT}"; do
+  log "waiting for the provider manager (${PROVIDER_UNIT}) to start"
+  until systemctl is-active --quiet "${PROVIDER_UNIT}"; do
     if (( $(date +%s) >= deadline )); then
-      die "provider user quadlet ${PROVIDER_UNIT} did not become active (check 'systemctl --user status ${PROVIDER_UNIT}')"
+      die "provider manager ${PROVIDER_UNIT} did not become active (check 'systemctl status ${PROVIDER_UNIT}')"
     fi
     sleep 2
   done
-  log "provider user quadlet is active"
+  log "provider manager is active"
 }
 
-# check_provider_journal — gate G3b: once the provider quadlet is active, its
-# journal must not show persistent k8netd connection-retry errors (a couple of
-# startup races are tolerated; a steady stream means the provider cannot reach
-# the control socket).
+# check_provider_journal — gate G3b: the manager should remain connected to
+# the HostAgent after startup rather than repeatedly failing its mTLS client.
 check_provider_journal() {
   local journal="" retry_lines=0
-  journal="$(journalctl --user -u "${PROVIDER_UNIT}" -n 50 --no-pager 2>/dev/null || true)"
-  retry_lines="$(grep -Eic 'dial.*(refused|timeout|unreachable)|connect.*(refused|fail(ed)?)|retrying' <<< "${journal}" || true)"
+  journal="$(journalctl -u "${PROVIDER_UNIT}" -n 50 --no-pager 2>/dev/null || true)"
+  retry_lines="$(grep -Eic 'agent.*(refused|timeout|unreachable)|tls.*(fail|error)|retrying' <<< "${journal}" || true)"
   if (( retry_lines > 2 )); then
-    die "provider journal shows persistent k8netd connection-retry errors (${retry_lines} of the last 50 lines; check 'journalctl --user -u ${PROVIDER_UNIT}')"
+    die "provider journal shows persistent HostAgent connection errors (${retry_lines} of the last 50 lines; check 'journalctl -u ${PROVIDER_UNIT}')"
   fi
-  log "provider journal shows no persistent k8netd connection errors"
+  log "provider journal shows no persistent HostAgent connection errors"
 }
 
 # apply_templates — generate the workload Cluster with clusterctl and apply it
@@ -928,7 +1055,7 @@ verify_workload_api() {
 # durable published-port mapping remains reachable before teardown releases it.
 verify_publication_replay() {
   log "restarting provider manager ${PROVIDER_UNIT} to verify published-port replay"
-  systemctl --user restart "${PROVIDER_UNIT}"
+  systemctl restart "${PROVIDER_UNIT}"
   wait_for_provider
   check_provider_journal
 
@@ -1152,6 +1279,7 @@ orchestrate() {
   require_cmd ssh
 
   check_prerequisites
+  stage_agent_artifacts
   mgmt_up
   wait_for_apiserver_ready
   wait_for_provider

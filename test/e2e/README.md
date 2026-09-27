@@ -2,8 +2,8 @@
 
 The end-to-end suite for cluster-api-hypervisor verifies the full lab flow on a
 single KVM host: a self-bootstrapped (or external) management plane, the
-provider running as a podman user quadlet next to the k8netd network daemon, a
-topology-driven workload Cluster created through the committed ClusterClass,
+provider running as a system-scoped Podman Quadlet alongside the separately
+user-scoped k8netd network daemon, a topology-driven workload Cluster created through the committed ClusterClass,
 workload Machines that boot through k8netd vhost-user ports with per-VM passt
 WAN instances, dataplane gates (API reachability via `https://127.0.0.1:6443`,
 guest-to-guest and internet reachability from inside a guest), workload smoke
@@ -19,7 +19,7 @@ listed for each claim so the runbook can be re-verified against the code.
 
 | Script | Role |
 |---|---|
-| `test/e2e/run.sh` | Full-lab orchestration: lab-host guard + prerequisite gates, management plane up (or external), provider user quadlet, workload Cluster generated via clusterctl and applied, wait for workload Machines Ready, k8netd/passt dataplane gates, workload API gate via `https://127.0.0.1:6443`, guest reachability probes over SSH, workload smoke checks, teardown with host-cleanliness verification via a trap. |
+| `test/e2e/run.sh` | Full-lab orchestration: two explicit real-host guards + prerequisite gates, management plane up (or external), system-scoped provider Quadlet, workload Cluster generated via clusterctl and applied, wait for workload Machines Ready, k8netd/passt dataplane gates, workload API gate via `https://127.0.0.1:6443`, guest reachability probes over SSH, workload smoke checks, teardown with host-cleanliness verification via a trap. |
 | `test/e2e/smoke.sh` | Workload-cluster smoke checks (nodes, kube-system pods, Cilium, Gateway, CoreDNS, in-cluster DNS). Invoked by `run.sh`; also runnable standalone. |
 | `test/e2e/scale.sh` | Worker scale scenario against a live lab: bump replicas, new Machine boots and the node registers, then delete the Machine and wait for the count to drop. |
 | `test/e2e/upgrade.sh` | Kubernetes version upgrade scenario against a live lab: apply a HypervisorUpgradePlan for the target version, wait for it to complete, then verify the topology, Machines, and workload nodes all report the target version. Pinned by `upgrade_test.sh` (stub-kubectl contract, no live lab needed). |
@@ -31,9 +31,11 @@ listed for each claim so the runbook can be re-verified against the code.
 `run.sh` drives real KVM virtual machines, a real rootless network daemon, and
 real passt processes: it boots 4 VMs, binds host ports 6443 and 22, and writes
 daemon state under `/run/user/1000/k8snet/`. The script refuses to run unless
-`E2E_LAB_HOST=1` is exported (`run.sh:147-149`, `run.sh:297-301`) — there is no
-other bypass, and `--help` is the only exempt invocation. Never run it on a
-workstation, in CI, or against a shared management plane.
+both `E2E_LAB_HOST=1` and `E2E_PORT_PUBLICATION=1` are exported — the latter
+explicitly acknowledges published-port replay and release. `--help` is the only
+exempt invocation. `SKIP_PREREQS=1` exists only for the stubbed contract
+harness; it is not a real-host bypass. Never run the suite on a workstation,
+in CI, or against a shared management plane.
 
 ## 1. Prerequisites
 
@@ -43,14 +45,16 @@ primitives the provider shells out to. `run.sh` fails fast naming the failed
 prerequisite before any heavy work: no cluster, VM, or quadlet is started when
 a gate fails (`check_prerequisites`, `run.sh:424-512`).
 
-1. **The dedicated k8labs host, explicitly confirmed.** Export `E2E_LAB_HOST=1`
-   or the script exits 1 immediately (`run.sh:297-301`).
+1. **The dedicated k8labs host, explicitly confirmed.** Export both
+   `E2E_LAB_HOST=1` and `E2E_PORT_PUBLICATION=1`, or the script exits before
+   touching the host. The second guard explicitly authorizes published-port
+   replay and release.
 
 2. **KVM-capable host with group access.** `/dev/kvm` must be writable by the
-   invoking user and the user must be in the `kvm` group (P1,
-   `run.sh:434-437`). The provider runs cloud-hypervisor subprocesses inside
-   its container; the host side of that contract is the `/dev/kvm` device. A
-   systemd host is required (user quadlets).
+   invoking lab user and that user must be in the `kvm` group (P1). The provider
+   runs cloud-hypervisor subprocesses inside its container; the host side of
+   that contract is the `/dev/kvm` device. A systemd host is required: k8netd
+   is a user unit, while management services are system-scoped units.
 
 3. **passt installed** and runnable (`passt --version`, P2, `run.sh:439-441`).
    Each VM gets its own passt WAN instance spawned by k8netd (contract REQ-008
@@ -66,9 +70,10 @@ a gate fails (`check_prerequisites`, `run.sh:424-512`).
    an embedded stdlib-only Go program, `build_k8netd_probe`,
    `run.sh:516-616`).
 
-5. **podman unprivileged with user quadlets usable** (P6, `run.sh:474-477`).
-   Both `k8netd.service` and the provider unit (`mgmt-cluster-api-hypervisor`)
-   are user units; every systemd gate in `run.sh` uses `systemctl --user`.
+5. **Podman and systemd units usable.** Rootless Podman must work for the
+   invoking lab user (P6). `k8netd.service` remains a user unit, while the
+   management-plane services—including `mgmt-cluster-api-hypervisor`—are
+   system-scoped and are provisioned through `sudo` from that lab user.
 
 6. **The provider image.** Build it before the lab run so the provider quadlet
    can start:
@@ -82,14 +87,14 @@ a gate fails (`check_prerequisites`, `run.sh:424-512`).
    references it as `localhost/cluster-api-hypervisor:dev`. The prerequisite
    gate accepts either reference (P8, `run.sh:479-481`).
 
-7. **The k8labs base image and firmware.** The provider boots workload VMs from
-   `build/k8labs-base.qcow2` with the `build/CLOUDHV.fd` firmware.
-   `run.sh` requires both as existing, readable, regular files
-   (`run.sh:332-339`, `run.sh:341-348`); the relative defaults resolve against
-   the working directory the harness is invoked from (`run.sh:53-61`,
-   doc block `run.sh:24-89`). Bake the base image with the k8labs image-baking
-   pipeline so both artifacts exist before the first `run.sh` invocation, or
-   point `BASE_IMAGE`/`FIRMWARE` at your copies.
+7. **Immutable workload image and firmware.** Explicitly supply `BASE_IMAGE`
+   and `FIRMWARE` as absolute paths to readable, regular, non-symlinked files.
+   There are no artifact defaults and no mutable firmware source. Also supply
+   `HYPERVISOR_FIRMWARE_SHA256` as an independently obtained 64-character
+   hexadecimal SHA-256 for the selected firmware. `run.sh` verifies that digest
+   before staging, stages the validated artifacts under management state, and
+   the HostAgent verifies the firmware again immediately before `vm.create`.
+   Do not substitute a digest derived from a mutable download during the run.
 
 8. **cloud-hypervisor.** The binary is bundled inside the provider image at a
    pinned version (`Containerfile:40-41`, `docs/install-contract.md:50`), and
@@ -130,13 +135,15 @@ lists the script lines that define or apply it.
 
 | Variable | Default | Meaning | Source |
 |---|---|---|---|
-| `E2E_LAB_HOST` | unset -> refuse | Lab-host-only guard. Must be exported as `1` or the script exits 1 before doing anything; `--help` is exempt. | constants `run.sh:147-149`; enforced `run.sh:297-301` |
-| `SKIP_PREREQS` | unset -> gates enforced | Test-only escape hatch used by `harness_test.sh`. When exported as `1`, the lab-host prerequisite gates (P1-P12) are skipped after environment validation; the environment contract itself is still enforced in full. Exists because gate P1 checks `/dev/kvm` directly and cannot be satisfied by PATH stubs on a non-lab host. Never set this on a real lab run. | doc `run.sh:28-36`; gate skip `run.sh:426-433` |
+| `E2E_LAB_HOST` | unset -> refuse | First lab-host-only guard. Must be exported as `1` or the script exits before doing anything; `--help` is exempt. | enforced by `run.sh` before orchestration |
+| `E2E_PORT_PUBLICATION` | unset -> refuse | Second explicit real-host guard. Must be exported as `1` to authorize published-port replay and release. | enforced by `run.sh` before orchestration |
+| `SKIP_PREREQS` | unset -> gates enforced | Harness-only escape hatch used by `harness_test.sh`. When exported as `1`, the prerequisite gates (P1-P12) are skipped after full environment validation because P1 checks `/dev/kvm` directly and cannot be PATH-stubbed. Never use it for a real-host run; it does not bypass either explicit real-host guard or immutable input validation. | gate skip in `run.sh` |
 | `MANAGEMENT_KUBECONFIG` | unset -> mgmt-bootstrap fallback | Management-cluster kubeconfig. Set: must name an existing, readable, non-empty file; the plane is treated as external and is not torn down on exit. Unset/empty: the harness falls back to the committed bootstrap (`test/e2e/mgmt`) driven by `MGMT_STATE_DIR`; the state must be provisioned with the admin kubeconfig at `<state>/kubeconfigs/admin.conf`. | doc `run.sh:26-47`; validation `run.sh:306-323`; fallback `run.sh:314-323` |
 | `MGMT_STATE_DIR` | `/var/lib/k8slab/mgmt` | Management-plane state directory for the fallback bootstrap (created by `test/e2e/mgmt/pki.sh`). | default `run.sh:113`; applied `run.sh:315`; also `test/e2e/mgmt/apply.sh:116` |
 | `IMAGE` | `cluster-api-hypervisor:dev` | Provider image reference (the Makefile tag). A set value must be a syntactically plausible container reference (no whitespace). | default `run.sh:110`; applied/checked `run.sh:326-330` |
-| `BASE_IMAGE` | `build/k8labs-base.qcow2` | k8labs base image path, resolved against the invocation working directory. Must be an existing, readable, regular file. | default `run.sh:111`; applied `run.sh:333`; checks `run.sh:334-339` |
-| `FIRMWARE` | `build/CLOUDHV.fd` | CLOUDHV.fd path, resolved against the invocation working directory. Must be an existing, readable, regular file. | default `run.sh:112`; applied `run.sh:342`; checks `run.sh:343-348` |
+| `BASE_IMAGE` | required, no default | Absolute path to the externally supplied base image. Must name a readable, regular, non-symlinked file. | environment validation in `run.sh` |
+| `FIRMWARE` | required, no default | Absolute path to the externally supplied CLOUDHV.fd firmware. Must name a readable, regular, non-symlinked file. No mutable/default firmware location is used. | environment validation in `run.sh` |
+| `HYPERVISOR_FIRMWARE_SHA256` | required, no default | Independently supplied, 64-character hexadecimal SHA-256 for `FIRMWARE`. It is verified against the input before staging and again by the HostAgent immediately before `vm.create`. | environment validation and HostAgent execution contract |
 | `STATE_DIR` | `~/.local/state/k8slab` (`/tmp/k8slab-state` without HOME) | Provider state directory, mirroring the provider's user-writable default. Must be an existing, writable directory (not a regular file). | default `run.sh:116-120`; applied `run.sh:351`; checks `run.sh:352-361` |
 | `OUT_DIR` | `<repo>/out` | Provider release layout directory. Must be an existing directory containing the three provider release directories `infrastructure-hypervisor/v0.1.0`, `bootstrap-hypervisor/v0.1.0`, and `control-plane-hypervisor/v0.1.0` (the layout `make components` emits), so `go tool clusterctl generate cluster` can resolve the cluster template from the local repository. | default `run.sh:124`; applied `run.sh:365`; checks `run.sh:366-377` |
 | `K8NETD_SOCKET` | `/run/user/1000/k8snet/control.sock` | k8netd JSON-RPC control socket (the provider default `HYPERVISOR_K8NETD_SOCKET`). Must be an absolute path; liveness is checked by prerequisite P5. | default `run.sh:136`; applied/checked `run.sh:378-383` |
@@ -216,13 +223,19 @@ teardown note that explains how the lab stays alive for them.
 ### Phase 1 — full lab (`run.sh`)
 
 ```sh
-E2E_LAB_HOST=1 bash test/e2e/run.sh
+E2E_LAB_HOST=1 \
+E2E_PORT_PUBLICATION=1 \
+BASE_IMAGE=/absolute/path/to/image.qcow2 \
+FIRMWARE=/absolute/path/to/CLOUDHV.fd \
+HYPERVISOR_FIRMWARE_SHA256=<independent-64-character-sha256> \
+bash test/e2e/run.sh
 ```
 
-Invoke from the repository root so the relative `build/` defaults resolve, or
-override `BASE_IMAGE`/`FIRMWARE` with absolute paths. Without
-`E2E_LAB_HOST=1` the script exits 1 before touching anything
-(`run.sh:297-301`). The orchestration is (`orchestrate`, `run.sh:1106-1138`):
+Both artifact paths must be absolute, readable regular non-symlinks. The
+firmware digest must be obtained independently and is verified before staging;
+the HostAgent verifies it again immediately before `vm.create`. Without either
+real-host guard, the script exits before touching anything. The orchestration
+is (`orchestrate`, `run.sh:1106-1138`):
 
 1. **Prerequisites** (`run.sh:1122`, `check_prerequisites` at
    `run.sh:424-512`): the fail-fast gates P1-P12 from the prerequisites
@@ -246,12 +259,10 @@ override `BASE_IMAGE`/`FIRMWARE` with absolute paths. Without
 3. **Management apiserver ready** (`run.sh:1124`,
    `wait_for_apiserver_ready` at `run.sh:644-658`).
 4. **Provider connected to k8netd** (`run.sh:1125-1126`): wait for the
-   provider user quadlet `mgmt-cluster-api-hypervisor` to be active
-   (`wait_for_provider` at `run.sh:660-674`), then assert its journal shows no
-   persistent k8netd connection-retry errors once active
-   (`check_provider_journal` at `run.sh:676-690`); the provider client's
-   connection backoff absorbs the start-order race between the two user
-   quadlets.
+   system-scoped provider Quadlet `mgmt-cluster-api-hypervisor` to be active,
+   then assert its journal shows no persistent k8netd connection-retry errors
+   once active. The provider client's connection backoff absorbs the start-order
+   race with the separately user-scoped k8netd service.
 5. **Cluster via clusterctl** — generate the workload Cluster with
    `go tool clusterctl generate cluster` and apply it to the management
    cluster (`run.sh:1127`, `apply_templates` at `run.sh:693-713`): the pinned
@@ -397,11 +408,17 @@ Run the whole suite against a lab kept alive for the scenario phases
 
 ```sh
 # Phase 1: full-lab run (bring-up, gates, smoke, verified teardown) — self-contained.
-E2E_LAB_HOST=1 bash test/e2e/run.sh
+E2E_LAB_HOST=1 \
+E2E_PORT_PUBLICATION=1 \
+BASE_IMAGE=/absolute/path/to/image.qcow2 \
+FIRMWARE=/absolute/path/to/CLOUDHV.fd \
+HYPERVISOR_FIRMWARE_SHA256=<independent-64-character-sha256> \
+bash test/e2e/run.sh
 
-# Keep a lab alive for the scenario phases:
-bash test/e2e/mgmt/pki.sh /var/lib/k8slab/mgmt
-MGMT_STATE_DIR=/var/lib/k8slab/mgmt bash test/e2e/mgmt/apply.sh
+# Keep a lab alive for the scenario phases. Run these via sudo from the
+# non-root lab user so the HostAgent server key remains accessible to that user:
+sudo bash test/e2e/mgmt/pki.sh /var/lib/k8slab/mgmt
+sudo env MGMT_STATE_DIR=/var/lib/k8slab/mgmt bash test/e2e/mgmt/apply.sh
 KC=/var/lib/k8slab/mgmt/kubeconfigs/admin.conf   # the fallback admin kubeconfig (run.sh:316)
 XDG_CONFIG_HOME=/var/lib/k8slab/mgmt/clusterctl \
   go tool clusterctl generate cluster k8labs --namespace default \
@@ -432,7 +449,7 @@ On a cold lab the machine-ready wait dominates the wall clock.
 | Phase | Wait | Budget | Poll interval | Source |
 |---|---|---|---|---|
 | run.sh | management apiserver `/readyz` | 300 s | 2 s | `run.sh:157`, `run.sh:644-658` |
-| run.sh | provider user quadlet `mgmt-cluster-api-hypervisor` active | 300 s | 2 s | `run.sh:660-674` |
+| run.sh | system-scoped provider Quadlet `mgmt-cluster-api-hypervisor` active | 300 s | 2 s | `run.sh:660-674` |
 | run.sh | HypervisorCluster InfrastructureReady=True | 300 s | 5 s | `run.sh:715-735` |
 | run.sh | workload Machines Ready | `WAIT_TIMEOUT`, default 1800 s | 5 s | `run.sh:158`, `run.sh:160`, `run.sh:755-783` |
 | run.sh | SSH into the control-plane guest | 120 s | 5 s | `run.sh:161`, `run.sh:926-944` |
@@ -455,6 +472,10 @@ full-lab flow against a plane you already operate:
 
 ```sh
 export E2E_LAB_HOST=1
+export E2E_PORT_PUBLICATION=1
+export BASE_IMAGE=/absolute/path/to/image.qcow2
+export FIRMWARE=/absolute/path/to/CLOUDHV.fd
+export HYPERVISOR_FIRMWARE_SHA256=<independent-64-character-sha256>
 export MANAGEMENT_KUBECONFIG=/path/to/existing/admin.conf
 bash test/e2e/run.sh
 ```
@@ -495,7 +516,7 @@ test/e2e/clusterctl_test.sh    # make components release-layout contract
 | Test | What it pins | How it runs without a cluster |
 |---|---|---|
 | `test/e2e/mgmt/mgmt_test.sh` | `pki.sh` state layout, quadlet units, core manifests, `apply.sh`/`down.sh` lifecycle, and the clusterctl rewire contract (config render, offline core override, `go tool clusterctl init` invocation, webhook caBundle patch) | Executes `pki.sh` against a scratch state directory; every other assertion checks the committed files directly, including `test_apply_rewire` against `apply.sh` and the committed `clusterctl.yaml` template (`mgmt_test.sh:48-50`, `mgmt_test.sh:483-533`). |
-| `test/e2e/harness_test.sh` | `run.sh` validates every contract variable (including `OUT_DIR`) before heavy work, its errors name the exact variable, and `apply_templates` pipes `go tool clusterctl generate cluster` into `kubectl apply -f -` | Runs `run.sh` with `env -i` (only `PATH`/`HOME` plus explicit assignments) and a 30 s timeout, feeding fake-but-valid fixture files; every scenario keeps all variables valid except the one under test (`harness_test.sh:150-166`, `harness_test.sh:189-217`, `harness_test.sh:224-236`). Every invocation exports the lab-host guard like a real operator (`E2E_LAB_HOST=1`) plus the documented test-only prerequisite skip (`SKIP_PREREQS=1`, gate P1 checks `/dev/kvm` directly and cannot be PATH-stubbed), and a fixture `GUEST_SSH_KEY`. The apply flow drives the full orchestrate against stubbed tooling on `PATH`: `go` (also emits a fake k8netd probe for the `go build` dispatch), `kubectl` (readyz, apply stdin capture, fixed 4-machine inventory, delete flips the stub lab to torn-down), plus process-listener, socket-listener, guest-SSH, systemd-user-unit, and journal stubs, and real unix-socket inodes for the per-machine port sockets (`harness_test.sh:627-860`). Never starts a cluster, VM, or quadlet (`harness_test.sh:74-80`). |
+| `test/e2e/harness_test.sh` | `run.sh` validates every contract variable (including the two guards, immutable artifacts, firmware digest, and `OUT_DIR`) before heavy work, its errors name the exact variable, and `apply_templates` pipes `go tool clusterctl generate cluster` into `kubectl apply -f -` | Runs `run.sh` with `env -i` (only `PATH`/`HOME` plus explicit assignments) and a 30 s timeout, feeding fake-but-valid fixture files; every scenario keeps all variables valid except the one under test. Every invocation exports both guards like a real operator (`E2E_LAB_HOST=1`, `E2E_PORT_PUBLICATION=1`), uses fixture immutable inputs and an independently specified fixture firmware digest, and sets the documented harness-only `SKIP_PREREQS=1` because P1 checks `/dev/kvm` directly and cannot be PATH-stubbed. The apply flow drives the full orchestrate against stubbed tooling on `PATH`, including systemd and journal stubs plus real unix-socket inodes for the per-machine port sockets. It never starts a cluster, VM, or Quadlet. |
 | `test/e2e/smoke_test.sh` | Per-check pass/fail semantics of `smoke.sh` (nodes, kube-system, Cilium, Gateway, CoreDNS, DNS regressions) plus the aggregate exit code | Runs `smoke.sh` against a stub `kubectl` on `PATH` that dispatches on its arguments and returns scripted canned outputs; each run is bounded by a 60 s timeout (`smoke_test.sh:7-12`, `smoke_test.sh:63`). |
 | `test/e2e/scale_test.sh` | Per-step contract of `scale.sh` (scale-up, VM boot, node-ready, delete, timeout naming) | Runs `scale.sh` against a stub `kubectl` modeling a timeline (pre-bump baseline, post-bump set, post-delete set) through `STUB_*` variables; success scenarios use a 10 s wait budget, timeout scenarios 3 s (`scale_test.sh:6-11`, `scale_test.sh:73-80`). |
 | `test/e2e/delete_test.sh` | Per-step contract of `delete-cluster.sh` (cluster-delete, machine-teardown, mgmt-down) plus the no-host-tool guarantee: sentinel host binaries on `PATH` whose invocation log must stay empty | Runs `delete-cluster.sh` against a stub `kubectl` plus sentinel host binaries that record every invocation, and a stub mgmt-down injected through `MGMT_DOWN_SH` (`delete_test.sh:9-15`). |
@@ -514,10 +535,11 @@ test).
 
 ## 7. Troubleshooting pointers
 
-- **`run.sh` exits 1 immediately**: either `E2E_LAB_HOST=1` is missing
-  (`run.sh:297-301`) or an environment variable is invalid — the error names
-  the offending variable and path (`run.sh:305-402`); check the env table
-  above against the invocation.
+- **`run.sh` exits immediately**: one of `E2E_LAB_HOST=1` or
+  `E2E_PORT_PUBLICATION=1` is missing, or an environment variable is invalid.
+  The error names the offending variable and path; check the invocation and the
+  immutable artifact contract above. `SKIP_PREREQS=1` is not a remedy for either
+  real-host guard or immutable input validation.
 - **`run.sh` fails at a prerequisite**: the error names the failed gate P1-P12
   (`run.sh:424-512`). Common causes: the user is not in the `kvm` group (P1),
   passt or k8netd missing from PATH (P2/P3), `k8netd.service` not started
@@ -528,12 +550,12 @@ test).
 - **A wait times out**: the error line names the step (`scale.sh:92-95`,
   `delete-cluster.sh:91-94`, `run.sh:755-783`); the budgets are configurable
   (`WAIT_TIMEOUT`, `SCALE_WAIT_TIMEOUT`, `DELETE_WAIT_TIMEOUT`).
-- **The provider quadlet does not start**: check
-  `systemctl --user status mgmt-cluster-api-hypervisor` and
-  `journalctl --user` for the unit (`run.sh:660-674`); confirm the provider
-  image exists (`podman images | grep cluster-api-hypervisor`) and the
-  `build/` artifacts are in place. Persistent k8netd connection-retry lines in
-  the journal fail the run explicitly (`run.sh:676-690`).
+- **The provider Quadlet does not start**: check
+  `sudo systemctl status mgmt-cluster-api-hypervisor` and
+  `sudo journalctl -u mgmt-cluster-api-hypervisor`; confirm the provider image
+  exists (`podman images | grep cluster-api-hypervisor`) and the explicitly
+  supplied immutable artifacts remain available. Persistent k8netd
+  connection-retry lines in the journal fail the run explicitly.
 - **Guest probes fail**: the probes need SSH access to the control-plane guest
   through the forwarded host port 22; check `GUEST_SSH_KEY`/`GUEST_SSH_USER`
   (`run.sh:385-398`) and that the key's public part is provisioned into the

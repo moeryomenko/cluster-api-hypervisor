@@ -67,6 +67,9 @@ spec:
         dnsIP: 192.168.124.1
         bridgeName: k8sbr0
         natTable: k8slab
+      images:
+        - version: v1.32.13
+          path: kubernetes-v1.32.13
 ---
 # HypervisorControlPlaneTemplate referenced by the class controlPlane ref. The
 # topology controller clones spec.template into a concrete HypervisorControlPlane.

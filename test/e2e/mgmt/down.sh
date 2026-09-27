@@ -13,11 +13,13 @@ IFS=$'\n\t'
 
 readonly QUADLET_DIR="/etc/containers/systemd"
 
-# Reverse dependency order: the provider and core controllers depend on the
-# apiserver, which depends on etcd.
+# Reverse dependency order: the provider manager depends on the HostAgent and
+# apiserver; the Agent must stop before its user-scoped VM units can outlive the
+# management plane teardown.
 readonly MGMT_SERVICES=(
   "mgmt-cluster-api-hypervisor"
   "mgmt-cluster-api-core"
+  "mgmt-hypervisor-agent"
   "mgmt-kube-apiserver"
   "mgmt-etcd"
 )

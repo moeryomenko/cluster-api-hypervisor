@@ -21,8 +21,8 @@
 #
 # Mount sources and self-heal: a fresh management state (pki.sh) contains only
 # pki/ and kubeconfigs/. apply.sh creates the non-sensitive etcd and webhook
-# mount sources before services start. The HostAgent mTLS client identity and
-# trust root are provisioned independently at <state>/agent-client and
+# mount sources before services start. pki.sh generates the HostAgent mTLS
+# client identity and trust root at <state>/agent-client and
 # <state>/agent-ca/ca.crt; this script fails closed when they are absent and
 # never creates credentials. It resets failed units (systemctl reset-failed)
 # before each start so a previous crash-loop (start-limit-hit) does not block a
@@ -92,15 +92,16 @@ readonly CORE_CAPI_OVERRIDE_VERSION="v1.13.5"
 # Budget (seconds) allowed for the management apiserver to answer /readyz
 # after the plane quadlets start.
 readonly APISERVER_READY_TIMEOUT=300
+readonly AGENT_READY_TIMEOUT=60
 
 # Quadlet service names (installed unit file name minus .container). The plane
-# services must come up before the core manifests are applied, while the
-# controller services start only after clusterctl init has created the core
-# CRDs and the provider CRDs/webhooks, so they are started in separate steps.
+# services must come up before the core manifests are applied. The HostAgent
+# must pass an authorized mTLS health check before the provider manager starts.
 readonly MGMT_PLANE_SERVICES=(
   "mgmt-etcd"
   "mgmt-kube-apiserver"
 )
+readonly MGMT_AGENT_SERVICE="mgmt-hypervisor-agent"
 readonly MGMT_CONTROLLER_SERVICES=(
   "mgmt-cluster-api-core"
   "mgmt-cluster-api-hypervisor"
@@ -131,6 +132,60 @@ require_dir() {
   local path="$1"
   local what="$2"
   [[ -d "${path}" ]] || die "state directory incomplete: missing ${what} at ${path}"
+}
+
+# stage_state_file <source> <destination> <what> — add generated bootstrap
+# state without replacing a different pre-existing file.
+stage_state_file() {
+  local source="$1"
+  local destination="$2"
+  local what="$3"
+  local temporary="${destination}.new.$$"
+
+  [[ -f "${source}" && ! -L "${source}" ]] || die "missing ${what} source: ${source}"
+  if [[ -e "${destination}" ]]; then
+    [[ -f "${destination}" && ! -L "${destination}" ]] \
+      || die "existing ${what} is not a regular file: ${destination}"
+    cmp -s "${source}" "${destination}" \
+      || die "refusing to replace existing ${what}: ${destination}"
+    return 0
+  fi
+
+  install -m 0644 -- "${source}" "${temporary}"
+  if ! mv --no-clobber -- "${temporary}" "${destination}"; then
+    die "refusing to replace concurrently created ${what}: ${destination}"
+  fi
+  cmp -s "${source}" "${destination}" \
+    || die "staged ${what} differs from its rendered source: ${destination}"
+}
+
+# render_e2e_provider_repository <clusterctl-dir> <out-dir> — build the
+# cert-manager-free E2E components and arrange the three local provider types.
+render_e2e_provider_repository() {
+  local clusterctl_dir="$1"
+  local out_dir="$2"
+  local repository_dir="${clusterctl_dir}/providers"
+  local rendered="${clusterctl_dir}/.e2e-components.$$"
+  local provider_dir="" component="" source_dir="" destination_dir=""
+
+  if ! (cd "${REPO_ROOT}" && go tool kustomize build config/e2e > "${rendered}"); then
+    rm -f -- "${rendered}"
+    die "failed to render E2E provider components"
+  fi
+  [[ -s "${rendered}" ]] || die "E2E provider component render is empty"
+
+  for provider_dir in "${OUT_PROVIDER_DIRS[@]}"; do
+    component="${provider_dir%-hypervisor}-components.yaml"
+    source_dir="${out_dir}/${provider_dir}/${OUT_PROVIDER_VERSION}"
+    destination_dir="${repository_dir}/${provider_dir}/${OUT_PROVIDER_VERSION}"
+    mkdir -p "${destination_dir}"
+    stage_state_file "${rendered}" "${destination_dir}/${component}" "E2E ${provider_dir} components"
+    stage_state_file "${source_dir}/metadata.yaml" "${destination_dir}/metadata.yaml" "${provider_dir} metadata"
+    stage_state_file "${source_dir}/cluster-template.yaml" "${destination_dir}/cluster-template.yaml" "${provider_dir} cluster template"
+  done
+
+  rm -f -- "${rendered}"
+  printf '%s\n' "${repository_dir}"
 }
 
 # validate_out_dir <dir> — the provider release layout (the three v0.1.0
@@ -164,6 +219,25 @@ wait_for_apiserver_ready() {
   log "management apiserver is ready"
 }
 
+wait_for_agent_ready() {
+  local certificate_dir="$1"
+  local ca_file="$2"
+  local deadline=$(( $(date +%s) + AGENT_READY_TIMEOUT ))
+  log "waiting for the HostAgent mTLS health check"
+  until systemctl is-active --quiet "${MGMT_AGENT_SERVICE}" && \
+    (cd "${REPO_ROOT}" && go run ./cmd/agent-health \
+      --address=127.0.0.1:9444 \
+      --server-name=hypervisor-agent \
+      --client-cert-dir="${certificate_dir}" \
+      --ca="${ca_file}") >/dev/null 2>&1; do
+    if (( $(date +%s) >= deadline )); then
+      die "HostAgent did not pass the authorized mTLS health check within ${AGENT_READY_TIMEOUT}s; check 'journalctl -u ${MGMT_AGENT_SERVICE}'"
+    fi
+    sleep 2
+  done
+  log "HostAgent mTLS health check passed"
+}
+
 main() {
   : "${MGMT_STATE_DIR:?MGMT_STATE_DIR must be set to the management state directory}"
   if [[ ! -d "${MGMT_STATE_DIR}" ]]; then
@@ -174,7 +248,14 @@ main() {
   local kubeconfig_dir="${MGMT_STATE_DIR}/kubeconfigs"
   local admin_kubeconfig="${kubeconfig_dir}/admin.conf"
   local agent_client_dir="${MGMT_STATE_DIR}/agent-client"
+  local agent_server_dir="${MGMT_STATE_DIR}/agent-server"
   local agent_ca="${MGMT_STATE_DIR}/agent-ca/ca.crt"
+  local webhook_cert_dir="${MGMT_STATE_DIR}/webhook-certs"
+  local agent_artifact_dir="${MGMT_STATE_DIR}/agent-artifacts"
+  local agent_state_dir="${MGMT_STATE_DIR}/agent-state"
+  local host_uid="${SUDO_UID:-}"
+  local host_home=""
+  local host_group=""
   local out_dir="${OUT_DIR:-${DEFAULT_OUT_DIR}}"
 
   # Validate the state directory before acting.
@@ -182,34 +263,90 @@ main() {
   require_file "${pki_dir}/apiserver.pem" "apiserver certificate"
   require_file "${admin_kubeconfig}" "admin kubeconfig"
   require_dir "${agent_client_dir}" "HostAgent client certificate directory"
+  require_file "${agent_client_dir}/tls.crt" "HostAgent client certificate"
+  require_file "${agent_client_dir}/tls.key" "HostAgent client key"
+  require_dir "${agent_server_dir}" "HostAgent server certificate directory"
+  require_file "${agent_server_dir}/tls.crt" "HostAgent server certificate"
+  require_file "${agent_server_dir}/tls.key" "HostAgent server key"
   require_file "${agent_ca}" "HostAgent CA certificate"
+  require_dir "${webhook_cert_dir}" "manager webhook certificate directory"
+  require_file "${webhook_cert_dir}/tls.crt" "manager webhook certificate"
+  require_file "${webhook_cert_dir}/tls.key" "manager webhook key"
+  require_dir "${agent_artifact_dir}" "HostAgent artifact directory"
+  require_dir "${agent_artifact_dir}/images" "HostAgent image directory"
+  require_dir "${agent_artifact_dir}/firmware" "HostAgent firmware directory"
+  require_file "${agent_artifact_dir}/manifest.json" "HostAgent artifact manifest"
+
+  # The Agent reaches the lab user's user D-Bus, k8netd and user systemd. A
+  # privileged invocation must retain that identity through sudo.
+  [[ "${host_uid}" =~ ^[1-9][0-9]*$ ]] \
+    || die "apply.sh must run via sudo from the non-root lab user (SUDO_UID is required)"
 
   # Validate the environment before acting.
+  require_cmd getent
+  require_cmd id
   require_cmd kubectl
   require_cmd systemctl
   require_cmd podman
   require_cmd go
+  require_cmd cmp
+  require_cmd install
+  require_cmd mv
   validate_out_dir "${out_dir}"
+
+  host_home=$(getent passwd "${host_uid}" | cut -d: -f6)
+  [[ -n "${host_home}" && -d "${host_home}" ]] \
+    || die "cannot resolve the lab user's home directory for UID ${host_uid}"
+  [[ -S "/run/user/${host_uid}/bus" ]] \
+    || die "lab user D-Bus is unavailable: /run/user/${host_uid}/bus"
+  [[ -S "/run/user/${host_uid}/k8snet/control.sock" ]] \
+    || die "k8netd socket is unavailable: /run/user/${host_uid}/k8snet/control.sock"
+  [[ -d "${host_home}/.config/systemd/user" ]] \
+    || die "lab user systemd unit directory is unavailable: ${host_home}/.config/systemd/user"
+  host_group=$(id -g "${host_uid}")
 
   [[ -d "${UNITS_DIR}" ]] || die "quadlet units directory missing: ${UNITS_DIR}"
   [[ -d "${CORE_DIR}" ]] || die "core manifests directory missing: ${CORE_DIR}"
 
-  # 1. Prepare non-sensitive bind-mount sources. HostAgent mTLS sources were
-  #    validated above and must be provisioned by the installation, never
-  #    manufactured by this bootstrap.
-  mkdir -p "${MGMT_STATE_DIR}/etcd" /etc/cluster-api-hypervisor/webhook-certs
+  # 1. Prepare the non-sensitive etcd bind-mount source. HostAgent mTLS,
+  #    webhook credentials, and immutable artifact sources were validated above
+  #    and must be staged independently.
+  mkdir -p "${MGMT_STATE_DIR}/etcd"
+  if [[ ! -e "${agent_state_dir}" ]]; then
+    install -d -m 0700 -o "${host_uid}" -g "${host_group}" "${agent_state_dir}"
+  fi
+  if [[ ! -d "${agent_state_dir}" ]]; then
+    die "HostAgent state path is not a directory: ${agent_state_dir}"
+  fi
+  if [[ "$(stat -c %u "${agent_state_dir}")" != "${host_uid}" ]]; then
+    die "HostAgent state directory is not owned by lab user ${host_uid}: ${agent_state_dir}"
+  fi
+  if [[ ! -e "${agent_state_dir}/vms" ]]; then
+    install -d -m 0700 -o "${host_uid}" -g "${host_group}" "${agent_state_dir}/vms"
+  fi
+  if [[ ! -d "${agent_state_dir}/vms" ]]; then
+    die "HostAgent VM artifact path is not a directory: ${agent_state_dir}/vms"
+  fi
+  if [[ "$(stat -c %u "${agent_state_dir}/vms")" != "${host_uid}" ]]; then
+    die "HostAgent VM artifact directory is not owned by lab user ${host_uid}: ${agent_state_dir}/vms"
+  fi
 
-  # 2. Install the quadlet units with the actual state directory rendered in.
+  # 2. Install the quadlet units with the actual state directory and lab user
+  #    rendered in.
   #    Podman quadlet generates one systemd service per .container file.
   log "installing quadlet units into ${QUADLET_DIR}"
   install -d -m 0755 "${QUADLET_DIR}"
-  local unit="" installed="" state_escaped=""
-  state_escaped=$(printf '%s' "${MGMT_STATE_DIR}" | sed 's/[&/\\]/\\&/g')
+  local unit="" installed="" state_escaped="" home_escaped=""
+  state_escaped=$(printf '%s' "${MGMT_STATE_DIR}" | sed 's/[&|/\\]/\\&/g')
+  home_escaped=$(printf '%s' "${host_home}" | sed 's/[&|/\\]/\\&/g')
   for unit in "${UNITS_DIR}"/*.quadlet; do
     local base
     base="$(basename "${unit}" .quadlet)"
     installed="${QUADLET_DIR}/mgmt-${base}.container"
-    sed "s|${DEFAULT_STATE_PREFIX}|${state_escaped}|g" "${unit}" > "${installed}"
+    sed -e "s|${DEFAULT_STATE_PREFIX}|${state_escaped}|g" \
+        -e "s|__HOST_UID__|${host_uid}|g" \
+        -e "s|__HOST_HOME__|${home_escaped}|g" \
+        "${unit}" > "${installed}"
     chmod 0644 "${installed}"
     log "installed ${installed}"
   done
@@ -245,23 +382,25 @@ main() {
     -f "${CORE_DIR}/rbac.yaml" \
     -f "${CORE_DIR}/manager.yaml"
 
-  # 7. Render the clusterctl configuration from the committed template.
-  #    clusterctl reads <config-home>/cluster-api/clusterctl.yaml, where the
-  #    config home is $XDG_CONFIG_HOME; the state clusterctl/ subtree is used
-  #    as that home so the configuration stays hermetic. The placeholder base
-  #    paths are substituted with the real OUT_DIR and the state overrides
-  #    directory (same sed-escape technique as the quadlet rendering above).
+  # 7. Render the isolated E2E provider repository and clusterctl configuration.
+  #    The repository contains only bare-plane-compatible CRDs, RBAC, and
+  #    loopback admission configuration; production release components remain
+  #    in OUT_DIR and are used only for metadata and templates.
   local clusterctl_dir="${MGMT_STATE_DIR}/clusterctl"
   local xdg_config_dir="${clusterctl_dir}/cluster-api"
   local rendered_config="${xdg_config_dir}/clusterctl.yaml"
+  local config_temporary="${rendered_config}.new.$$"
   local overrides_dir="${clusterctl_dir}/overrides"
-  local out_escaped="" overrides_escaped=""
+  local provider_repository_dir="" provider_escaped="" overrides_escaped=""
   mkdir -p "${xdg_config_dir}"
-  out_escaped=$(printf '%s' "${out_dir}" | sed 's/[&/\\]/\\&/g')
+  provider_repository_dir="$(render_e2e_provider_repository "${clusterctl_dir}" "${out_dir}")"
+  provider_escaped=$(printf '%s' "${provider_repository_dir}" | sed 's/[&/\\]/\\&/g')
   overrides_escaped=$(printf '%s' "${overrides_dir}" | sed 's/[&/\\]/\\&/g')
-  sed -e "s|${CLUSTERCTL_OUT_PREFIX}|${out_escaped}|g" \
+  sed -e "s|${CLUSTERCTL_OUT_PREFIX}|${provider_escaped}|g" \
       -e "s|${CLUSTERCTL_OVERRIDES_PREFIX}|${overrides_escaped}|g" \
-      "${CLUSTERCTL_TEMPLATE}" > "${rendered_config}"
+      "${CLUSTERCTL_TEMPLATE}" > "${config_temporary}"
+  stage_state_file "${config_temporary}" "${rendered_config}" "clusterctl configuration"
+  rm -f -- "${config_temporary}"
   log "rendered clusterctl configuration at ${rendered_config}"
 
   # 8. Assemble the offline core-CAPI override from the committed core
@@ -314,6 +453,8 @@ main() {
     count=$(kubectl get "${webhook_config}" --kubeconfig="${admin_kubeconfig}" \
       -o jsonpath='{.webhooks[*].name}' | wc -w) \
       || die "failed to read webhooks of ${webhook_config} (clusterctl init must have installed it)"
+    [[ "${count}" -gt 0 ]] \
+      || die "${webhook_config} has no webhook entries (E2E components are incomplete)"
     ops=""
     for ((i = 0; i < count; i++)); do
       op=$(printf '{"op":"replace","path":"/webhooks/%d/clientConfig/caBundle","value":"%s"}' \
@@ -326,7 +467,18 @@ main() {
     log "patched caBundle into ${webhook_config}"
   done
 
-  # 11. Start the controller services (CAPI core + hypervisor provider) now
+  # 11. Start and authenticate the HostAgent before the provider manager can
+  #     reconcile workload resources. A healthy TCP listener alone is not
+  #     sufficient: the Health RPC must succeed with the manager identity.
+  systemctl reset-failed "${MGMT_AGENT_SERVICE}" >/dev/null 2>&1 || true
+  if systemctl start "${MGMT_AGENT_SERVICE}" >/dev/null 2>&1; then
+    log "started ${MGMT_AGENT_SERVICE}"
+  else
+    die "failed to start ${MGMT_AGENT_SERVICE}; check 'systemctl status ${MGMT_AGENT_SERVICE}'"
+  fi
+  wait_for_agent_ready "${agent_client_dir}" "${agent_ca}"
+
+  # 12. Start the controller services (CAPI core + hypervisor provider) now
   #     that clusterctl init has created the core CRDs and the provider
   #     CRDs/webhooks. The same reset-failed self-heal as the plane start
   #     clears a previous crash-loop before each start.

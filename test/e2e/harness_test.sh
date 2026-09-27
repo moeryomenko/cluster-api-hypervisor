@@ -30,32 +30,33 @@
 #      must be a syntactically plausible container reference (no whitespace);
 #      otherwise the harness exits 1 with an error naming IMAGE.
 #
-#   3. BASE_IMAGE — the k8labs base image path (the provider environment
-#      contract default is build/k8labs-base.qcow2; the relative default
-#      resolves against the working directory the harness is invoked from).
-#      The resolved path must be an existing, readable, regular file;
-#      otherwise the harness exits 1 with an error naming BASE_IMAGE.
+#   3. BASE_IMAGE — a required, externally supplied, absolute immutable base
+#      image. It must be a readable, non-symlink regular file; otherwise the
+#      harness exits 1 with an error naming BASE_IMAGE.
 #
-#   4. FIRMWARE — the CLOUDHV.fd path (default build/CLOUDHV.fd). The
-#      resolved path must be an existing, readable, regular file; otherwise
-#      the harness exits 1 with an error naming FIRMWARE.
+#   4. FIRMWARE — a required, externally supplied, absolute immutable
+#      CLOUDHV.fd. It must be a readable, non-symlink regular file.
 #
-#   5. STATE_DIR — the provider state directory (the provider environment
+#   5. HYPERVISOR_FIRMWARE_SHA256 — the externally supplied 64-character
+#      hexadecimal SHA-256 for FIRMWARE. It is validated against FIRMWARE and
+#      is never derived as a replacement value by the harness.
+#
+#   6. STATE_DIR — the provider state directory (the provider environment
 #      contract default is /var/lib/k8slab). The resolved path must be an
 #      existing, writable directory and must not be a regular file;
 #      otherwise the harness exits 1 with an error naming STATE_DIR.
 #
-#   6. OUT_DIR — the provider release layout directory (the default is
+#   7. OUT_DIR — the provider release layout directory (the default is
 #      <repo>/out; an explicit value is honored as-is). The resolved path
 #      must be an existing directory containing the three provider release
 #      directories infrastructure-hypervisor/v0.1.0,
 #      bootstrap-hypervisor/v0.1.0, and control-plane-hypervisor/v0.1.0;
 #      otherwise the harness exits 1 with an error naming OUT_DIR.
 #
-#   7. The harness requires the go tool (require_cmd go) before any heavy
+#   8. The harness requires the go tool (require_cmd go) before any heavy
 #      work; a missing go is an environment validation failure naming go.
 #
-#   8. apply_templates — the workload Cluster is generated with
+#   9. apply_templates — the workload Cluster is generated with
 #      `go tool clusterctl generate cluster k8labs --namespace default
 #      --infrastructure hypervisor --kubernetes-version v1.32.13
 #      --control-plane-machine-count 1 --worker-machine-count 3` piped into
@@ -64,10 +65,10 @@
 #      generate invocation and that kubectl apply reads the manifest from
 #      stdin; no real cluster is contacted.
 #
-#   9. --help and -h — exit 0 and document every variable above, its default,
+#  10. --help and -h — exit 0 and document every variable above, its default,
 #      and the management-plane bootstrap fallback (test/e2e/mgmt).
 #
-#  10. Real-host guards and prerequisite skip. run.sh refuses to run unless
+#  11. Real-host guards and prerequisite skip. run.sh refuses to run unless
 #      E2E_LAB_HOST=1 and E2E_PORT_PUBLICATION=1 are exported, and its
 #      lab-host prerequisite gates (P1-P12) cannot pass on a non-lab host
 #      (gate P1 checks /dev/kvm directly, which no PATH stub can satisfy).
@@ -76,7 +77,7 @@
 #      that skips the gates after environment validation; the environment
 #      contract itself is still enforced in full.
 #
-#  11. GUEST_SSH_KEY — the guest-probe key must name an existing file. The
+#  12. GUEST_SSH_KEY — the guest-probe key must name an existing file. The
 #      scenarios get a fixture key from run_harness unless they pass their
 #      own.
 #
@@ -111,11 +112,9 @@ readonly REPO_ROOT
 RUN_SH="${SCRIPT_DIR}/run.sh"
 readonly RUN_SH
 
-# Defaults pinned by the contract (the Makefile tag and the provider
-# environment contract values from docs/install-contract.md).
+# Only the provider image has a default. Immutable workload sources and the
+# independently supplied firmware digest are required for every invocation.
 readonly IMAGE_DEFAULT="cluster-api-hypervisor:dev"
-readonly BASE_IMAGE_DEFAULT="build/k8labs-base.qcow2"
-readonly FIRMWARE_DEFAULT="build/CLOUDHV.fd"
 readonly STATE_DIR_DEFAULT="/var/lib/k8slab"
 readonly MGMT_STATE_DIR_DEFAULT="/var/lib/k8slab/mgmt"
 readonly MGMT_BOOTSTRAP_DIR="test/e2e/mgmt"
@@ -176,6 +175,22 @@ run_harness() {
   # hatch (run.sh SKIP_PREREQS): gate P1 checks /dev/kvm directly and cannot
   # be satisfied by PATH stubs on a non-lab host.
   harness_env+=("E2E_LAB_HOST=1" "E2E_PORT_PUBLICATION=1" "SKIP_PREREQS=1")
+
+  # Supply the fixture's independently known firmware digest unless the test
+  # explicitly exercises digest validation. This keeps each unrelated case
+  # focused on its intended failure.
+  local firmware="" has_firmware_digest="" firmware_digest=""
+  for arg in "${harness_env[@]}"; do
+    case "${arg}" in
+      FIRMWARE=*) firmware="${arg#FIRMWARE=}" ;;
+      HYPERVISOR_FIRMWARE_SHA256=*) has_firmware_digest=1 ;;
+    esac
+  done
+  if [[ -z "${has_firmware_digest}" && -n "${firmware}" && -f "${firmware}" ]]; then
+    firmware_digest="$(sha256sum -- "${firmware}")"
+    harness_env+=("HYPERVISOR_FIRMWARE_SHA256=${firmware_digest%% *}")
+  fi
+
   # A valid guest SSH key for every scenario unless one is passed explicitly.
   local has_ssh_key=""
   for arg in "${harness_env[@]}"; do
@@ -360,7 +375,6 @@ test_missing_base_image() {
   local base="" out="" rc=0
   base="$(setup_valid_base)" || return 1
 
-  # Explicit path that does not exist.
   local missing_base="${base}/missing-base.qcow2"
   rc=0
   out="$(run_harness \
@@ -372,28 +386,43 @@ test_missing_base_image() {
     "OUT_DIR=${base}/out")" || rc=$?
   expect_early_validation_failure "${out}" "${rc}" "BASE_IMAGE" "${missing_base}" || :
 
-  # Unset: the default build/k8labs-base.qcow2 must still resolve to an
-  # existing file. Skip when a host has baked the default image already.
-  if [[ -f "${REPO_ROOT}/${BASE_IMAGE_DEFAULT}" ]]; then
-    ok "skipping unset BASE_IMAGE case: default image exists at ${REPO_ROOT}/${BASE_IMAGE_DEFAULT}"
-  else
-    rc=0
-    out="$(run_harness \
-      "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
-      "IMAGE=${IMAGE_DEFAULT}" \
-      "FIRMWARE=${base}/firmware.fd" \
-      "STATE_DIR=${base}/state" \
+  rc=0
+  out="$(run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=relative-base.qcow2" \
+    "FIRMWARE=${base}/firmware.fd" \
+    "STATE_DIR=${base}/state" \
     "OUT_DIR=${base}/out")" || rc=$?
-    expect_early_validation_failure "${out}" "${rc}" "BASE_IMAGE" || :
-  fi
+  expect_early_validation_failure "${out}" "${rc}" "BASE_IMAGE" "relative-base.qcow2" || :
+
+  local linked_base="${base}/linked-base.qcow2"
+  ln -s "${base}/base.qcow2" "${linked_base}"
+  rc=0
+  out="$(run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${linked_base}" \
+    "FIRMWARE=${base}/firmware.fd" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
+  expect_early_validation_failure "${out}" "${rc}" "BASE_IMAGE" "${linked_base}" || :
+
+  rc=0
+  out="$(run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "FIRMWARE=${base}/firmware.fd" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
+  expect_early_validation_failure "${out}" "${rc}" "BASE_IMAGE" || :
 }
 
 test_missing_firmware() {
-  log "test: FIRMWARE validation"
+  log "test: FIRMWARE and HYPERVISOR_FIRMWARE_SHA256 validation"
   local base="" out="" rc=0
   base="$(setup_valid_base)" || return 1
 
-  # Explicit path that does not exist.
   local missing_fw="${base}/missing-firmware.fd"
   rc=0
   out="$(run_harness \
@@ -405,20 +434,69 @@ test_missing_firmware() {
     "OUT_DIR=${base}/out")" || rc=$?
   expect_early_validation_failure "${out}" "${rc}" "FIRMWARE" "${missing_fw}" || :
 
-  # Unset: the default build/CLOUDHV.fd must still resolve to an existing
-  # file. Skip when a host has provisioned the default firmware already.
-  if [[ -f "${REPO_ROOT}/${FIRMWARE_DEFAULT}" ]]; then
-    ok "skipping unset FIRMWARE case: default firmware exists at ${REPO_ROOT}/${FIRMWARE_DEFAULT}"
-  else
-    rc=0
-    out="$(run_harness \
-      "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
-      "IMAGE=${IMAGE_DEFAULT}" \
-      "BASE_IMAGE=${base}/base.qcow2" \
-      "STATE_DIR=${base}/state" \
+  rc=0
+  out="$(run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${base}/base.qcow2" \
+    "FIRMWARE=relative-firmware.fd" \
+    "STATE_DIR=${base}/state" \
     "OUT_DIR=${base}/out")" || rc=$?
-    expect_early_validation_failure "${out}" "${rc}" "FIRMWARE" || :
-  fi
+  expect_early_validation_failure "${out}" "${rc}" "FIRMWARE" "relative-firmware.fd" || :
+
+  local linked_fw="${base}/linked-firmware.fd"
+  ln -s "${base}/firmware.fd" "${linked_fw}"
+  rc=0
+  out="$(run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${base}/base.qcow2" \
+    "FIRMWARE=${linked_fw}" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
+  expect_early_validation_failure "${out}" "${rc}" "FIRMWARE" "${linked_fw}" || :
+
+  rc=0
+  out="$(run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${base}/base.qcow2" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
+  expect_early_validation_failure "${out}" "${rc}" "FIRMWARE" || :
+
+  rc=0
+  out="$(run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${base}/base.qcow2" \
+    "FIRMWARE=${base}/firmware.fd" \
+    "HYPERVISOR_FIRMWARE_SHA256=" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
+  expect_early_validation_failure "${out}" "${rc}" "HYPERVISOR_FIRMWARE_SHA256" || :
+
+  rc=0
+  out="$(run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${base}/base.qcow2" \
+    "FIRMWARE=${base}/firmware.fd" \
+    "HYPERVISOR_FIRMWARE_SHA256=not-a-sha256" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
+  expect_early_validation_failure "${out}" "${rc}" "HYPERVISOR_FIRMWARE_SHA256" || :
+
+  rc=0
+  out="$(run_harness \
+    "MANAGEMENT_KUBECONFIG=${base}/kubeconfig" \
+    "IMAGE=${IMAGE_DEFAULT}" \
+    "BASE_IMAGE=${base}/base.qcow2" \
+    "FIRMWARE=${base}/firmware.fd" \
+    "HYPERVISOR_FIRMWARE_SHA256=0000000000000000000000000000000000000000000000000000000000000000" \
+    "STATE_DIR=${base}/state" \
+    "OUT_DIR=${base}/out")" || rc=$?
+  expect_early_validation_failure "${out}" "${rc}" "HYPERVISOR_FIRMWARE_SHA256" "${base}/firmware.fd" || :
 }
 
 test_invalid_state_dir() {
@@ -484,17 +562,17 @@ test_help() {
   fi
 
   local var=""
-  for var in MANAGEMENT_KUBECONFIG IMAGE BASE_IMAGE FIRMWARE STATE_DIR; do
+  for var in MANAGEMENT_KUBECONFIG IMAGE BASE_IMAGE FIRMWARE HYPERVISOR_FIRMWARE_SHA256 STATE_DIR OUT_DIR; do
     contains_var_ref "${out}" "${var}" \
       || missing "harness --help does not document ${var}"
   done
 
   grep -Fq -- "${IMAGE_DEFAULT}" <<< "${out}" \
     || missing "harness --help does not document the IMAGE default ${IMAGE_DEFAULT}"
-  grep -Fq -- "${BASE_IMAGE_DEFAULT}" <<< "${out}" \
-    || missing "harness --help does not document the BASE_IMAGE default ${BASE_IMAGE_DEFAULT}"
-  grep -Fq -- "${FIRMWARE_DEFAULT}" <<< "${out}" \
-    || missing "harness --help does not document the FIRMWARE default ${FIRMWARE_DEFAULT}"
+  grep -Fq -- "Required absolute path to the externally supplied" <<< "${out}" \
+    || missing "harness --help does not describe BASE_IMAGE and FIRMWARE as externally supplied required inputs"
+  grep -Fq -- "Required externally supplied SHA-256 for FIRMWARE" <<< "${out}" \
+    || missing "harness --help does not describe the required independent firmware digest"
   grep -Fq -- "${STATE_DIR_DEFAULT}" <<< "${out}" \
     || missing "harness --help does not document the STATE_DIR default ${STATE_DIR_DEFAULT}"
   grep -Fq -- "${MGMT_BOOTSTRAP_DIR}" <<< "${out}" \
@@ -528,6 +606,7 @@ test_invalid_out_dir() {
   # rm is needed by the harness EXIT cleanup trap so a validation failure
   # keeps its own exit code instead of being masked by 127.
   ln -sf "$(command -v rm)" "${outbin}/rm"
+  ln -sf "$(command -v sha256sum)" "${outbin}/sha256sum"
   printf '#!/usr/bin/env bash\nexit 0\n' > "${outbin}/go"
   chmod +x "${outbin}/go"
 
@@ -622,6 +701,7 @@ test_requires_go() {
   # rm is needed by the harness EXIT cleanup trap so a validation failure
   # keeps its own exit code instead of being masked by 127.
   ln -sf "$(command -v rm)" "${gobin}/rm"
+  ln -sf "$(command -v sha256sum)" "${gobin}/sha256sum"
   for tool in kubectl base64 mktemp; do
     printf '#!/usr/bin/env bash\nexit 0\n' > "${gobin}/${tool}"
     chmod +x "${gobin}/${tool}"

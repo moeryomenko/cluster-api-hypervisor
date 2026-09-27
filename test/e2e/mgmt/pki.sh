@@ -84,6 +84,128 @@ gen_ca() {
   fi
 }
 
+# agent_server_owner — resolve the non-root identity that runs the HostAgent.
+agent_server_owner() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    [[ "${SUDO_UID:-}" =~ ^[1-9][0-9]*$ ]] \
+      || die "pki.sh must run via sudo from the non-root lab user (SUDO_UID is required)"
+    printf '%s\n' "${SUDO_UID}"
+    return 0
+  fi
+  printf '%s\n' "${EUID}"
+}
+
+# gen_agent_pki — generate dedicated HostAgent credentials. Existing complete
+# material is reused; partial material is refused rather than overwritten.
+gen_agent_pki() {
+  local state_dir="$1"
+  local server_owner="$2"
+  local ca_dir="${state_dir}/agent-ca"
+  local server_dir="${state_dir}/agent-server"
+  local client_dir="${state_dir}/agent-client"
+  local ca_cert="${ca_dir}/ca.crt"
+  local ca_key="${ca_dir}/ca.key"
+  local server_cert="${server_dir}/tls.crt"
+  local server_key="${server_dir}/tls.key"
+  local client_cert="${client_dir}/tls.crt"
+  local client_key="${client_dir}/tls.key"
+  local created_server=false
+
+  mkdir -p "${ca_dir}" "${client_dir}"
+  chmod 700 "${client_dir}"
+  if [[ -e "${server_dir}" ]]; then
+    [[ -d "${server_dir}" ]] || die "HostAgent server credential path is not a directory: ${server_dir}"
+    [[ "$(stat -c %u "${server_dir}")" == "${server_owner}" ]] \
+      || die "HostAgent server credential directory is not owned by lab user ${server_owner}: ${server_dir}"
+  else
+    install -d -m 0700 "${server_dir}"
+    if [[ "${EUID}" -eq 0 ]]; then
+      chown "${server_owner}" "${server_dir}"
+    fi
+  fi
+
+  if [[ -e "${ca_cert}" || -e "${ca_key}" ]]; then
+    [[ -f "${ca_cert}" && -f "${ca_key}" ]] || die "incomplete Agent CA material under ${ca_dir}"
+  else
+    log "generating HostAgent CA"
+    gen_key "${ca_key}"
+    openssl req -x509 -new -key "${ca_key}" -subj "/CN=k8labs-hostagent-ca" \
+      -days "${CERT_DAYS}" \
+      -addext "basicConstraints=critical,CA:TRUE" \
+      -addext "keyUsage=critical,keyCertSign,cRLSign" \
+      -out "${ca_cert}"
+  fi
+
+  if [[ -e "${server_cert}" || -e "${server_key}" ]]; then
+    [[ -f "${server_cert}" && -f "${server_key}" ]] || die "incomplete HostAgent server credential under ${server_dir}"
+    [[ "$(stat -c %u "${server_cert}")" == "${server_owner}" && "$(stat -c %u "${server_key}")" == "${server_owner}" ]] \
+      || die "HostAgent server credentials are not owned by lab user ${server_owner}: ${server_dir}"
+  else
+    log "generating HostAgent server identity"
+    gen_key "${server_key}"
+    openssl req -new -key "${server_key}" -subj "/CN=hypervisor-agent" \
+      -addext "subjectAltName=DNS:hypervisor-agent" \
+      -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+      -addext "extendedKeyUsage=serverAuth" -out "${server_dir}/server.csr"
+    openssl x509 -req -in "${server_dir}/server.csr" -CA "${ca_cert}" -CAkey "${ca_key}" \
+      -CAcreateserial -days "${CERT_DAYS}" -copy_extensions copy -out "${server_cert}"
+    rm -f "${server_dir}/server.csr"
+    if [[ "${EUID}" -eq 0 ]]; then
+      chown "${server_owner}" "${server_cert}" "${server_key}"
+    fi
+    created_server=true
+  fi
+
+  if [[ -e "${client_cert}" || -e "${client_key}" ]]; then
+    [[ -f "${client_cert}" && -f "${client_key}" ]] || die "incomplete manager Agent credential under ${client_dir}"
+  else
+    log "generating manager HostAgent client identity"
+    gen_key "${client_key}"
+    openssl req -new -key "${client_key}" -subj "/CN=cluster-api-hypervisor" \
+      -addext "subjectAltName=URI:spiffe://k8labs/provider/manager" \
+      -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+      -addext "extendedKeyUsage=clientAuth" -out "${client_dir}/client.csr"
+    openssl x509 -req -in "${client_dir}/client.csr" -CA "${ca_cert}" -CAkey "${ca_key}" \
+      -CAcreateserial -days "${CERT_DAYS}" -copy_extensions copy -out "${client_cert}"
+    rm -f "${client_dir}/client.csr"
+  fi
+
+  chmod 600 "${ca_key}" "${client_key}"
+  chmod 644 "${ca_cert}" "${client_cert}"
+  if [[ "${created_server}" == true ]]; then
+    chmod 600 "${server_key}"
+    chmod 644 "${server_cert}"
+  fi
+}
+
+# gen_webhook_pki — generate the manager's loopback serving identity signed by
+# the management CA. Existing complete material is reused unchanged.
+gen_webhook_pki() {
+  local state_dir="$1"
+  local webhook_dir="${state_dir}/webhook-certs"
+  local cert="${webhook_dir}/tls.crt"
+  local key="${webhook_dir}/tls.key"
+
+  if [[ -e "${webhook_dir}" ]]; then
+    [[ -d "${webhook_dir}" ]] || die "webhook credential path is not a directory: ${webhook_dir}"
+  else
+    install -d -m 0700 "${webhook_dir}"
+  fi
+
+  if [[ -e "${cert}" || -e "${key}" ]]; then
+    [[ -f "${cert}" && -f "${key}" ]] || die "incomplete webhook serving credential under ${webhook_dir}"
+    return 0
+  fi
+
+  log "generating manager webhook serving identity"
+  gen_key "${key}"
+  sign_cert "${key}" "${webhook_dir}/webhook.csr" "${cert}" "/CN=127.0.0.1" \
+    "subjectAltName=IP:127.0.0.1" \
+    "keyUsage=critical,digitalSignature,keyEncipherment" \
+    "extendedKeyUsage=serverAuth"
+  chmod 644 "${cert}"
+}
+
 # sign_cert <key-file> <csr-file> <cert-file> <subject> [extra-ext...] —
 # sign a CSR with the management CA, copying the requested extensions.
 sign_cert() {
@@ -215,10 +337,14 @@ main() {
   local state_dir="$1"
   PKI_DIR="${state_dir}/pki"
   local kubeconfig_dir="${state_dir}/kubeconfigs"
+  local server_owner=""
 
   mkdir -p "${PKI_DIR}/clients" "${kubeconfig_dir}"
 
+  server_owner="$(agent_server_owner)"
   gen_ca "${PKI_DIR}"
+  gen_agent_pki "${state_dir}" "${server_owner}"
+  gen_webhook_pki "${state_dir}"
   gen_apiserver "${PKI_DIR}"
   gen_service_account "${PKI_DIR}"
 
