@@ -18,9 +18,8 @@ limitations under the License.
 // variables. The quadlet unit that launches the provider passes host-specific
 // paths and network settings as environment variables; this package turns
 // that environment into a single Config value, applying an exact default for
-// every variable that is unset or empty — except
-// HYPERVISOR_SSH_PUBLIC_KEY_FILE, which has no default and stays empty when
-// unset.
+// every variable that is unset or empty — except HYPERVISOR_SSH_PUBLIC_KEY_FILE
+// and HYPERVISOR_FIRMWARE_SHA256, which have no default and stay empty when unset.
 package config
 
 import (
@@ -39,6 +38,9 @@ type Config struct {
 
 	// Firmware is the firmware (OVMF-style) blob passed to the hypervisor.
 	Firmware string
+
+	// FirmwareSHA256 is the operator-supplied SHA-256 for Firmware. It has no default.
+	FirmwareSHA256 string
 
 	// VMDiskDir is the directory holding per-machine VM disks.
 	VMDiskDir string
@@ -102,8 +104,8 @@ func defaultStateDir() string {
 // lookup. A nil env function behaves as if every variable were unset. The
 // lookup is called only with the exact HYPERVISOR_* variable names; an empty
 // result is treated the same as an unset variable and falls back to the
-// default. The single exception is HYPERVISOR_SSH_PUBLIC_KEY_FILE, which has
-// no default and stays empty when unset. Load returns a non-nil error when
+// default. HYPERVISOR_SSH_PUBLIC_KEY_FILE and HYPERVISOR_FIRMWARE_SHA256 have
+// no defaults and stay empty when unset. Load returns a non-nil error when
 // HYPERVISOR_NETWORK_CIDR does not parse as an IPv4 network. No other
 // validation is performed: paths are not required to exist and binaries are
 // not required to be on the host PATH.
@@ -115,6 +117,7 @@ func Load(env func(string) string) (Config, error) {
 	cfg := Config{
 		BaseImage:        valueOrDefault(env("HYPERVISOR_BASE_IMAGE"), defaultBaseImage),
 		Firmware:         valueOrDefault(env("HYPERVISOR_FIRMWARE"), defaultFirmware),
+		FirmwareSHA256:   env("HYPERVISOR_FIRMWARE_SHA256"),
 		VMDiskDir:        valueOrDefault(env("HYPERVISOR_VM_DISKS_DIR"), defaultVMDiskDir),
 		SocketDir:        valueOrDefault(env("HYPERVISOR_SOCKET_DIR"), defaultSocketDir),
 		StateDir:         valueOrDefault(env("HYPERVISOR_STATE_DIR"), defaultStateDir()),

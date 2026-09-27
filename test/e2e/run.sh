@@ -12,10 +12,11 @@
 # workload smoke checks (test/e2e/smoke.sh), tears the workload Cluster down,
 # and verifies the teardown left the host clean while k8netd itself stays up.
 #
-# The script refuses to run unless E2E_LAB_HOST=1 is exported: it drives real
-# KVM virtual machines, a real rootless network daemon, and real passt
-# processes, binds host ports 6443 and 22, and writes daemon state under
-# /run/user/1000/k8snet/. Run it only on the dedicated k8labs host.
+# The script refuses to run unless E2E_LAB_HOST=1 and E2E_PORT_PUBLICATION=1
+# are exported: it drives real KVM virtual machines, a real rootless network
+# daemon, and real passt processes, binds host ports 6443 and 22, deliberately
+# restarts the manager to verify publication replay, and writes daemon state
+# under /run/user/1000/k8snet/. Run it only on the dedicated k8labs host.
 #
 # Environment validation and lab-host prerequisite gates happen before any
 # heavy work: no cluster, VM, or quadlet is started unless every variable and
@@ -25,6 +26,8 @@
 #   E2E_LAB_HOST           lab-host-only guard. Must be exported as 1 or the
 #                          script exits 1 before doing anything (--help is
 #                          exempt). There is no other way to bypass the guard.
+#   E2E_PORT_PUBLICATION   second, explicit real-host guard. Must be exported
+#                          as 1 to exercise published-port replay and release.
 #   SKIP_PREREQS           test-only escape hatch. When exported as 1, the
 #                          lab-host prerequisite gates (P1-P12) are skipped
 #                          after environment validation; the environment
@@ -144,9 +147,12 @@ readonly PROVIDER_UNIT="mgmt-cluster-api-hypervisor"
 readonly HOST_API_PORT=6443
 readonly HOST_SSH_PORT=22
 
-# Lab-host-only guard: the scenario must be explicitly confirmed.
+# Real-host guards: the scenario and durable publication checks must each be
+# explicitly confirmed.
 readonly LAB_HOST_GUARD_VAR="E2E_LAB_HOST"
 readonly LAB_HOST_GUARD_VALUE="1"
+readonly PORT_PUBLICATION_GUARD_VAR="E2E_PORT_PUBLICATION"
+readonly PORT_PUBLICATION_GUARD_VALUE="1"
 
 # The example Cluster (templates/cluster-example.yaml) fixed identity and the
 # topology the ClusterClass generates: 1 control plane + 3 workers.
@@ -206,9 +212,11 @@ into the control-plane guest), runs the workload smoke checks
 (test/e2e/smoke.sh), tears the workload Cluster down, and verifies the host is
 clean afterwards while k8netd stays up.
 
-The script refuses to run unless E2E_LAB_HOST=1 is exported: it drives real
-KVM VMs, k8netd, and passt, and binds host ports 6443 and 22. Run it only on
-the dedicated k8labs host.
+The script refuses to run unless both E2E_LAB_HOST=1 and
+E2E_PORT_PUBLICATION=1 are exported: it drives real KVM VMs, k8netd, and
+passt, binds host ports 6443 and 22, and deliberately restarts the provider to
+verify durable port-publication replay. Run it only on the dedicated k8labs
+host.
 
 Environment validation happens before any heavy work: no cluster, VM, or
 quadlet is started unless every variable below is valid.
@@ -216,6 +224,8 @@ quadlet is started unless every variable below is valid.
 Environment:
 
   E2E_LAB_HOST           lab-host-only guard; must be exported as 1.
+  E2E_PORT_PUBLICATION   explicit published-port replay/release guard; must
+                         also be exported as 1.
   SKIP_PREREQS           test-only escape hatch (harness_test.sh); when
                          exported as 1 the lab-host prerequisite gates
                          (P1-P12) are skipped after environment validation.
@@ -297,6 +307,14 @@ absolute_path() {
 require_lab_host() {
   if [[ "${!LAB_HOST_GUARD_VAR:-}" != "${LAB_HOST_GUARD_VALUE}" ]]; then
     die "refusing to run: ${LAB_HOST_GUARD_VAR} must be exported as ${LAB_HOST_GUARD_VALUE} — this scenario boots real VMs through k8netd and passt and binds host ports ${HOST_API_PORT} and ${HOST_SSH_PORT}; run it only on the dedicated k8labs host (see test/e2e/README.md)"
+  fi
+}
+
+# require_port_publication — require a second explicit acknowledgement before
+# exercising durable host-port publication, manager restart/replay, and release.
+require_port_publication() {
+  if [[ "${!PORT_PUBLICATION_GUARD_VAR:-}" != "${PORT_PUBLICATION_GUARD_VALUE}" ]]; then
+    die "refusing to run: ${PORT_PUBLICATION_GUARD_VAR} must be exported as ${PORT_PUBLICATION_GUARD_VALUE} — this scenario verifies real host-port publication, manager restart/replay, and release on the dedicated k8labs host"
   fi
 }
 
@@ -906,6 +924,21 @@ verify_workload_api() {
   log "all ${EXPECTED_MACHINE_COUNT} workload nodes are Ready"
 }
 
+# verify_publication_replay — restart only the manager and prove the Agent's
+# durable published-port mapping remains reachable before teardown releases it.
+verify_publication_replay() {
+  log "restarting provider manager ${PROVIDER_UNIT} to verify published-port replay"
+  systemctl --user restart "${PROVIDER_UNIT}"
+  wait_for_provider
+  check_provider_journal
+
+  if [[ -z "$(listener_addresses "${HOST_API_PORT}")" ]]; then
+    die "published workload API host port ${HOST_API_PORT} is no longer listening after manager restart"
+  fi
+  verify_workload_api
+  log "published workload API remained reachable after manager restart"
+}
+
 # ssh_guest — run a command inside the control-plane guest over SSH through
 # the passt-forwarded host port 22 (contract REQ-008 forwards host 22 to the
 # control-plane VM's port 22). This is the documented probe mechanism for the
@@ -1131,6 +1164,7 @@ orchestrate() {
   collect_machines
   verify_dataplane
   verify_workload_api
+  verify_publication_replay
   verify_guest_reachability
   run_smoke
   teardown_and_verify
@@ -1146,6 +1180,7 @@ main() {
     esac
   done
   require_lab_host
+  require_port_publication
   trap cleanup EXIT
   validate_environment
   orchestrate

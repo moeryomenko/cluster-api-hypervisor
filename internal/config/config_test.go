@@ -167,27 +167,29 @@ func TestLoadOverrides(t *testing.T) {
 	t.Parallel()
 
 	overrides := map[string]string{
-		"HYPERVISOR_BASE_IMAGE":    "/opt/hypervisor/base.qcow2",
-		"HYPERVISOR_FIRMWARE":      "/opt/hypervisor/firmware.bin",
-		"HYPERVISOR_VM_DISKS_DIR":  "/srv/vm-disks",
-		"HYPERVISOR_SOCKET_DIR":    "/run/ch-capi",
-		"HYPERVISOR_STATE_DIR":     "/var/lib/ch-capi",
-		"HYPERVISOR_CH_BINARY":     "/usr/local/bin/cloud-hypervisor",
-		"HYPERVISOR_QEMU_IMG":      "/usr/bin/qemu-img",
-		"HYPERVISOR_K8NETD_SOCKET": "/run/custom/k8netd.sock",
-		"HYPERVISOR_NETWORK_CIDR":  "10.10.0.0/16",
+		"HYPERVISOR_BASE_IMAGE":      "/opt/hypervisor/base.qcow2",
+		"HYPERVISOR_FIRMWARE":        "/opt/hypervisor/firmware.bin",
+		"HYPERVISOR_FIRMWARE_SHA256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"HYPERVISOR_VM_DISKS_DIR":    "/srv/vm-disks",
+		"HYPERVISOR_SOCKET_DIR":      "/run/ch-capi",
+		"HYPERVISOR_STATE_DIR":       "/var/lib/ch-capi",
+		"HYPERVISOR_CH_BINARY":       "/usr/local/bin/cloud-hypervisor",
+		"HYPERVISOR_QEMU_IMG":        "/usr/bin/qemu-img",
+		"HYPERVISOR_K8NETD_SOCKET":   "/run/custom/k8netd.sock",
+		"HYPERVISOR_NETWORK_CIDR":    "10.10.0.0/16",
 	}
 
 	want := config.Config{
-		BaseImage:    "/opt/hypervisor/base.qcow2",
-		Firmware:     "/opt/hypervisor/firmware.bin",
-		VMDiskDir:    "/srv/vm-disks",
-		SocketDir:    "/run/ch-capi",
-		StateDir:     "/var/lib/ch-capi",
-		CHBinary:     "/usr/local/bin/cloud-hypervisor",
-		QemuImg:      "/usr/bin/qemu-img",
-		K8NetdSocket: "/run/custom/k8netd.sock",
-		NetworkCIDR:  "10.10.0.0/16",
+		BaseImage:      "/opt/hypervisor/base.qcow2",
+		Firmware:       "/opt/hypervisor/firmware.bin",
+		FirmwareSHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		VMDiskDir:      "/srv/vm-disks",
+		SocketDir:      "/run/ch-capi",
+		StateDir:       "/var/lib/ch-capi",
+		CHBinary:       "/usr/local/bin/cloud-hypervisor",
+		QemuImg:        "/usr/bin/qemu-img",
+		K8NetdSocket:   "/run/custom/k8netd.sock",
+		NetworkCIDR:    "10.10.0.0/16",
 	}
 
 	got := loadConfig(t, overrides)

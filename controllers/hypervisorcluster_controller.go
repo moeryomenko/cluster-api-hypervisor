@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/annotations"
@@ -44,6 +45,7 @@ import (
 
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
 	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
 )
 
@@ -77,8 +79,10 @@ type HypervisorClusterReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
-	// K8Netd is the k8netd JSON-RPC client used to create and delete the
-	// per-cluster network. It is injected from main.go via cfg.K8NetdSocket.
+	// Agent performs host networking mutations through the authenticated host boundary.
+	Agent hostagent.HostAgent
+
+	// K8Netd is retained for isolated legacy tests only.
 	K8Netd *k8netd.Client
 }
 
@@ -152,7 +156,16 @@ func (r *HypervisorClusterReconciler) reconcileNormal(
 		network := &hc.Spec.Network
 
 		name := hc.Name
-		if err := r.K8Netd.CreateNetwork(ctx, name, network.CIDR, network.Gateway, defaultPoolStart, defaultPoolEnd); err != nil {
+		mutation := hostMutation(types.UID("agent"), hc.UID, hc.Generation, "network")
+
+		var createErr error
+		if r.Agent != nil {
+			createErr = r.Agent.EnsureNetwork(ctx, mutation, hostagent.NetworkRequest{Name: name, CIDR: network.CIDR})
+		} else {
+			createErr = r.K8Netd.CreateNetwork(ctx, name, network.CIDR, network.Gateway, defaultPoolStart, defaultPoolEnd)
+		}
+
+		if err := createErr; err != nil {
 			if errors.Is(err, k8netd.ErrAlreadyExists) {
 				// Idempotent: network already exists with same params.
 			} else {
@@ -205,8 +218,17 @@ func (r *HypervisorClusterReconciler) reconcileDelete(
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.K8Netd.DeleteNetwork(ctx, hc.Name); err != nil {
-		if errors.Is(err, k8netd.ErrNotFound) {
+	mutation := hostMutation(types.UID("agent"), hc.UID, hc.Generation, "network-delete")
+
+	var deleteErr error
+	if r.Agent != nil {
+		deleteErr = r.Agent.DeleteNetwork(ctx, mutation)
+	} else {
+		deleteErr = r.K8Netd.DeleteNetwork(ctx, hc.Name)
+	}
+
+	if err := deleteErr; err != nil {
+		if errors.Is(err, k8netd.ErrNotFound) || hostagent.IsNotFound(err) {
 			// Idempotent: network already gone.
 		} else {
 			r.Recorder.Eventf(hc, corev1.EventTypeWarning, "FailedTeardown", "failed to delete network %q: %v", hc.Name, err)
@@ -221,6 +243,23 @@ func (r *HypervisorClusterReconciler) reconcileDelete(
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func hostMutation(installationUID, resourceUID types.UID, generation int64, operation string) hostagent.Mutation {
+	if generation == 0 {
+		generation = 1
+	}
+
+	return hostagent.Mutation{
+		ProtocolMajor: hostagent.ProtocolMajor,
+		Owner: hostagent.Owner{
+			InstallationID: string(installationUID),
+			NodeID:         "k8labs-mgmt-control-plane",
+			UID:            string(resourceUID),
+		},
+		Generation:     uint64(generation),
+		IdempotencyKey: string(resourceUID) + "-" + operation + "-" + fmt.Sprint(generation),
+	}
 }
 
 // isInfrastructureReady reports whether the cluster is already marked ready

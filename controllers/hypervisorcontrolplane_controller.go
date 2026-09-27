@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/predicates"
@@ -47,6 +48,7 @@ import (
 	controlplanev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/controlplane/v1alpha1"
 	infrastructurev1alpha1 "github.com/moeryomenko/cluster-api-hypervisor/api/v1alpha1"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
@@ -117,9 +119,9 @@ type HypervisorControlPlaneReconciler struct {
 	// control-plane internal IP reserved through k8netd; it becomes the
 	// apiserver certificate IP SAN.
 	GeneratePKI func(cpIP string) (pki.ClusterPKI, error)
-	// K8Netd is the k8netd JSON-RPC client used to reserve the first
-	// control-plane Machine's IP before the cluster PKI is generated. It is
-	// injected from main.go via cfg.K8NetdSocket.
+	// Agent reserves host networking resources through the authenticated boundary.
+	Agent hostagent.HostAgent
+	// K8Netd is retained for isolated legacy tests only.
 	K8Netd *k8netd.Client
 	// CheckAPIServerHealth polls the workload apiserver healthz endpoint at
 	// https://host:port with the cluster PKI material and returns nil exactly
@@ -411,6 +413,24 @@ func (r *HypervisorControlPlaneReconciler) reserveControlPlaneIP(
 	}
 
 	cp0MAC := mac.Derive(cluster.Name, fmt.Sprintf("%s-%d", cp.Name, 0))
+	if r.Agent != nil {
+		if err := r.Agent.EnsureNetwork(ctx, hostMutation(types.UID("agent"), hc.UID, hc.Generation, "network"), hostagent.NetworkRequest{Name: hc.Name, CIDR: hc.Spec.Network.CIDR}); err != nil {
+			return "", fmt.Errorf("ensure control-plane network %q: %w", hc.Name, err)
+		}
+
+		mutation := hostMutation(types.UID("agent"), cp.UID, cp.Generation, "reserve-control-plane")
+
+		observed, err := r.Agent.EnsurePort(ctx, mutation, hostagent.PortRequest{
+			Name:    fmt.Sprintf("%s-0", cp.Name),
+			Network: hc.Name,
+			MAC:     cp0MAC,
+		})
+		if err != nil {
+			return "", fmt.Errorf("reserve control-plane IP for MAC %q on network %q: %w", cp0MAC, hc.Name, err)
+		}
+
+		return observed.IP, nil
+	}
 
 	ip, err := r.K8Netd.AllocateIP(ctx, hc.Name, cp0MAC)
 	if err != nil {

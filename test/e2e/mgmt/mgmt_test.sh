@@ -27,12 +27,11 @@
 #      context.
 #
 #   2. units/*.quadlet — podman quadlet unit templates for etcd,
-#      kube-apiserver, the CAPI core controller, and the provider. Each file
-#      is a quadlet [Container] unit carrying the key runtime directives:
-#      the etcd data directory, the apiserver client-CA and serving-cert
-#      flags, the core controller kubeconfig, and the provider image and
-#      entrypoint flags from the install contract (Image, Network, Privileged,
-#      AddCapability, Exec, Environment).
+#      kube-apiserver, the CAPI core controller, and the provider. The provider
+#      is manager-only: it uses host networking plus its management kubeconfig,
+#      webhook certificate, and read-only HostAgent mTLS client identity and
+#      CA. It has one Exec= line with the HostAgent connection flags and no
+#      direct host-lifecycle privilege, device, mount, or HYPERVISOR_* setting.
 #
 #   3. core/ — the CAPI core controller manifests pinned to the CAPI 1.13
 #      release series: the core CRDs (the cluster.x-k8s.io kinds plus the
@@ -42,13 +41,13 @@
 #
 #   4. apply.sh / down.sh — lifecycle scripts. apply.sh installs the quadlet
 #      units and applies the core manifests idempotently, and validates its
-#      environment before acting (a missing management state directory is a
-#      clear error). apply.sh also creates every quadlet bind-mount source a
-#      fresh state lacks (at minimum <state>/etcd, /tmp/ch-capi,
-#      /etc/cluster-api-hypervisor/webhook-certs, /var/lib/k8slab/build)
-#      before starting the plane services and resets failed units
-#      (systemctl reset-failed) so a crashed service can be retried. down.sh
-#      stops the quadlets. Both are executable.
+#      environment before acting (a missing management state directory or
+#      independently provisioned HostAgent mTLS material is a clear error).
+#      apply.sh creates only non-sensitive mount sources (<state>/etcd and
+#      /etc/cluster-api-hypervisor/webhook-certs), never fabricates Agent
+#      credentials, and resets failed units (systemctl reset-failed) so a
+#      crashed service can be retried. down.sh stops the quadlets. Both are
+#      executable.
 #
 # The test runs without a live management plane: pki.sh is executed against a
 # scratch state directory and every other assertion checks the committed
@@ -437,21 +436,23 @@ test_quadlet_units() {
         check_contains "${path}" "cluster-api-controller:v1.13." || :
         ;;
       cluster-api-hypervisor.quadlet)
-        # Edge: the provider unit carries the install-contract image and the
-        # key runtime directives (host network, privileges, capabilities,
-        # kubeconfig, provider environment).
+        # Edge: the provider is manager-only and delegates lifecycle work to
+        # the HostAgent through mTLS.
         check_contains "${path}" "Image=localhost/cluster-api-hypervisor:dev" || :
         check_contains "${path}" "Network=host" || :
-        check_contains "${path}" "PodmanArgs=--privileged" || :
-        check_contains "${path}" "AddCapability=NET_ADMIN" || :
-        check_contains "${path}" "--kubeconfig=" || :
-        check_contains "${path}" "Environment=HYPERVISOR_" || :
-        # Edge: after the k8netd migration the unit wires the k8netd control
-        # socket and carries no dnsmasq/nftables host-tool contract.
-        check_contains "${path}" "Environment=HYPERVISOR_K8NETD_SOCKET=" || :
-        check_not_contains "${path}" "DNSMASQ" || :
-        check_not_contains "${path}" "dnsmasq" || :
-        check_not_contains "${path}" "nftables" || :
+        if [[ "$(grep -c '^Exec=' "${path}")" -ne 1 ]]; then
+          missing "provider quadlet must contain exactly one Exec= directive"
+        fi
+        local flag=""
+        for flag in --kubeconfig= --agent-address= --agent-server-name= --agent-client-cert-dir= --agent-ca=; do
+          check_contains "${path}" "${flag}" || :
+        done
+        for mount in "target=/tls/agent-client,ro" "target=/tls/agent-ca/ca.crt,ro"; do
+          check_contains "${path}" "${mount}" || :
+        done
+        for prohibited in "PodmanArgs=--privileged" "AddCapability=NET_ADMIN" "Environment=HYPERVISOR_" "/tmp/ch-capi" "/var/lib/k8slab/build" "k8netd" "/dev/kvm"; do
+          check_not_contains "${path}" "${prohibited}" || :
+        done
         ;;
     esac
   done
@@ -682,31 +683,19 @@ test_apply_order() {
   fi
 }
 
-# test_apply_mount_sources — pin the mount-source preparation and self-heal
-# contract of apply.sh. A fresh management state (pki.sh) has only pki/ and
-# kubeconfigs/, but the quadlet units bind-mount more sources than pki.sh
-# produces:
-#
-#   etcd.quadlet                    <state>/pki (exists), <state>/etcd (missing)
-#   kube-apiserver.quadlet          <state>/pki (exists)
-#   cluster-api-core.quadlet        <state>/kubeconfigs (exists)
-#   cluster-api-hypervisor.quadlet  /var/lib/k8slab/build (missing),
-#                                   /var/lib/k8slab (parent, exists),
-#                                   /tmp/ch-capi (missing),
-#                                   /etc/cluster-api-hypervisor/webhook-certs (missing),
-#                                   <state>/kubeconfigs/cluster-api-hypervisor.conf (exists)
+# test_apply_mount_sources — pin the non-sensitive mount-source preparation
+# and self-heal contract of apply.sh. A fresh management state (pki.sh) has
+# only pki/ and kubeconfigs/. apply.sh creates the missing etcd and webhook
+# source directories before starting services. The HostAgent mTLS client
+# identity and CA are independently provisioned at <state>/agent-client and
+# <state>/agent-ca/ca.crt, respectively; the bootstrap must fail closed when
+# either is absent and must never manufacture credentials or manager-owned
+# host lifecycle paths.
 #
 # A missing source directory makes podman fail (statfs: no such file or
 # directory) and the unit crash-loops into systemd's start-limit-hit, so
-# apply.sh must:
-#
-#   1. create the missing bind-mount sources before starting the plane
-#      services (at minimum <state>/etcd, /tmp/ch-capi,
-#      /etc/cluster-api-hypervisor/webhook-certs, /var/lib/k8slab/build via
-#      mkdir -p) — the etcd data dir creation must precede the first
-#      `systemctl start`;
-#   2. reset failed systemd units (systemctl reset-failed) so a previous
-#      crash-loop (start-limit-hit) does not block a retry.
+# apply.sh must create non-sensitive sources before service startup and reset
+# failed units before retrying them.
 #
 # Everything is asserted statically against apply.sh: no live cluster, no VM,
 # and no quadlet is started.
@@ -732,24 +721,22 @@ test_apply_mount_sources() {
     ok "etcd data dir is created before the management services start (mkdir -p at line ${etcd_mkdir}, systemctl start at line ${first_start})"
   fi
 
-  # Edge: the other quadlet bind-mount sources that pki.sh does not produce
-  # are created with mkdir -p (cloud-hypervisor control sockets, the webhook
-  # serving certificates, and the provider build directory).
-  if has_line_with "${APPLY_SH}" "mkdir -p" "/tmp/ch-capi"; then
-    ok "apply.sh creates the /tmp/ch-capi mount source"
-  else
-    missing "missing mkdir -p /tmp/ch-capi"
-  fi
+  # Edge: the webhook source is non-sensitive and is prepared before start.
   if has_line_with "${APPLY_SH}" "mkdir -p" "/etc/cluster-api-hypervisor/webhook-certs"; then
     ok "apply.sh creates the webhook-certs mount source"
   else
     missing "missing mkdir -p webhook-certs"
   fi
-  if has_line_with "${APPLY_SH}" "mkdir -p" "/var/lib/k8slab/build"; then
-    ok "apply.sh creates the /var/lib/k8slab/build mount source"
-  else
-    missing "missing mkdir -p /var/lib/k8slab/build"
-  fi
+
+  # Edge: HostAgent mTLS material must be supplied independently. The bootstrap
+  # fails closed rather than creating credentials, and never recreates former
+  # manager-owned lifecycle paths.
+  check_contains "${APPLY_SH}" "HostAgent client certificate directory" || :
+  check_contains "${APPLY_SH}" "HostAgent CA certificate" || :
+  local prohibited=""
+  for prohibited in "/tmp/ch-capi" "/var/lib/k8slab/build"; do
+    check_not_contains "${APPLY_SH}" "mkdir -p \"${prohibited}" || :
+  done
 
   # Edge: a previously crashed unit stays blocked by systemd's
   # start-limit-hit until the failure is reset, so apply.sh must reset failed

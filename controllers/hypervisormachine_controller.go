@@ -35,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -320,6 +321,23 @@ func (r *HypervisorMachineReconciler) reconcileDelete(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
 ) (ctrl.Result, error) {
+	if r.Agent != nil {
+		mutation := hostMutation(types.UID("agent"), hm.UID, hm.Generation, "delete-vm")
+
+		mutation.RetainDisk = hm.Spec.RetainDiskOnDelete
+		if err := r.Agent.DeleteVM(ctx, mutation); err != nil && !hostagent.IsNotFound(err) {
+			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to delete VM for %q: %v", hm.Name, err)
+			return ctrl.Result{}, fmt.Errorf("delete VM for %q: %w", hm.Name, err)
+		}
+
+		hm.Finalizers = nil
+		if err := r.Update(ctx, hm); err != nil {
+			return ctrl.Result{}, fmt.Errorf("remove finalizers from HypervisorMachine %q: %w", hm.Name, err)
+		}
+
+		return ctrl.Result{}, nil
+	}
+
 	vm := r.vmClientFor(hm)
 	if err := vm.Shutdown(ctx); err != nil && !errors.Is(err, chclient.ErrNotFound) {
 		r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedTeardown", "failed to shut down VM for %q: %v", hm.Name, err)
@@ -541,19 +559,22 @@ func (r *HypervisorMachineReconciler) reconcileIdentity(
 	network := k8netdNetworkName(hc)
 
 	port := hm.Name
+
 	if r.Agent != nil {
-		mutation := hostagent.Mutation{
-			ProtocolMajor: hostagent.ProtocolMajor,
-			Owner: hostagent.Owner{
-				InstallationID: string(hc.UID),
-				NodeID:         "k8labs-mgmt-control-plane",
-				UID:            string(hm.UID),
-			},
-			Generation:     uint64(hm.Generation),
-			IdempotencyKey: string(hm.UID) + "-port-" + fmt.Sprint(hm.Generation),
+		networkMutation := hostMutation(types.UID("agent"), hc.UID, hc.Generation, "network")
+		if err := r.Agent.EnsureNetwork(ctx, networkMutation, hostagent.NetworkRequest{Name: network, CIDR: hc.Spec.Network.CIDR}); err != nil {
+			return "", fmt.Errorf("agent ensure network %q: %w", network, err)
 		}
 
+		mutation := hostMutation(types.UID("agent"), hm.UID, hm.Generation, "port")
+
 		observed, err := r.Agent.EnsurePort(ctx, mutation, hostagent.PortRequest{Name: port, Network: network, MAC: mac})
+		if err == nil {
+			if err := r.publishControlPlaneEndpoints(ctx, hm, machine, mutation); err != nil {
+				return "", err
+			}
+		}
+
 		if err != nil {
 			return "", fmt.Errorf("agent ensure port %q: %w", port, err)
 		}
@@ -586,7 +607,7 @@ func (r *HypervisorMachineReconciler) reconcileIdentity(
 	// With the port attached, a control-plane machine publishes its endpoints
 	// through k8netd right away; the recorded allocations ride the status
 	// update of recordAddresses below.
-	if err := r.publishControlPlaneEndpoints(ctx, hm, machine); err != nil {
+	if err := r.publishControlPlaneEndpoints(ctx, hm, machine, hostMutation(types.UID("agent"), hm.UID, hm.Generation, "port")); err != nil {
 		return "", err
 	}
 
@@ -623,6 +644,7 @@ func (r *HypervisorMachineReconciler) publishControlPlaneEndpoints(
 	ctx context.Context,
 	hm *infrastructurev1alpha1.HypervisorMachine,
 	machine *clusterv1.Machine,
+	mutation hostagent.Mutation,
 ) error {
 	if !isControlPlaneMachine(machine) {
 		return nil
@@ -633,7 +655,18 @@ func (r *HypervisorMachineReconciler) publishControlPlaneEndpoints(
 			continue
 		}
 
-		hostPort, err := r.K8Netd.PublishPort(ctx, hm.Name, vmPort)
+		var (
+			hostPort int32
+			err      error
+		)
+
+		if r.Agent != nil {
+			published, publishErr := r.Agent.PublishPort(ctx, mutation, uint32(vmPort), 0)
+			hostPort, err = int32(published), publishErr
+		} else {
+			hostPort, err = r.K8Netd.PublishPort(ctx, hm.Name, vmPort)
+		}
+
 		if err != nil {
 			r.Recorder.Eventf(
 				hm,
@@ -1242,6 +1275,7 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 			Name:                  hm.Name,
 			Image:                 hm.Status.Image,
 			Firmware:              r.Config.Firmware,
+			FirmwareSHA256:        r.Config.FirmwareSHA256,
 			APISocket:             filepath.Join(r.Config.SocketDir, hm.Name, "api.sock"),
 			VhostSocket:           chclient.VhostUserSocketPath(hm.Name),
 			Disk:                  artifacts.Paths[0],

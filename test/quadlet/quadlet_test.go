@@ -25,7 +25,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -37,7 +36,6 @@ const (
 	k8netdUnit  = "k8netd.service"
 	capishimPod = "capishim-pod.service"
 
-	labRootDefault      = ".local/state/k8slab"
 	capishimRootDefault = ".local/share/capishim"
 )
 
@@ -190,12 +188,8 @@ func TestUnitArtifactExists(t *testing.T) {
 	}
 }
 
-// TestUnitCoreDirectives covers REQ-007: Image=localhost/..., Network=host,
-// KVM passthrough via PodmanArgs --device /dev/kvm (podman 6.x quadlet has
-// no Device= key), seccomp=unconfined via PodmanArgs (CH v48's internal
-// filter SIGSYS-kills its API thread under container profiles; we disable
-// podman's default profile at the container boundary instead), no privileged
-// mode, no added capabilities.
+// TestUnitCoreDirectives ensures the manager container has no direct
+// host-lifecycle privilege or device access.
 func TestUnitCoreDirectives(t *testing.T) {
 	u := mustLoadUnit(t)
 
@@ -203,54 +197,19 @@ func TestUnitCoreDirectives(t *testing.T) {
 		t.Errorf("[Container] Image = %v, want exactly [localhost/cluster-api-hypervisor:dev]", got)
 	}
 
-	var networkHost bool
+	if got := u.values("Container", "Network"); len(got) != 1 || got[0] != "host" {
+		t.Errorf("[Container] Network = %v, want exactly [host]", got)
+	}
 
-	for _, v := range u.values("Container", "Network") {
-		if v == "host" {
-			networkHost = true
+	for _, value := range u.values("Container", "PodmanArgs") {
+		if strings.Contains(value, "--device") || strings.Contains(value, "--privileged") ||
+			strings.Contains(value, "seccomp=unconfined") {
+			t.Errorf("[Container] PodmanArgs = %q exposes a prohibited host-lifecycle surface", value)
 		}
 	}
 
-	if !networkHost {
-		t.Errorf("[Container] Network = %v, want host among values", u.values("Container", "Network"))
-	}
-
-	var kvmDevice bool
-
-	for _, v := range u.values("Container", "PodmanArgs") {
-		if strings.Contains(v, "--device /dev/kvm") {
-			kvmDevice = true
-		}
-	}
-
-	if !kvmDevice {
-		t.Errorf("[Container] PodmanArgs = %v, want --device /dev/kvm among values", u.values("Container", "PodmanArgs"))
-	}
-
-	var seccompUnconfined bool
-
-	for _, v := range u.values("Container", "PodmanArgs") {
-		if strings.Contains(v, "--security-opt seccomp=unconfined") {
-			seccompUnconfined = true
-		}
-	}
-
-	if !seccompUnconfined {
-		t.Errorf(
-			"[Container] PodmanArgs = %v, want --security-opt seccomp=unconfined among values",
-			u.values("Container", "PodmanArgs"),
-		)
-	}
-
-	for _, v := range u.values("Container", "PodmanArgs") {
-		if strings.Contains(v, "--privileged") {
-			t.Errorf("[Container] PodmanArgs = %q grants privileged mode; REQ-007 forbids it", v)
-		}
-	}
-
-	// Keys are lowercased at parse time, so this catches addcapability= too.
 	if caps := u.values("Container", "AddCapability"); len(caps) != 0 {
-		t.Errorf("[Container] AddCapability = %v; REQ-007 forbids added capabilities", caps)
+		t.Errorf("[Container] AddCapability = %v; manager must not add capabilities", caps)
 	}
 }
 
@@ -278,6 +237,10 @@ func TestUnitSingleExecLine(t *testing.T) {
 		"--hypervisormachine-concurrency=",
 		"--hypervisorconfig-concurrency=",
 		"--hypervisorcontrolplane-concurrency=",
+		"--agent-address=",
+		"--agent-server-name=",
+		"--agent-client-cert-dir=",
+		"--agent-ca=",
 	}
 	for _, flag := range flags {
 		if !strings.Contains(execLines[0], flag) {
@@ -286,28 +249,15 @@ func TestUnitSingleExecLine(t *testing.T) {
 	}
 }
 
-// TestUnitMounts covers REQ-007 mount clauses: lab build dir at /build,
-// k8netd runtime dir and ch socket dir at their absolute host paths, the
-// capishim webhook-cert subtree at --webhook-cert-dir, the capishim
-// hypervisor kubeconfig read-only at --kubeconfig, and the capishim pki
-// subtree read-only at the identical in-container path (the kubeconfig
-// references pki material by absolute host path).
+// TestUnitMounts admits only manager inputs and makes every credential mount
+// read-only. Host lifecycle data belongs exclusively to the HostAgent.
 func TestUnitMounts(t *testing.T) {
 	u := mustLoadUnit(t)
 	mounts := u.mounts()
 
 	findTarget := func(target string) *bindMount {
-		for i, m := range mounts {
-			if m.target == target {
-				return &mounts[i]
-			}
-		}
-
-		return nil
-	}
-	findSourceContaining := func(sub string) *bindMount {
-		for i, m := range mounts {
-			if strings.Contains(m.source, sub) {
+		for i, mount := range mounts {
+			if mount.target == target {
 				return &mounts[i]
 			}
 		}
@@ -315,137 +265,60 @@ func TestUnitMounts(t *testing.T) {
 		return nil
 	}
 
-	build := findTarget("/build")
-	if build == nil {
-		t.Fatalf("no Mount targets /build; want the lab build dir (base image, firmware, vm-disks)")
+	for _, required := range []struct {
+		target string
+		flag   string
+	}{
+		{"/tmp/k8s-webhook-server/serving-certs", "--webhook-cert-dir"},
+		{"/etc/kubernetes/mgmt/hypervisor.kubeconfig", "--kubeconfig"},
+		{"/tls/agent-client", "--agent-client-cert-dir"},
+		{"/tls/agent-ca/ca.crt", "--agent-ca"},
+	} {
+		mount := findTarget(required.target)
+		if mount == nil {
+			t.Errorf("no Mount targets %s", required.target)
+			continue
+		}
+
+		if !mount.readonly {
+			t.Errorf("Mount target %s is not read-only", required.target)
+		}
+
+		if got := u.execFlagValue(required.flag); got != required.target {
+			t.Errorf("%s = %q, want %q", required.flag, got, required.target)
+		}
 	}
 
-	if !strings.HasSuffix(build.source, "/build") {
-		t.Errorf("/build mount source = %q, want the lab build dir path ending in /build", build.source)
-	}
-
-	runtimeDir := "/run/user/1000/k8snet"
-
-	k8netdMount := findTarget(runtimeDir)
-	if k8netdMount == nil {
-		t.Fatalf("no Mount targets %s; want the k8netd runtime dir at its absolute path", runtimeDir)
-	}
-
-	if k8netdMount.source != runtimeDir {
-		t.Errorf("k8netd runtime mount source = %q, want identical paths (%s)", k8netdMount.source, runtimeDir)
-	}
-
-	socketDir := "/tmp/ch-capi"
-
-	chMount := findTarget(socketDir)
-	if chMount == nil {
-		t.Fatalf("no Mount targets %s; want the cloud-hypervisor socket dir at its absolute path", socketDir)
-	}
-
-	if chMount.source != socketDir {
-		t.Errorf("ch socket mount source = %q, want identical paths (%s)", chMount.source, socketDir)
-	}
-
-	webhookCerts := findSourceContaining("webhook-certs/hypervisor")
-	if webhookCerts == nil {
-		t.Fatalf("no Mount sources <capishim-state>/webhook-certs/hypervisor; mounts = %+v", mounts)
-	}
-
-	wantCertTarget := u.execFlagValue("--webhook-cert-dir")
-	if wantCertTarget == "" {
-		t.Fatal("Exec= carries no --webhook-cert-dir; cannot tie the webhook cert mount to its consumer")
-	}
-
-	if webhookCerts.target != wantCertTarget {
-		t.Errorf("webhook cert mount target = %q, want the --webhook-cert-dir value %q", webhookCerts.target, wantCertTarget)
-	}
-
-	kubeconfig := findSourceContaining("kubeconfigs/hypervisor.kubeconfig")
-	if kubeconfig == nil {
-		t.Fatalf("no Mount sources <capishim-state>/kubeconfigs/hypervisor.kubeconfig; mounts = %+v", mounts)
-	}
-
-	if !kubeconfig.readonly {
-		t.Errorf("hypervisor.kubeconfig mount (source %q) is not read-only; REQ-007 requires ro", kubeconfig.source)
-	}
-
-	wantKubeconfigTarget := u.execFlagValue("--kubeconfig")
-	if wantKubeconfigTarget == "" {
-		t.Fatal("Exec= carries no --kubeconfig; cannot tie the kubeconfig mount to its consumer")
-	}
-
-	if kubeconfig.target != wantKubeconfigTarget {
-		t.Errorf("kubeconfig mount target = %q, want the --kubeconfig value %q", kubeconfig.target, wantKubeconfigTarget)
-	}
-
-	pki := findSourceContaining("capishim/pki")
-	if pki == nil {
-		t.Fatalf(
-			"no Mount sources <capishim-state>/pki; the mgmt kubeconfig references PKI material by absolute host path; mounts = %+v",
-			mounts,
-		)
-	}
-
-	if !pki.readonly {
-		t.Errorf("pki mount (source %q) is not read-only; REQ-007 requires ro", pki.source)
-	}
-
-	if pki.source != pki.target {
-		t.Errorf("pki mount source %q != target %q; want the same-path bind mount pattern", pki.source, pki.target)
+	for _, mount := range mounts {
+		for _, prohibited := range []string{"/build", "/state", "/tmp/ch-capi", "/run/user", "/dev/kvm", "k8netd"} {
+			if strings.Contains(mount.source, prohibited) || strings.Contains(mount.target, prohibited) {
+				t.Errorf("Mount %+v exposes prohibited manager host-lifecycle surface %q", mount, prohibited)
+			}
+		}
 	}
 }
 
-// TestUnitEnvironmentSurface covers REQ-007: the Environment block carries
-// the full HYPERVISOR_* surface of docs/install-contract.md section 3.
-func TestUnitEnvironmentSurface(t *testing.T) {
+func TestUnitHasNoDirectLifecycleEnvironment(t *testing.T) {
 	u := mustLoadUnit(t)
-
-	env := map[string]string{}
-
 	for _, line := range u.values("Container", "Environment") {
-		if key, value, ok := strings.Cut(line, "="); ok {
-			env[key] = value
-		}
-	}
-
-	surface := []string{
-		"HYPERVISOR_BASE_IMAGE",
-		"HYPERVISOR_FIRMWARE",
-		"HYPERVISOR_VM_DISKS_DIR",
-		"HYPERVISOR_SOCKET_DIR",
-		"HYPERVISOR_STATE_DIR",
-		"HYPERVISOR_CH_BINARY",
-		"HYPERVISOR_QEMU_IMG",
-		"HYPERVISOR_K8NETD_SOCKET",
-		"HYPERVISOR_NETWORK_CIDR",
-	}
-	for _, key := range surface {
-		value, ok := env[key]
-		switch {
-		case !ok:
-			t.Errorf("Environment missing %s; the HYPERVISOR_* surface must be explicit", key)
-		case strings.TrimSpace(value) == "":
-			t.Errorf("Environment %s is empty; every HYPERVISOR_* value must be stated", key)
+		key, _, _ := strings.Cut(line, "=")
+		if strings.HasPrefix(key, "HYPERVISOR_") {
+			t.Errorf("Environment %q exposes direct host-lifecycle configuration", key)
 		}
 	}
 }
 
-// TestUnitOrderingAndRestart covers REQ-007 ordering clauses: After=/Wants=
-// on k8netd.service and the capishim pod unit, Restart=always, and the
-// disabled start rate limit ([Unit]; current systemd ignores these keys
-// under [Service]) that lets the provider outlive long capishim setup
-// windows.
 func TestUnitOrderingAndRestart(t *testing.T) {
 	u := mustLoadUnit(t)
 
 	for _, directive := range []string{"After", "Wants"} {
-		values := u.values("Unit", directive)
+		joined := strings.Join(u.values("Unit", directive), " ")
+		if !strings.Contains(joined, capishimPod) {
+			t.Errorf("[Unit] %s must include %s", directive, capishimPod)
+		}
 
-		joined := strings.Join(values, " ")
-		for _, unit := range []string{k8netdUnit, capishimPod} {
-			if !strings.Contains(joined, unit) {
-				t.Errorf("[Unit] %s = %v, want %s included", directive, values, unit)
-			}
+		if strings.Contains(joined, k8netdUnit) {
+			t.Errorf("[Unit] %s must not depend on %s", directive, k8netdUnit)
 		}
 	}
 
@@ -454,48 +327,36 @@ func TestUnitOrderingAndRestart(t *testing.T) {
 	}
 
 	if got := u.values("Unit", "StartLimitIntervalSec"); len(got) == 0 || got[0] != "0" {
-		t.Errorf("[Unit] StartLimitIntervalSec = %v, want 0 (rate limiting disabled)", got)
+		t.Errorf("[Unit] StartLimitIntervalSec = %v, want 0", got)
 	}
 
 	if got := u.values("Unit", "StartLimitBurst"); len(got) == 0 || got[0] != "0" {
-		t.Errorf("[Unit] StartLimitBurst = %v, want 0 (rate limiting disabled)", got)
+		t.Errorf("[Unit] StartLimitBurst = %v, want 0", got)
 	}
 }
 
-// TestUnitHeaderPathVariables covers REQ-007: the two host-path roots (lab
-// build/state root and capishim state root) are documented in the unit
-// header comments, with defaults matching the k8labs layout.
-func TestUnitHeaderPathVariables(t *testing.T) {
+func TestUnitHeaderDocumentsManagerInputs(t *testing.T) {
 	u := mustLoadUnit(t)
-
 	if len(u.headerComments) == 0 {
-		t.Fatalf("%s has no header comments; the two path roots must be documented there", unitRelPath)
+		t.Fatalf("%s has no header comments", unitRelPath)
 	}
 
-	// A documented variable looks like NAME=<default> or prose naming the
-	// default; both must state the k8labs-layout default path.
-	varAssign := regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*\s*[=:]\s*\S*`)
-	documented := func(defaultPath string) bool {
-		for _, comment := range u.headerComments {
-			lower := strings.ToLower(comment)
-			if !strings.Contains(lower, defaultPath) {
-				continue
-			}
-
-			if strings.Contains(lower, "default") || varAssign.MatchString(comment) {
-				return true
-			}
+	header := strings.ToLower(strings.Join(u.headerComments, "\n"))
+	for _, required := range []string{
+		capishimRootDefault,
+		"hostagent",
+		"mTLS",
+		"do not add host kvm",
+	} {
+		if !strings.Contains(header, strings.ToLower(required)) {
+			t.Errorf("header comments must document %q", required)
 		}
-
-		return false
 	}
 
-	if !documented(labRootDefault) {
-		t.Errorf("header comments do not document the lab build/state root variable with its %s default", labRootDefault)
-	}
-
-	if !documented(capishimRootDefault) {
-		t.Errorf("header comments do not document the capishim state root variable with its %s default", capishimRootDefault)
+	for _, prohibited := range []string{"k8netd", "cloud hypervisor", "artifact", "state mounts"} {
+		if !strings.Contains(header, prohibited) {
+			t.Errorf("header comments must prohibit direct %s access", prohibited)
+		}
 	}
 }
 

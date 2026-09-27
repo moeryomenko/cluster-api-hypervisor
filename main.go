@@ -65,7 +65,7 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confexttree"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/etcdsnap"
-	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
 	providerwebhook "github.com/moeryomenko/cluster-api-hypervisor/internal/webhook"
@@ -361,19 +361,25 @@ func addHealthChecks(mgr ctrl.Manager) error {
 	return nil
 }
 
-// setupControllers constructs the four controllers with their host-side and
-// PKI seams and registers them with the manager, each running at the
-// concurrency of its flag. The HypervisorCluster controller owns the cluster
-// network via k8netd; the HypervisorMachine controller drives one
-// cloud-hypervisor VM per machine via k8netd ports; the HypervisorConfig
-// controller renders the role-split bootstrap confext trees into the
-// conventional data Secret; and the HypervisorControlPlane controller manages
-// the control-plane Machine set and polls the workload apiserver for
-// readiness.
+// setupControllers constructs the controllers with their authenticated host
+// boundary and PKI seams and registers them with the manager. Direct host
+// lifecycle clients are intentionally not composed here; they remain test-only
+// seams on the reconcilers.
 func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
-	var agent *agentgrpc.Client
+	var (
+		agent      hostagent.HostAgent
+		connection *agentgrpc.Client
+	)
 
-	if agentAddress != "" {
+	if agentAddress == "" || agentClientCertDir == "" || agentCAFile == "" {
+		if os.Getenv("K8LABS_TEST_MODE") != "1" {
+			return fmt.Errorf(
+				"HostAgent configuration is required: agent-address, agent-client-cert-dir, and agent-ca must be set",
+			)
+		}
+
+		agent = &hostagent.Fake{}
+	} else {
 		certificate, err := tls.LoadX509KeyPair(agentClientCertDir+"/tls.crt", agentClientCertDir+"/tls.key")
 		if err != nil {
 			return fmt.Errorf("load agent client certificate: %w", err)
@@ -389,9 +395,16 @@ func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
 			return fmt.Errorf("parse agent CA")
 		}
 
-		agent, err = agentgrpc.Dial(context.Background(), agentAddress, agentServerName, certificate, roots)
+		connection, err = agentgrpc.Dial(context.Background(), agentAddress, agentServerName, certificate, roots)
 		if err != nil {
 			return err
+		}
+
+		agent = connection
+
+		if _, err := agent.Health(context.Background()); err != nil {
+			_ = connection.Close()
+			return fmt.Errorf("check HostAgent health: %w", err)
 		}
 	}
 
@@ -399,7 +412,7 @@ func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("hypervisorcluster-controller"),
-		K8Netd:   k8netd.NewClient(cfg.K8NetdSocket),
+		Agent:    agent,
 	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: hypervisorClusterConcurrency}); err != nil {
 		return fmt.Errorf("unable to set up HypervisorCluster controller: %w", err)
 	}
@@ -410,7 +423,6 @@ func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
 		Recorder: mgr.GetEventRecorderFor("hypervisormachine-controller"),
 		Config:   cfg,
 		Agent:    agent,
-		K8Netd:   k8netd.NewClient(cfg.K8NetdSocket),
 		QemuImg: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, name, args...).CombinedOutput()
 		},
@@ -460,7 +472,7 @@ func setupControllers(mgr ctrl.Manager, cfg config.Config) error {
 		},
 		CheckAPIServerHealth: checkAPIServerHealth,
 		SeedClusterAdmin:     seedClusterAdmin,
-		K8Netd:               k8netd.NewClient(cfg.K8NetdSocket),
+		Agent:                agent,
 		Config:               cfg,
 		CaptureEtcdSnapshot:  etcdsnap.Capture,
 	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: hypervisorControlPlaneConcurrency}); err != nil {

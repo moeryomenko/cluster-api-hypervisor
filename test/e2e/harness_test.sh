@@ -67,14 +67,14 @@
 #   9. --help and -h — exit 0 and document every variable above, its default,
 #      and the management-plane bootstrap fallback (test/e2e/mgmt).
 #
-#  10. Lab-host guard and prerequisite skip. run.sh refuses to run unless
-#      E2E_LAB_HOST=1 is exported, and its lab-host prerequisite gates
-#      (P1-P12) cannot pass on a non-lab host (gate P1 checks /dev/kvm
-#      directly, which no PATH stub can satisfy). Every scenario therefore
-#      runs the harness with E2E_LAB_HOST=1 (like a real operator) plus
-#      SKIP_PREREQS=1, the documented test-only escape hatch in run.sh that
-#      skips the gates after environment validation; the environment contract
-#      itself is still enforced in full.
+#  10. Real-host guards and prerequisite skip. run.sh refuses to run unless
+#      E2E_LAB_HOST=1 and E2E_PORT_PUBLICATION=1 are exported, and its
+#      lab-host prerequisite gates (P1-P12) cannot pass on a non-lab host
+#      (gate P1 checks /dev/kvm directly, which no PATH stub can satisfy).
+#      Every scenario therefore supplies both guards (like a real operator)
+#      plus SKIP_PREREQS=1, the documented test-only escape hatch in run.sh
+#      that skips the gates after environment validation; the environment
+#      contract itself is still enforced in full.
 #
 #  11. GUEST_SSH_KEY — the guest-probe key must name an existing file. The
 #      scenarios get a fixture key from run_harness unless they pass their
@@ -171,11 +171,11 @@ run_harness() {
       harness_args+=("${arg}")
     fi
   done
-  # The lab-host guard must be satisfied like a real operator would, and the
-  # prerequisite gates are skipped via the documented test-only escape hatch
-  # (run.sh SKIP_PREREQS): gate P1 checks /dev/kvm directly and cannot be
-  # satisfied by PATH stubs on a non-lab host.
-  harness_env+=("E2E_LAB_HOST=1" "SKIP_PREREQS=1")
+  # Both real-host guards must be satisfied like a real operator would, and
+  # the prerequisite gates are skipped via the documented test-only escape
+  # hatch (run.sh SKIP_PREREQS): gate P1 checks /dev/kvm directly and cannot
+  # be satisfied by PATH stubs on a non-lab host.
+  harness_env+=("E2E_LAB_HOST=1" "E2E_PORT_PUBLICATION=1" "SKIP_PREREQS=1")
   # A valid guest SSH key for every scenario unless one is passed explicitly.
   local has_ssh_key=""
   for arg in "${harness_env[@]}"; do
@@ -653,7 +653,8 @@ test_apply_templates_flow() {
   #     1-control-plane + 3-worker machine inventory with reserved IPs, and
   #     delete cluster (flips the stub lab into the torn-down state),
   #   - pgrep prints the pinned passt PIDs until teardown empties them,
-  #   - ss reports no host listeners, ssh/systemctl/journalctl succeed.
+  #   - ss reports the published API listener until teardown releases it,
+  #     while ssh/systemctl/journalctl succeed.
   local stubbin="${SCRATCH}/apply-stub-bin"
   local calls="${SCRATCH}/apply-go-calls.txt"
   local kube_calls="${SCRATCH}/apply-kubectl-calls.txt"
@@ -794,8 +795,11 @@ exit 0
 STUB
   cat > "${stubbin}/ss" <<'STUB'
 #!/usr/bin/env bash
-# ss stub: the stubbed lab never binds host ports; header line only.
-printf 'Netid State Recv-Q Send-Q Local-Address:Port Peer-Address:Port\n'
+# ss stub: model the Agent's durable API publication until cluster teardown.
+printf 'State Recv-Q Send-Q Local Address:Port Peer Address:Port\n'
+if [[ ! -f "${STUB_TEARDOWN_FLAG:-/nonexistent}" ]]; then
+  printf 'LISTEN 0 4096 127.0.0.1:6443 0.0.0.0:*\n'
+fi
 STUB
   cat > "${stubbin}/ssh" <<'STUB'
 #!/usr/bin/env bash

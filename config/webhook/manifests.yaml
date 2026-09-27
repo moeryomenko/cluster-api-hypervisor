@@ -3,15 +3,13 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
   name: mutating-webhook-configuration
-  annotations:
-    cert-manager.io/inject-ca-from: hypervisor-system/hypervisor-webhook-serving
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
       name: webhook-service
-      namespace: hypervisor-system
+      namespace: system
       path: /mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisorcluster
   failurePolicy: Fail
   name: mhypervisorcluster.kb.io
@@ -31,7 +29,7 @@ webhooks:
   clientConfig:
     service:
       name: webhook-service
-      namespace: hypervisor-system
+      namespace: system
       path: /mutate-bootstrap-cluster-x-k8s-io-v1alpha1-hypervisorconfig
   failurePolicy: Fail
   name: mhypervisorconfig.kb.io
@@ -51,7 +49,7 @@ webhooks:
   clientConfig:
     service:
       name: webhook-service
-      namespace: hypervisor-system
+      namespace: system
       path: /mutate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorcontrolplane
   failurePolicy: Fail
   name: mhypervisorcontrolplane.kb.io
@@ -71,7 +69,7 @@ webhooks:
   clientConfig:
     service:
       name: webhook-service
-      namespace: hypervisor-system
+      namespace: system
       path: /mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachine
   failurePolicy: Fail
   name: mhypervisormachine.kb.io
@@ -91,7 +89,7 @@ webhooks:
   clientConfig:
     service:
       name: webhook-service
-      namespace: hypervisor-system
+      namespace: system
       path: /mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachinetemplate
   failurePolicy: Fail
   name: mhypervisormachinetemplate.kb.io
@@ -111,7 +109,7 @@ webhooks:
   clientConfig:
     service:
       name: webhook-service
-      namespace: hypervisor-system
+      namespace: system
       path: /mutate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorupgradeplan
   failurePolicy: Fail
   name: mhypervisorupgradeplan.kb.io
@@ -131,15 +129,13 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: validating-webhook-configuration
-  annotations:
-    cert-manager.io/inject-ca-from: hypervisor-system/hypervisor-webhook-serving
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
       name: webhook-service
-      namespace: hypervisor-system
+      namespace: system
       path: /validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisorcluster
   failurePolicy: Fail
   name: vhypervisorcluster.kb.io
@@ -159,7 +155,7 @@ webhooks:
   clientConfig:
     service:
       name: webhook-service
-      namespace: hypervisor-system
+      namespace: system
       path: /validate-bootstrap-cluster-x-k8s-io-v1alpha1-hypervisorconfig
   failurePolicy: Fail
   name: vhypervisorconfig.kb.io
@@ -179,7 +175,7 @@ webhooks:
   clientConfig:
     service:
       name: webhook-service
-      namespace: hypervisor-system
+      namespace: system
       path: /validate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorcontrolplane
   failurePolicy: Fail
   name: vhypervisorcontrolplane.kb.io
@@ -199,7 +195,7 @@ webhooks:
   clientConfig:
     service:
       name: webhook-service
-      namespace: hypervisor-system
+      namespace: system
       path: /validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachine
   failurePolicy: Fail
   name: vhypervisormachine.kb.io
@@ -219,7 +215,7 @@ webhooks:
   clientConfig:
     service:
       name: webhook-service
-      namespace: hypervisor-system
+      namespace: system
       path: /validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachinetemplate
   failurePolicy: Fail
   name: vhypervisormachinetemplate.kb.io
@@ -239,7 +235,7 @@ webhooks:
   clientConfig:
     service:
       name: webhook-service
-      namespace: hypervisor-system
+      namespace: system
       path: /validate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorupgradeplan
   failurePolicy: Fail
   name: vhypervisorupgradeplan.kb.io

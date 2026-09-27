@@ -131,6 +131,8 @@ func startManager(t *testing.T, args ...string) *runningManager {
 		cmd:    exec.Command(buildManagerBinary(t), args...),
 		exited: make(chan struct{}),
 	}
+
+	mgr.cmd.Env = append(os.Environ(), "K8LABS_TEST_MODE=1")
 	mgr.cmd.Stdout = &mgr.stdout
 
 	mgr.cmd.Stderr = &mgr.stderr

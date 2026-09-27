@@ -20,12 +20,13 @@
 # has created the core CRDs and the provider CRDs/webhooks.
 #
 # Mount sources and self-heal: a fresh management state (pki.sh) contains only
-# pki/ and kubeconfigs/, but the quadlet units bind-mount more: <state>/etcd
-# (etcd data), /tmp/ch-capi (cloud-hypervisor control sockets), the webhook
-# serving certificates, and the provider build directory. apply.sh creates
-# every such source with mkdir -p before any service starts, and resets failed
-# units (systemctl reset-failed) before each start so a previous crash-loop
-# (start-limit-hit) does not block a retry.
+# pki/ and kubeconfigs/. apply.sh creates the non-sensitive etcd and webhook
+# mount sources before services start. The HostAgent mTLS client identity and
+# trust root are provisioned independently at <state>/agent-client and
+# <state>/agent-ca/ca.crt; this script fails closed when they are absent and
+# never creates credentials. It resets failed units (systemctl reset-failed)
+# before each start so a previous crash-loop (start-limit-hit) does not block a
+# retry.
 #
 # Environment:
 #   MGMT_STATE_DIR   state directory with pki/ and kubeconfigs/ (required)
@@ -126,6 +127,12 @@ require_file() {
   [[ -f "${path}" ]] || die "state directory incomplete: missing ${what} at ${path}"
 }
 
+require_dir() {
+  local path="$1"
+  local what="$2"
+  [[ -d "${path}" ]] || die "state directory incomplete: missing ${what} at ${path}"
+}
+
 # validate_out_dir <dir> — the provider release layout (the three v0.1.0
 # provider directories) must exist under <dir> before clusterctl init.
 validate_out_dir() {
@@ -166,12 +173,16 @@ main() {
   local pki_dir="${MGMT_STATE_DIR}/pki"
   local kubeconfig_dir="${MGMT_STATE_DIR}/kubeconfigs"
   local admin_kubeconfig="${kubeconfig_dir}/admin.conf"
+  local agent_client_dir="${MGMT_STATE_DIR}/agent-client"
+  local agent_ca="${MGMT_STATE_DIR}/agent-ca/ca.crt"
   local out_dir="${OUT_DIR:-${DEFAULT_OUT_DIR}}"
 
   # Validate the state directory before acting.
   require_file "${pki_dir}/ca.pem" "management CA"
   require_file "${pki_dir}/apiserver.pem" "apiserver certificate"
   require_file "${admin_kubeconfig}" "admin kubeconfig"
+  require_dir "${agent_client_dir}" "HostAgent client certificate directory"
+  require_file "${agent_ca}" "HostAgent CA certificate"
 
   # Validate the environment before acting.
   require_cmd kubectl
@@ -183,13 +194,10 @@ main() {
   [[ -d "${UNITS_DIR}" ]] || die "quadlet units directory missing: ${UNITS_DIR}"
   [[ -d "${CORE_DIR}" ]] || die "core manifests directory missing: ${CORE_DIR}"
 
-  # 1. Prepare the quadlet bind-mount sources: a fresh management state holds
-  #    only pki/ and kubeconfigs/ (from pki.sh), but the quadlet units bind
-  #    <state>/etcd, /tmp/ch-capi (cloud-hypervisor control sockets), the
-  #    webhook serving certificates, and the provider build directory too. A
-  #    missing source makes podman fail with "statfs: no such file or
-  #    directory" and the unit crash-loops, so create every source first.
-  mkdir -p "${MGMT_STATE_DIR}/etcd" /tmp/ch-capi /etc/cluster-api-hypervisor/webhook-certs /var/lib/k8slab/build
+  # 1. Prepare non-sensitive bind-mount sources. HostAgent mTLS sources were
+  #    validated above and must be provisioned by the installation, never
+  #    manufactured by this bootstrap.
+  mkdir -p "${MGMT_STATE_DIR}/etcd" /etc/cluster-api-hypervisor/webhook-certs
 
   # 2. Install the quadlet units with the actual state directory rendered in.
   #    Podman quadlet generates one systemd service per .container file.
