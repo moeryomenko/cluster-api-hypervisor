@@ -155,6 +155,16 @@ func testExecutor(t *testing.T) (*Executor, *fakeSystemd, *inventory.Store) {
 	}, systemdClient, store
 }
 
+func TestHealthRequiresNodeID(t *testing.T) {
+	executor, _, _ := testExecutor(t)
+	executor.NodeID = ""
+
+	_, err := executor.Health(context.Background())
+	if !errors.Is(err, hostagent.ErrUnavailable) {
+		t.Fatalf("Health() error = %v, want unavailable", err)
+	}
+}
+
 func testVMExecutor(t *testing.T) (*Executor, hostagent.VMDesired, <-chan string) {
 	t.Helper()
 

@@ -33,6 +33,7 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(caPEM) {
 		fatal(fmt.Errorf("parse HostAgent CA: no certificate found"))
@@ -46,6 +47,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
 	if _, err := client.Health(ctx); err != nil {
 		fatal(err)
 	}

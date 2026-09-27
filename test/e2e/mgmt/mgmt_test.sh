@@ -553,12 +553,15 @@ test_quadlet_units() {
         check_contains "${path}" "User=__HOST_UID__" || :
         check_contains "${path}" "Entrypoint=/usr/local/bin/hypervisor-agent" || :
         check_contains "${path}" "AddDevice=/dev/kvm" || :
+        if [[ "$(grep -c '^Exec=' "${path}")" -ne 1 ]]; then
+          missing "HostAgent quadlet must contain exactly one Exec= directive"
+        fi
         local mount=""
         for mount in "target=/state" "target=/host-state,ro" "target=/tls/server,ro" "target=/tls/ca/ca.crt,ro" "target=/run/user/__HOST_UID__/bus" "target=/run/user/__HOST_UID__/k8snet/control.sock" "target=/host-user-systemd"; do
           check_contains "${path}" "${mount}" || :
         done
         local flag=""
-        for flag in --listen=127.0.0.1:9444 --inventory=/state/inventory.db --user-dbus-address=unix:path=/run/user/__HOST_UID__/bus --kvm=/dev/kvm --k8netd-socket=/run/user/__HOST_UID__/k8snet/control.sock --artifact-root=/state/vms --base-image-root=/host-state/images --firmware-root=/host-state/firmware --artifact-manifest=/host-state/manifest.json --unit-dir=/host-user-systemd; do
+        for flag in --listen=127.0.0.1:9444 --node-id=k8labs-mgmt-control-plane --inventory=/state/inventory.db --user-dbus-address=unix:path=/run/user/__HOST_UID__/bus --kvm=/dev/kvm --k8netd-socket=/run/user/__HOST_UID__/k8snet/control.sock --artifact-root=/state/vms --base-image-root=/host-state/images --firmware-root=/host-state/firmware --artifact-manifest=/host-state/manifest.json --unit-dir=/host-user-systemd; do
           check_contains "${path}" "${flag}" || :
         done
         ;;
@@ -583,7 +586,7 @@ test_quadlet_units() {
           check_contains "${path}" "${mount}" || :
         done
         check_not_contains "${path}" "/etc/cluster-api-hypervisor/webhook-certs" || :
-        for prohibited in "PodmanArgs=--privileged" "AddCapability=NET_ADMIN" "Environment=HYPERVISOR_" "/tmp/ch-capi" "/var/lib/k8slab/build" "k8netd" "/dev/kvm" "source=/var/lib/k8slab/mgmt/agent-server" "target=/tls/server" "agent-artifacts" "agent-state" "/run/user/" "host-user-systemd" "AddDevice=" "Entrypoint=/usr/local/bin/hypervisor-agent"; do
+        for prohibited in "PodmanArgs=--privileged" "AddCapability=NET_ADMIN" "Environment=HYPERVISOR_" "/tmp/ch-capi" "/var/lib/k8slab/build" "k8netd" "/dev/kvm" "source=/var/lib/k8slab/mgmt/agent-server" "target=/tls/server" "agent-artifacts" "agent-state" "/run/user/" "host-user-systemd" "AddDevice=" "Entrypoint=/usr/local/bin/hypervisor-agent" "--node-id="; do
           check_not_contains "${path}" "${prohibited}" || :
         done
         ;;
@@ -667,35 +670,34 @@ test_apply_scripts() {
   fi
 }
 
-# test_apply_rewire — pin the clusterctl rewire contract that apply.sh does
-# not implement yet (these assertions are red until the flow lands):
+# test_apply_rewire — pin the implemented bare-plane clusterctl installation
+# contract:
 #
-#   1. validation additionally requires `go` (require_cmd go) so clusterctl
-#      can be driven through `go tool clusterctl`;
-#   2. apply.sh renders <state>/clusterctl/cluster-api/clusterctl.yaml from
-#      the committed template with OUT_DIR substituted (OUT_DIR env, default
-#      <repo>/out); the template pins the rendered-file contract: three
-#      provider entries (infrastructure-, bootstrap-, control-plane-hypervisor)
-#      and a top-level overridesFolder key (clusterctl resolves overridesFolder
-#      with the flat viper key, so it must not live under variables:);
+#   1. validation requires `go` so clusterctl can be driven through
+#      `go tool clusterctl`;
+#   2. apply.sh renders committed `config/e2e` into the state-local provider
+#      repository, preserving matching persisted files and refusing divergent
+#      ones; it renders <state>/clusterctl/cluster-api/clusterctl.yaml from the
+#      committed template with OUT_DIR substituted (OUT_DIR env, default
+#      <repo>/out). The template carries the three provider entries
+#      (infrastructure-, bootstrap-, control-plane-hypervisor) and a top-level
+#      overridesFolder key (clusterctl resolves it with the flat viper key);
 #   3. apply.sh assembles the CAPI core override at
 #      <state>/clusterctl/overrides/cluster-api/v1.13.5/core-components.yaml
-#      from the committed core/ sources and copies core/metadata.yaml
-#      alongside;
-#   4. apply.sh invokes `go tool clusterctl init` with XDG_CONFIG_HOME
-#      pointing at <state>/clusterctl and exactly the hypervisor provider
-#      flag set;
-#   5. apply.sh patches the management CA bundle (ca.pem) into the admission
-#      webhook configurations via kubectl patch;
-#   6. the quadlet install/start steps stay unchanged (the existing
-#      kubectl apply / systemctl daemon-reload checks keep guarding them);
-#      the new steps are idempotent by construction (clusterctl init
-#      converges, kubectl patch of an identical caBundle is a no-op).
+#      from committed core/ sources and copies core/metadata.yaml alongside;
+#   4. apply.sh invokes `go tool clusterctl init --skip-cert-manager` with
+#      XDG_CONFIG_HOME pointing at <state>/clusterctl and the hypervisor
+#      provider flags;
+#   5. apply.sh patches the management CA bundle (ca.pem) into both E2E
+#      admission webhook configurations via kubectl patch;
+#   6. the quadlet install/start steps remain guarded by the existing kubectl
+#      apply and systemctl daemon-reload assertions. The state staging,
+#      clusterctl init, and identical caBundle patch are idempotent.
 #
-# Everything is asserted statically against apply.sh and the committed
-# template: no live cluster, no VM, and no quadlet is started.
+# Everything is asserted statically against apply.sh and committed rendering
+# inputs: no live cluster, VM, or quadlet is started.
 test_apply_rewire() {
-  log "test: apply.sh clusterctl rewire contract (pending)"
+  log "test: apply.sh bare-plane clusterctl installation contract"
   if [[ ! -f "${APPLY_SH}" ]]; then
     return 1
   fi
