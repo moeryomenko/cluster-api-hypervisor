@@ -41,6 +41,7 @@ set -Eeuo pipefail
 
 readonly DEFAULT_IMAGE="cluster-api-hypervisor:dev"
 readonly ENTRYPOINT_BIN="/usr/local/bin/cluster-api-hypervisor"
+readonly AGENT_BIN="/usr/local/bin/hypervisor-agent"
 readonly REQUIRED_TOOLS="cloud-hypervisor qemu-img mksquashfs mkdosfs mcopy"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -125,6 +126,16 @@ check_entrypoint_binary() {
   return 1
 }
 
+check_agent_binary() {
+  local image="$1"
+  if podman run --rm --entrypoint test "$image" -x "${AGENT_BIN}" >/dev/null 2>&1; then
+    log "ok: HostAgent binary is present and executable at ${AGENT_BIN}"
+    return 0
+  fi
+  log "missing: HostAgent binary not found or not executable at ${AGENT_BIN}"
+  return 1
+}
+
 check_entrypoint_config() {
   local image="$1"
   local entrypoint=""
@@ -198,6 +209,7 @@ main() {
   log "checking image '${image}'"
   require_image_built "$image"
   check_entrypoint_binary "$image" || problems=$((problems + 1))
+  check_agent_binary "$image" || problems=$((problems + 1))
   check_entrypoint_config "$image" || problems=$((problems + 1))
   # The tool list is a fixed contract constant; word-splitting is intentional.
   # shellcheck disable=SC2086

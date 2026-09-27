@@ -32,8 +32,9 @@ RUN go mod download
 
 COPY . .
 
-# The provider binary is static (no cgo) and runs on musl.
-RUN CGO_ENABLED=0 go build -trimpath -o /out/cluster-api-hypervisor .
+# The manager and HostAgent binaries are static (no cgo) and run on musl.
+RUN CGO_ENABLED=0 go build -trimpath -o /out/cluster-api-hypervisor . \
+    && CGO_ENABLED=0 go build -trimpath -o /out/hypervisor-agent ./cmd/agent
 
 FROM alpine:edge@sha256:266f29255458134745f2bf588cb23ed1ed1768b96ff2580a05d70a8aba59e145 AS runtime
 
@@ -65,6 +66,7 @@ RUN apk add --no-cache \
     && (setcap -r /usr/bin/cloud-hypervisor || true)
 
 COPY --from=builder /out/cluster-api-hypervisor /usr/local/bin/cluster-api-hypervisor
+COPY --from=builder /out/hypervisor-agent /usr/local/bin/hypervisor-agent
 
 RUN adduser -D -H -u 65532 manager
 
