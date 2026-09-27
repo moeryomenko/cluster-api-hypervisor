@@ -50,6 +50,8 @@ type Executor struct {
 	KVMPath         string
 	UnitDir         string
 	FirmwareRoot    string
+	BaseImageRoot   string
+	Manifest        *artifact.Manifest
 }
 
 var _ hostagent.HostAgent = (*Executor)(nil)
@@ -86,6 +88,11 @@ func (e *Executor) EnsureVM(
 ) (hostagent.VMObserved, error) {
 	if err := mutation.Validate(); err != nil {
 		return hostagent.VMObserved{}, err
+	}
+
+	if e.Manifest != nil {
+		desired.Firmware = e.Manifest.Firmware.Path
+		desired.FirmwareSHA256 = e.Manifest.Firmware.SHA256
 	}
 
 	if e.Systemd == nil || e.Store == nil || e.UnitDir == "" || e.CloudHypervisor == "" || e.FirmwareRoot == "" {
@@ -723,6 +730,15 @@ func (e *Executor) PrepareRootDisk(
 ) (hostagent.ArtifactResult, error) {
 	if err := mutation.Validate(); err != nil {
 		return hostagent.ArtifactResult{}, err
+	}
+
+	if e.Manifest != nil {
+		image, err := e.Manifest.Image(request.SourceImage)
+		if err != nil {
+			return hostagent.ArtifactResult{}, err
+		}
+
+		request.SourceImage = image.Path
 	}
 
 	operation, err := e.begin(mutation, "PrepareRootDisk")

@@ -36,7 +36,9 @@ func main() {
 		k8netdSocket         string
 		cloudHypervisorPath  string
 		artifactRoot         string
+		baseImageRoot        string
 		firmwareRoot         string
+		artifactManifest     string
 		unitDir              string
 	)
 
@@ -49,7 +51,14 @@ func main() {
 	flag.StringVar(&kvmPath, "kvm", "/dev/kvm", "KVM device path")
 	flag.StringVar(&k8netdSocket, "k8netd-socket", "/run/user/1000/k8snet/control.sock", "k8netd control socket")
 	flag.StringVar(&artifactRoot, "artifact-root", "/host-state/vms", "owned VM artifact root")
-	flag.StringVar(&firmwareRoot, "firmware-root", "/host-state", "owned firmware root")
+	flag.StringVar(&baseImageRoot, "base-image-root", "/host-state/images", "owned immutable base image root")
+	flag.StringVar(&firmwareRoot, "firmware-root", "/host-state/firmware", "owned immutable firmware root")
+	flag.StringVar(
+		&artifactManifest,
+		"artifact-manifest",
+		"/host-state/manifest.json",
+		"owned immutable artifact manifest",
+	)
 	flag.StringVar(&unitDir, "unit-dir", "/home/eryoma/.config/systemd/user", "persistent user systemd unit directory")
 	flag.StringVar(
 		&cloudHypervisorPath,
@@ -58,6 +67,11 @@ func main() {
 		"Cloud Hypervisor executable path",
 	)
 	flag.Parse()
+
+	manifest, err := artifact.LoadManifest(artifactManifest, baseImageRoot, firmwareRoot)
+	if err != nil {
+		fatalf("load artifact manifest: %v", err)
+	}
 
 	store, err := inventory.Open(inventoryPath)
 	if err != nil {
@@ -88,6 +102,8 @@ func main() {
 		KVMPath:         kvmPath,
 		UnitDir:         unitDir,
 		FirmwareRoot:    firmwareRoot,
+		BaseImageRoot:   baseImageRoot,
+		Manifest:        &manifest,
 	}
 
 	certificate, err := tls.LoadX509KeyPair(

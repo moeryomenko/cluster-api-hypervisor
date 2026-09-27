@@ -3,6 +3,7 @@ package artifact
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,6 +42,10 @@ func (b Builder) Verify(paths, checksums []string) error {
 // VerifyOwnedFile verifies a regular file under root against an externally supplied SHA-256.
 func VerifyOwnedFile(root, path, checksum string) error {
 	if !filepath.IsAbs(path) || len(checksum) != sha256.Size*2 {
+		return fmt.Errorf("invalid artifact path or checksum: %q", path)
+	}
+
+	if _, err := hex.DecodeString(checksum); err != nil {
 		return fmt.Errorf("invalid artifact path or checksum: %q", path)
 	}
 
