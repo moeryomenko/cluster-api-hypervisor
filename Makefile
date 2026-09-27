@@ -135,7 +135,7 @@ release-gate: ## Run the immutable local release and image gate
 	tmp=$$(mktemp -d); \
 	trap 'rm -rf "$$tmp"' EXIT; \
 	go mod verify; \
-	(cd "$(ROOT_DIR)/tools" && go mod verify); \
+	(cd "$(ROOT_DIR)/tools" && go mod verify && go mod download); \
 	$(MAKE) provenance-check; \
 	$(MAKE) prepare; \
 	$(MAKE) proto-check; \
