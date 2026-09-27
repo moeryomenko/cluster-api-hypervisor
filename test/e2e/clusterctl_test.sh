@@ -25,23 +25,14 @@
 #      release ships one shared object set in all three provider folders.
 #
 #   3. Each components file is a well-formed multi-document YAML stream whose
-#      object inventory is exactly: the five CRDs (hypervisorclusters,
-#      hypervisormachines, and hypervisormachinetemplates under
-#      infrastructure.cluster.x-k8s.io; hypervisorconfigs under
-#      bootstrap.cluster.x-k8s.io; hypervisorcontrolplanes under
-#      controlplane.cluster.x-k8s.io), the Namespace hypervisor-system, one
-#      ServiceAccount, one ClusterRole named manager-role (its rules covering
-#      bootstrap.cluster.x-k8s.io, cluster.x-k8s.io,
-#      controlplane.cluster.x-k8s.io, infrastructure.cluster.x-k8s.io, and the
-#      core "" group's secrets), one ClusterRoleBinding, one
-#      MutatingWebhookConfiguration and one ValidatingWebhookConfiguration
-#      with five webhooks each, and nothing else — in particular no Deployment
-#      and no Service.
+#      production inventory contains nine provider CRDs, the Namespace
+#      hypervisor-system, RBAC, three Services, a PersistentVolumeClaim, the
+#      manager Deployment, the HostAgent DaemonSet, cert-manager Issuers and
+#      Certificates, and both webhook configurations with six webhooks each.
 #
-#   4. Every webhook clientConfig addresses the provider webhook server
-#      directly: url: https://127.0.0.1:9443/<path> for each of the ten paths
-#      from config/webhook/manifests.yaml, and no clientConfig carries a
-#      service: reference.
+#   4. Production webhook clientConfigs route through webhook-service for each
+#      of the twelve paths from config/webhook/manifests.yaml. The dedicated
+#      config/e2e overlay—not the release artifact—routes webhooks to loopback.
 #
 #   5. The objects carry the clusterctl labels
 #      cluster.x-k8s.io/provider: infrastructure-hypervisor and
@@ -82,18 +73,22 @@ metadata.yaml
 cluster-template.yaml
 "
 
-# The five CRDs the components files must define, one per document.
+# The nine CRDs the production release must define, one per document.
 # shellcheck disable=SC2086
 readonly REQUIRED_CRDS="
 hypervisorclusters.infrastructure.cluster.x-k8s.io
+hypervisorclustertemplates.infrastructure.cluster.x-k8s.io
 hypervisormachines.infrastructure.cluster.x-k8s.io
 hypervisormachinetemplates.infrastructure.cluster.x-k8s.io
 hypervisorconfigs.bootstrap.cluster.x-k8s.io
+hypervisorconfigtemplates.bootstrap.cluster.x-k8s.io
 hypervisorcontrolplanes.controlplane.cluster.x-k8s.io
+hypervisorcontrolplanetemplates.controlplane.cluster.x-k8s.io
+hypervisorupgradeplans.controlplane.cluster.x-k8s.io
 "
 
-# The ten webhook paths from config/webhook/manifests.yaml that the emitted
-# clientConfigs must expose at url: https://127.0.0.1:9443/<path>.
+# The twelve webhook paths from config/webhook/manifests.yaml that the
+# production clientConfigs route through webhook-service.
 # shellcheck disable=SC2086
 readonly WEBHOOK_PATHS="
 /mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisorcluster
@@ -101,19 +96,21 @@ readonly WEBHOOK_PATHS="
 /mutate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorcontrolplane
 /mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachine
 /mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachinetemplate
+/mutate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorupgradeplan
 /validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisorcluster
 /validate-bootstrap-cluster-x-k8s-io-v1alpha1-hypervisorconfig
 /validate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorcontrolplane
 /validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachine
 /validate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachinetemplate
+/validate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorupgradeplan
 "
 
-# The direct webhook server address every clientConfig must use.
-readonly WEBHOOK_SERVER="https://127.0.0.1:9443"
+# The production webhook service used by every clientConfig.
+readonly WEBHOOK_SERVICE="webhook-service"
 
-# The object inventory of every components file: eleven documents in a
-# multi-document stream, so at least ten ^--- separators.
-readonly MIN_DOCUMENTS=11
+# The object inventory of every components file: twenty-seven documents in a
+# multi-document stream, so at least twenty-six ^--- separators.
+readonly MIN_DOCUMENTS=27
 
 problems=0
 SCRATCH=""
@@ -209,8 +206,8 @@ check_object_count() {
 }
 
 # check_multidoc <file> — the file is a well-formed multi-document YAML stream:
-# at least ten ^--- separators (eleven objects) and no empty document between
-# separators. A trailing separator is tolerated.
+# at least twenty-six ^--- separators (twenty-seven objects) and no empty
+# document between separators. A trailing separator is tolerated.
 check_multidoc() {
   local file="$1"
   local seps=""
@@ -261,8 +258,8 @@ check_clusterrole() {
   [[ "${ok}" -eq 1 ]]
 }
 
-# check_components_structure <file> — the components file holds exactly the
-# eleven-object inventory of the provider release contract.
+# check_components_structure <file> — the components file holds the
+# twenty-seven-object production inventory of the provider release contract.
 check_components_structure() {
   local file="$1"
   local crd="" total=0
@@ -270,28 +267,27 @@ check_components_structure() {
   check_multidoc "${file}" || :
   check_contains "${file}" "name: hypervisor-system" || :
 
-  # Exactly the five required CRDs, one per document.
+  # Exactly the nine production CRDs, one per document.
   # shellcheck disable=SC2086
   for crd in ${REQUIRED_CRDS}; do
     check_contains "${file}" "name: ${crd}" || :
   done
-  check_object_count "${file}" CustomResourceDefinition 5 || :
+  check_object_count "${file}" CustomResourceDefinition 9 || :
 
-  # The exact object inventory: Namespace, ServiceAccount, ClusterRole,
-  # ClusterRoleBinding, and the two webhook configurations, each once.
+  # The shared production inventory.
   check_object_count "${file}" Namespace 1 || :
   check_object_count "${file}" ServiceAccount 1 || :
   check_object_count "${file}" ClusterRole 1 || :
   check_object_count "${file}" ClusterRoleBinding 1 || :
+  check_object_count "${file}" Service 3 || :
+  check_object_count "${file}" PersistentVolumeClaim 1 || :
+  check_object_count "${file}" Deployment 1 || :
+  check_object_count "${file}" DaemonSet 1 || :
+  check_object_count "${file}" Certificate 4 || :
+  check_object_count "${file}" Issuer 2 || :
   check_object_count "${file}" MutatingWebhookConfiguration 1 || :
   check_object_count "${file}" ValidatingWebhookConfiguration 1 || :
 
-  # No Deployment and no Service are part of the release artifacts.
-  check_object_count "${file}" Deployment 0 || :
-  check_object_count "${file}" Service 0 || :
-
-  # The total top-level kind count must match the eleven-object inventory
-  # exactly.
   total="$(count_regex "${file}" '^kind:')"
   if [[ "${total}" -ne "${MIN_DOCUMENTS}" ]]; then
     missing "${file} contains ${total} top-level objects; expected exactly ${MIN_DOCUMENTS}"
@@ -300,10 +296,8 @@ check_components_structure() {
   check_clusterrole "${file}" || :
 }
 
-# check_webhooks <file> — the mutating and validating webhook configurations
-# each carry exactly five webhooks, every clientConfig uses the direct
-# url: https://127.0.0.1:9443/<path> form, and no clientConfig references a
-# service.
+# check_webhooks <file> — the production mutating and validating webhook
+# configurations each carry six webhooks, routed through webhook-service.
 check_webhooks() {
   local file="$1"
   local mdoc="" vdoc="" count="" path="" ok=1
@@ -314,48 +308,44 @@ check_webhooks() {
     return 1
   fi
 
-  # Five mutating and five validating webhooks, identified by their pinned
-  # mhypervisor*/vhypervisor* name prefixes.
   count="$(grep -c '^  name: mhypervisor' <<< "${mdoc}" || true)"
-  if [[ "${count}" -ne 5 ]]; then
-    missing "${file} mutating webhooks: found ${count} 'mhypervisor*' name entries; expected exactly 5"
+  if [[ "${count}" -ne 6 ]]; then
+    missing "${file} mutating webhooks: found ${count} 'mhypervisor*' name entries; expected exactly 6"
     ok=0
   fi
   count="$(grep -c '^  name: vhypervisor' <<< "${vdoc}" || true)"
-  if [[ "${count}" -ne 5 ]]; then
-    missing "${file} validating webhooks: found ${count} 'vhypervisor*' name entries; expected exactly 5"
+  if [[ "${count}" -ne 6 ]]; then
+    missing "${file} validating webhooks: found ${count} 'vhypervisor*' name entries; expected exactly 6"
     ok=0
   fi
 
-  # Every clientConfig must address the webhook server directly.
-  count="$(grep -cF -- "url: ${WEBHOOK_SERVER}/" <<< "${mdoc}" || true)"
-  if [[ "${count}" -ne 5 ]]; then
-    missing "${file} mutating clientConfigs: found ${count} 'url: ${WEBHOOK_SERVER}/' entries; expected exactly 5"
+  count="$(grep -cF -- "name: ${WEBHOOK_SERVICE}" <<< "${mdoc}" || true)"
+  if [[ "${count}" -ne 6 ]]; then
+    missing "${file} mutating clientConfigs: found ${count} webhook-service references; expected exactly 6"
     ok=0
   fi
-  count="$(grep -cF -- "url: ${WEBHOOK_SERVER}/" <<< "${vdoc}" || true)"
-  if [[ "${count}" -ne 5 ]]; then
-    missing "${file} validating clientConfigs: found ${count} 'url: ${WEBHOOK_SERVER}/' entries; expected exactly 5"
+  count="$(grep -cF -- "name: ${WEBHOOK_SERVICE}" <<< "${vdoc}" || true)"
+  if [[ "${count}" -ne 6 ]]; then
+    missing "${file} validating clientConfigs: found ${count} webhook-service references; expected exactly 6"
     ok=0
   fi
 
-  # No clientConfig may fall back to a Service reference.
-  count="$(grep -cF -- 'service:' <<< "${mdoc}" || true)"
+  count="$(grep -cF -- 'url:' <<< "${mdoc}" || true)"
   if [[ "${count}" -ne 0 ]]; then
-    missing "${file} mutating clientConfigs carry a 'service:' key (${count} occurrence(s)); expected url-only clientConfigs"
+    missing "${file} mutating clientConfigs carry a url; expected Service routing"
     ok=0
   fi
-  count="$(grep -cF -- 'service:' <<< "${vdoc}" || true)"
+  count="$(grep -cF -- 'url:' <<< "${vdoc}" || true)"
   if [[ "${count}" -ne 0 ]]; then
-    missing "${file} validating clientConfigs carry a 'service:' key (${count} occurrence(s)); expected url-only clientConfigs"
+    missing "${file} validating clientConfigs carry a url; expected Service routing"
     ok=0
   fi
 
-  # The ten expected paths from config/webhook/manifests.yaml.
+  # The twelve expected paths from config/webhook/manifests.yaml.
   # shellcheck disable=SC2086
   for path in ${WEBHOOK_PATHS}; do
-    if ! grep -Fq -- "url: ${WEBHOOK_SERVER}${path}" "${file}"; then
-      missing "${file} webhook clientConfig does not expose ${WEBHOOK_SERVER}${path}"
+    if ! grep -Fq -- "path: ${path}" "${file}"; then
+      missing "${file} webhook clientConfig does not expose ${path}"
       ok=0
     fi
   done

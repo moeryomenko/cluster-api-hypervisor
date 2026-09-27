@@ -1,0 +1,29 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutating-webhook-configuration
+webhooks:
+- name: mhypervisorcluster.kb.io
+  clientConfig:
+    $patch: replace
+    url: https://127.0.0.1:9443/mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisorcluster
+- name: mhypervisorconfig.kb.io
+  clientConfig:
+    $patch: replace
+    url: https://127.0.0.1:9443/mutate-bootstrap-cluster-x-k8s-io-v1alpha1-hypervisorconfig
+- name: mhypervisorcontrolplane.kb.io
+  clientConfig:
+    $patch: replace
+    url: https://127.0.0.1:9443/mutate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorcontrolplane
+- name: mhypervisormachine.kb.io
+  clientConfig:
+    $patch: replace
+    url: https://127.0.0.1:9443/mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachine
+- name: mhypervisormachinetemplate.kb.io
+  clientConfig:
+    $patch: replace
+    url: https://127.0.0.1:9443/mutate-infrastructure-cluster-x-k8s-io-v1alpha1-hypervisormachinetemplate
+- name: mhypervisorupgradeplan.kb.io
+  clientConfig:
+    $patch: replace
+    url: https://127.0.0.1:9443/mutate-controlplane-cluster-x-k8s-io-v1alpha1-hypervisorupgradeplan
