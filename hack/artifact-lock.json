@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "architecture": "x86_64",
+  "cache": ".cache/artifacts",
+  "output": "build/locked",
+  "base_images": {
+    "builder": "golang:1.26-alpine@sha256:1a9c10cf505a9e6b1e96ea77ebdbfe79a0f10380181faf88bc3b51d7e4315fae",
+    "runtime": "alpine:edge@sha256:266f29255458134745f2bf588cb23ed1ed1768b96ff2580a05d70a8aba59e145"
+  },
+  "artifacts": [
+    {
+      "name": "containerfile",
+      "kind": "provenance",
+      "source": "Containerfile",
+      "output": "provenance/Containerfile",
+      "sha256": "22117a4b2d1827f0d7fce39fc4f4d4f5d9f9379c6d6dead451fd829c60413105"
+    },
+    {
+      "name": "containerfile-agent",
+      "kind": "provenance",
+      "source": "Containerfile.agent",
+      "output": "provenance/Containerfile.agent",
+      "sha256": "1939683d39c2c216e4f2791992fbe89662c2a687ca9f53ea2f5b49c7b48b7a31"
+    },
+    {
+      "name": "versions",
+      "kind": "provenance",
+      "source": "VERSIONS.md",
+      "output": "provenance/VERSIONS.md",
+      "sha256": "d25747b32be9364187faf799e29c311927c5b2e4c02fcee6111c913b3fa888b3"
+    }
+  ]
+}

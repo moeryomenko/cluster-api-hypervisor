@@ -4,6 +4,8 @@
 .agent/
 bin/
 /out/
+.cache/
+build/locked/
 coverage.out
 *.sock
 

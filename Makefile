@@ -17,6 +17,10 @@ ENVTEST_K8S_VERSION ?= 1.35.0
 # must stay in sync with the releaseSeries in metadata.yaml.
 OUT_DIR ?= out
 RELEASE_VERSION ?= v0.1.0
+# RELEASE_IMAGE is deliberately local: release-gate verifies an image without
+# registry credentials or a push.
+RELEASE_IMAGE ?= localhost/$(NAME):release-gate
+ROOT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
 # ENVTEST_ASSETS resolves the envtest binary directory used by the test
 # targets. A pre-set KUBEBUILDER_ASSETS wins; otherwise setup-envtest returns
@@ -72,14 +76,14 @@ proto: ## Regenerate checked-in HostAgent protobuf and gRPC bindings
 	@protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative api/agent/v1/agent.proto
 
 .PHONY: proto-check
-proto-check: ## Fail if regenerating HostAgent bindings changes their current content
+proto-check: ## Fail if regenerating HostAgent bindings would change their current content
 	@set -e; \
 	tmp=$$(mktemp -d); \
 	trap 'rm -rf "$$tmp"' EXIT; \
-	cp api/agent/v1/agent.pb.go api/agent/v1/agent_grpc.pb.go "$$tmp"; \
-	$(MAKE) proto; \
-	cmp -s "$$tmp/agent.pb.go" api/agent/v1/agent.pb.go; \
-	cmp -s "$$tmp/agent_grpc.pb.go" api/agent/v1/agent_grpc.pb.go
+	cd "$(ROOT_DIR)"; \
+	protoc --go_out="$$tmp" --go_opt=paths=source_relative --go-grpc_out="$$tmp" --go-grpc_opt=paths=source_relative api/agent/v1/agent.proto; \
+	cmp -s "$$tmp/api/agent/v1/agent.pb.go" api/agent/v1/agent.pb.go; \
+	cmp -s "$$tmp/api/agent/v1/agent_grpc.pb.go" api/agent/v1/agent_grpc.pb.go
 
 .PHONY: generate
 generate: ## Run controller-gen codegen (deepcopy, CRDs, RBAC, webhook manifests)
@@ -90,10 +94,17 @@ generate: ## Run controller-gen codegen (deepcopy, CRDs, RBAC, webhook manifests
 		output:webhook:artifacts:config=config/webhook
 
 .PHONY: generate-check
-generate-check: ## Fail if a second generate changes tracked files
-	@$(MAKE) generate
-	@$(MAKE) generate
-	@git diff --no-ext-diff --exit-code
+generate-check: ## Fail if generation would change generated files
+	@set -e; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	for path in Makefile go.mod go.sum go.work go.work.sum tools api config controllers internal hack; do \
+		cp -a "$(ROOT_DIR)/$$path" "$$tmp/$$path"; \
+	done; \
+	$(MAKE) -C "$$tmp" generate; \
+	diff -ru "$(ROOT_DIR)/api" "$$tmp/api"; \
+	diff -ru "$(ROOT_DIR)/config" "$$tmp/config"
+
 
 .PHONY: components
 components: ## Build the clusterctl provider release tree under OUT_DIR
@@ -118,12 +129,47 @@ components-check: ## Fail if a second make components changes the release tree
 	$(MAKE) components OUT_DIR="$$tmp"; \
 	diff -r "$$tmp" "$(OUT_DIR)"
 
+.PHONY: release-gate
+release-gate: ## Run the immutable local release and image gate
+	@set -e; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	go mod verify; \
+	(cd "$(ROOT_DIR)/tools" && go mod verify); \
+	$(MAKE) provenance-check; \
+	$(MAKE) prepare-check; \
+	$(MAKE) proto-check; \
+	$(MAKE) vet; \
+	$(MAKE) test COVER_FILE="$$tmp/coverage.out"; \
+	$(MAKE) generate-check; \
+	$(MAKE) components OUT_DIR="$$tmp/components-first"; \
+	$(MAKE) components OUT_DIR="$$tmp/components-second"; \
+	diff -ru "$$tmp/components-first" "$$tmp/components-second"; \
+	$(MAKE) image IMAGE="$(RELEASE_IMAGE)"; \
+	IMAGE="$(RELEASE_IMAGE)" "$(ROOT_DIR)/test/image_contract.sh"
+
 .PHONY: envtest
 envtest: ## Run the envtest suite (controllers CRD contract + helpers) against the pinned k8s binaries
 	@KUBEBUILDER_ASSETS="$(ENVTEST_ASSETS)" go tool gotestsum --format-hide-empty-pkg -f testname -- $(RACE_DETECTOR) -count $(COUNT) ./controllers/... ./test/helpers/... -timeout=15m
 
+.PHONY: prepare
+prepare: ## Materialize digest-locked artifacts and write a byte inventory
+	@python3 hack/prepare_artifacts.py prepare
+
+.PHONY: provenance-check
+provenance-check: ## Verify immutable container and release provenance
+	@python3 hack/check_provenance.py
+
+.PHONY: prepare-check
+prepare-check: provenance-check ## Verify every prepared artifact byte, checksum, and inventory entry
+	@python3 hack/prepare_artifacts.py check
+
+.PHONY: offline-recreate
+offline-recreate: ## Recreate the locked artifact tree without network access
+	@python3 hack/prepare_artifacts.py offline-recreate
+
 .PHONY: image
-image: ## Build the provider container image with podman
+image: prepare-check ## Build the provider container image with podman
 	@podman build -t $(IMAGE) -f Containerfile .
 
 .PHONY: install-quadlet
