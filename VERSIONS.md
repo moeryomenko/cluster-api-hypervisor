@@ -16,6 +16,9 @@ the source of truth listed in the table — keep them in sync when bumping.
 | clusterctl (sigs.k8s.io/cluster-api/cmd/clusterctl) | v1.13.5 | `tools/go.mod:295` (tool directive at `tools/go.mod:11`) |
 | kustomize (sigs.k8s.io/kustomize/kustomize/v5) | v5.8.1 | `tools/go.mod:302` (tool directive at `tools/go.mod:14`) |
 | envtest k8s binaries | 1.35.0 | `Makefile:11` (`ENVTEST_K8S_VERSION`) |
+| protoc | 36.1 | `.github/workflows/push-images.yml:14` (`PROTOC_VERSION`) |
+| protoc-gen-go | v1.36.12 | `.github/workflows/push-images.yml:15` (`PROTOC_GEN_GO_VERSION`) |
+| protoc-gen-go-grpc | v1.6.2 | `.github/workflows/push-images.yml:16` (`PROTOC_GEN_GO_GRPC_VERSION`) |
 | cloud-hypervisor | 48.0-r0 | `Containerfile:40` (`CLOUD_HYPERVISOR_VERSION`) |
 | qemu-img | 11.1.1-r0 | `Containerfile:44` (`QEMU_IMG_VERSION`) |
 | squashfs-tools | 4.7.5-r0 | `Containerfile:45` (`SQUASHFS_TOOLS_VERSION`) |
@@ -30,3 +33,4 @@ Source files:
 - `tools/go.mod` — Go `tool` directives and tool module pins.
 - `Makefile` — envtest Kubernetes binary version for the test suite.
 - `Containerfile` — Alpine package pins for the runtime image tools.
+- `.github/workflows/push-images.yml` — protobuf compiler and Go plugin pins for the release gate.

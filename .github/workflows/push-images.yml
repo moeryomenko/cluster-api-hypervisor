@@ -11,6 +11,9 @@ on:
 env:
   GHCR_OWNER: moeryomenko
   IMAGE_BASE: cluster-api-hypervisor
+  PROTOC_VERSION: 36.1
+  PROTOC_GEN_GO_VERSION: v1.36.12
+  PROTOC_GEN_GO_GRPC_VERSION: v1.6.2
 
 jobs:
   push:
@@ -32,6 +35,18 @@ jobs:
           else
             echo "tag=commit-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: ${{ env.PROTOC_VERSION }}
+
+      - name: Install protoc Go plugins
+        run: |
+          bin="${RUNNER_TEMP}/protoc-bin"
+          GOBIN="$bin" go install google.golang.org/protobuf/cmd/protoc-gen-go@"${PROTOC_GEN_GO_VERSION}"
+          GOBIN="$bin" go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@"${PROTOC_GEN_GO_GRPC_VERSION}"
+          echo "$bin" >> "$GITHUB_PATH"
 
       - name: Run local release gate
         run: make release-gate RELEASE_IMAGE="localhost/${IMAGE_BASE}:dev"
