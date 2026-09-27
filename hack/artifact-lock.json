@@ -13,7 +13,7 @@
       "kind": "provenance",
       "source": "Containerfile",
       "output": "provenance/Containerfile",
-      "sha256": "22117a4b2d1827f0d7fce39fc4f4d4f5d9f9379c6d6dead451fd829c60413105"
+      "sha256": "642548edbf89bfc423c3552bfb37d62aadffcd0a85c9b351b25d059d8b579b85"
     },
     {
       "name": "containerfile-agent",

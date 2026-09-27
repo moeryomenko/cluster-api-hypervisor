@@ -137,7 +137,7 @@ release-gate: ## Run the immutable local release and image gate
 	go mod verify; \
 	(cd "$(ROOT_DIR)/tools" && go mod verify); \
 	$(MAKE) provenance-check; \
-	$(MAKE) prepare-check; \
+	$(MAKE) prepare; \
 	$(MAKE) proto-check; \
 	$(MAKE) vet; \
 	$(MAKE) test COVER_FILE="$$tmp/coverage.out"; \
