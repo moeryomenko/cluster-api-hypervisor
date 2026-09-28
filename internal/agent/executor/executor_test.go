@@ -330,6 +330,116 @@ func TestEnsureNetworkAndPortUseTypedK8netdAdapter(t *testing.T) {
 	}
 }
 
+func TestEnsurePortReplaysPersistedResourceWithoutNetworkMutation(t *testing.T) {
+	executor, _, store := testExecutor(t)
+	network := &fakeNetwork{}
+	executor.Network = network
+	m := mutation()
+
+	resource := inventory.NetworkResource{
+		InstallationID: m.Owner.InstallationID,
+		OwnerUID:       m.Owner.UID,
+		NodeID:         m.Owner.NodeID,
+		Network:        "network-a",
+		Port:           "port-a",
+		MAC:            "02:00:00:00:00:01",
+		IP:             "192.168.124.10",
+	}
+	if err := store.UpsertNetworkResource(resource); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := executor.EnsurePort(context.Background(), m, hostagent.PortRequest{
+		Name: resource.Port, Network: resource.Network, MAC: resource.MAC,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.Name != resource.Port || got.Network != resource.Network || got.MAC != resource.MAC || got.IP != resource.IP {
+		t.Fatalf("EnsurePort() = %#v", got)
+	}
+
+	if len(network.calls) != 0 {
+		t.Fatalf("replay mutated network: %#v", network.calls)
+	}
+}
+
+func TestEnsurePortRejectsForeignOwnerWithoutNetworkMutation(t *testing.T) {
+	executor, _, store := testExecutor(t)
+	network := &fakeNetwork{}
+	executor.Network = network
+	stored := mutation()
+
+	resource := inventory.NetworkResource{
+		InstallationID: stored.Owner.InstallationID,
+		OwnerUID:       stored.Owner.UID,
+		NodeID:         stored.Owner.NodeID,
+		Network:        "network-a",
+		Port:           "port-a",
+		MAC:            "02:00:00:00:00:01",
+		IP:             "192.168.124.10",
+	}
+	if err := store.UpsertNetworkResource(resource); err != nil {
+		t.Fatal(err)
+	}
+
+	foreign := mutation()
+	foreign.Owner.UID = "machine-b"
+
+	_, err := executor.EnsurePort(context.Background(), foreign, hostagent.PortRequest{
+		Name: resource.Port, Network: resource.Network, MAC: resource.MAC,
+	})
+	if !errors.Is(err, hostagent.ErrConflict) {
+		t.Fatalf("EnsurePort() error = %v, want conflict", err)
+	}
+
+	if len(network.calls) != 0 {
+		t.Fatalf("foreign owner mutated network: %#v", network.calls)
+	}
+
+	got, err := store.GetNetworkResourceByPort(resource.InstallationID, resource.Port)
+	if err != nil || got.OwnerUID != resource.OwnerUID {
+		t.Fatalf("stored resource = %#v, %v", got, err)
+	}
+}
+
+func TestEnsurePortRejectsIdentityMismatchWithoutNetworkMutation(t *testing.T) {
+	executor, _, store := testExecutor(t)
+	network := &fakeNetwork{}
+	executor.Network = network
+	m := mutation()
+
+	resource := inventory.NetworkResource{
+		InstallationID: m.Owner.InstallationID,
+		OwnerUID:       m.Owner.UID,
+		NodeID:         m.Owner.NodeID,
+		Network:        "network-a",
+		Port:           "port-a",
+		MAC:            "02:00:00:00:00:01",
+		IP:             "192.168.124.10",
+	}
+	if err := store.UpsertNetworkResource(resource); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := executor.EnsurePort(context.Background(), m, hostagent.PortRequest{
+		Name: resource.Port, Network: resource.Network, MAC: "02:00:00:00:00:02",
+	})
+	if !errors.Is(err, hostagent.ErrConflict) {
+		t.Fatalf("EnsurePort() error = %v, want conflict", err)
+	}
+
+	if len(network.calls) != 0 {
+		t.Fatalf("identity mismatch mutated network: %#v", network.calls)
+	}
+
+	got, err := store.GetNetworkResourceByPort(resource.InstallationID, resource.Port)
+	if err != nil || got.MAC != resource.MAC {
+		t.Fatalf("stored resource = %#v, %v", got, err)
+	}
+}
+
 func TestNetworkResourceOwnershipSupportsPublishAndCleanup(t *testing.T) {
 	executor, _, store := testExecutor(t)
 	executor.Network = &fakeNetwork{}

@@ -177,6 +177,18 @@ func (s *Store) GetNetworkResource(installationID, ownerUID string) (NetworkReso
 	return resource, nil
 }
 
+func (s *Store) GetNetworkResourceByPort(installationID, port string) (NetworkResource, error) {
+	var resource NetworkResource
+
+	err := s.db.QueryRow(getNetworkResourceByPortQuery, installationID, port).
+		Scan(&resource.InstallationID, &resource.OwnerUID, &resource.NodeID, &resource.Network, &resource.Port, &resource.MAC, &resource.IP)
+	if err != nil {
+		return NetworkResource{}, err
+	}
+
+	return resource, nil
+}
+
 func (s *Store) DeleteNetworkResource(installationID, ownerUID string) error {
 	if _, err := s.db.Exec(deleteNetworkResourceQuery, installationID, ownerUID); err != nil {
 		return fmt.Errorf("delete network resource: %w", err)

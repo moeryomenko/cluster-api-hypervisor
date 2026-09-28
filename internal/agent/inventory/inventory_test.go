@@ -126,3 +126,53 @@ func TestRecordOperationIsReplaySafeButRejectsConflictingGeneration(t *testing.T
 		t.Fatalf("conflict error = %v", err)
 	}
 }
+
+func TestNetworkResourceLookupByPortPreservesOwnershipAndInstallationScope(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "inventory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	first := NetworkResource{
+		InstallationID: "install-a",
+		OwnerUID:       "machine-a",
+		NodeID:         "node-a",
+		Network:        "network-a",
+		Port:           "port-a",
+		MAC:            "02:00:00:00:00:01",
+		IP:             "192.168.124.10",
+	}
+	if err := store.UpsertNetworkResource(first); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetNetworkResourceByPort(first.InstallationID, first.Port)
+	if err != nil || got != first {
+		t.Fatalf("GetNetworkResourceByPort() = %#v, %v", got, err)
+	}
+
+	if err := store.UpsertNetworkResource(NetworkResource{
+		InstallationID: first.InstallationID,
+		OwnerUID:       "machine-b",
+		NodeID:         "node-a",
+		Network:        "network-a",
+		Port:           first.Port,
+		MAC:            "02:00:00:00:00:02",
+		IP:             "192.168.124.11",
+	}); err == nil {
+		t.Fatal("cross-owner port claim succeeded")
+	}
+
+	if err := store.UpsertNetworkResource(NetworkResource{
+		InstallationID: "install-b",
+		OwnerUID:       "machine-b",
+		NodeID:         "node-b",
+		Network:        "network-b",
+		Port:           first.Port,
+		MAC:            "02:00:00:00:00:02",
+		IP:             "192.168.125.10",
+	}); err != nil {
+		t.Fatalf("cross-installation port reuse failed: %v", err)
+	}
+}

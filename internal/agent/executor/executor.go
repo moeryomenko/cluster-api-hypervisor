@@ -451,8 +451,33 @@ func (e *Executor) EnsurePort(
 		return hostagent.PortObserved{}, err
 	}
 
-	if e.Network == nil || request.Name == "" || request.Network == "" || request.MAC == "" {
-		return hostagent.PortObserved{}, e.notImplemented("EnsurePort requires k8netd and port identity")
+	if e.Network == nil || e.Store == nil || request.Name == "" || request.Network == "" || request.MAC == "" {
+		return hostagent.PortObserved{}, e.notImplemented("EnsurePort requires k8netd, inventory, and port identity")
+	}
+
+	resource, err := e.Store.GetNetworkResourceByPort(mutation.Owner.InstallationID, request.Name)
+	switch {
+	case err == nil:
+		if resource.OwnerUID != mutation.Owner.UID {
+			return hostagent.PortObserved{}, fmt.Errorf(
+				"%w: port %q is owned by %q",
+				hostagent.ErrConflict,
+				request.Name,
+				resource.OwnerUID,
+			)
+		}
+
+		if resource.NodeID != mutation.Owner.NodeID || resource.Network != request.Network || resource.MAC != request.MAC {
+			return hostagent.PortObserved{}, fmt.Errorf(
+				"%w: port %q identity does not match recorded resource",
+				hostagent.ErrConflict,
+				request.Name,
+			)
+		}
+
+		return observedPort(resource), nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return hostagent.PortObserved{}, fmt.Errorf("inspect network resource for port %q: %w", request.Name, err)
 	}
 
 	if err := e.Network.CreatePort(ctx, request.Name); err != nil && !errors.Is(err, k8netd.ErrAlreadyExists) {
@@ -469,7 +494,7 @@ func (e *Executor) EnsurePort(
 		return hostagent.PortObserved{}, err
 	}
 
-	resource := inventory.NetworkResource{
+	resource = inventory.NetworkResource{
 		InstallationID: mutation.Owner.InstallationID,
 		OwnerUID:       mutation.Owner.UID,
 		NodeID:         mutation.Owner.NodeID,
@@ -479,16 +504,41 @@ func (e *Executor) EnsurePort(
 		IP:             ip,
 	}
 	if err := e.Store.UpsertNetworkResource(resource); err != nil {
+		if existing, lookupErr := e.Store.GetNetworkResourceByPort(resource.InstallationID, resource.Port); lookupErr == nil {
+			if existing.OwnerUID != resource.OwnerUID {
+				return hostagent.PortObserved{}, fmt.Errorf(
+					"%w: port %q is owned by %q",
+					hostagent.ErrConflict,
+					resource.Port,
+					existing.OwnerUID,
+				)
+			}
+
+			if existing.NodeID == resource.NodeID && existing.Network == resource.Network && existing.MAC == resource.MAC {
+				return observedPort(existing), nil
+			}
+
+			return hostagent.PortObserved{}, fmt.Errorf(
+				"%w: port %q identity does not match recorded resource",
+				hostagent.ErrConflict,
+				resource.Port,
+			)
+		}
+
 		return hostagent.PortObserved{}, err
 	}
 
+	return observedPort(resource), nil
+}
+
+func observedPort(resource inventory.NetworkResource) hostagent.PortObserved {
 	return hostagent.PortObserved{
-		Name:      request.Name,
-		Network:   request.Network,
-		MAC:       request.MAC,
-		IP:        ip,
+		Name:      resource.Port,
+		Network:   resource.Network,
+		MAC:       resource.MAC,
+		IP:        resource.IP,
 		Published: map[uint32]uint32{},
-	}, nil
+	}
 }
 
 func (e *Executor) DeletePort(ctx context.Context, mutation hostagent.Mutation) error {

@@ -18,6 +18,9 @@ var (
 	//go:embed queries/get_network_resource.sql
 	getNetworkResourceQuery string
 
+	//go:embed queries/get_network_resource_by_port.sql
+	getNetworkResourceByPortQuery string
+
 	//go:embed queries/delete_network_resource.sql
 	deleteNetworkResourceQuery string
 

@@ -8,8 +8,10 @@ import (
 )
 
 const (
+	managerService   = "org.freedesktop.systemd1"
 	managerPath      = "/org/freedesktop/systemd1"
 	managerInterface = "org.freedesktop.systemd1.Manager"
+	serviceInterface = "org.freedesktop.systemd1.Service"
 )
 
 type Unit struct {
@@ -66,7 +68,7 @@ func ConnectUser(address string) (*DBusClient, error) {
 func (c *DBusClient) Close() error { return c.conn.Close() }
 
 func (c *DBusClient) Reload(ctx context.Context) error {
-	call := c.conn.Object(managerInterface, managerPath).CallWithContext(ctx, managerInterface+".Reload", 0)
+	call := c.conn.Object(managerService, managerPath).CallWithContext(ctx, managerInterface+".Reload", 0)
 	if call.Err != nil {
 		return fmt.Errorf("reload user systemd manager: %w", call.Err)
 	}
@@ -89,7 +91,7 @@ func (c *DBusClient) EnableUnitFiles(ctx context.Context, names []string) error 
 		}
 	)
 
-	call := c.conn.Object(managerInterface, managerPath).
+	call := c.conn.Object(managerService, managerPath).
 		CallWithContext(ctx, managerInterface+".EnableUnitFiles", 0, names, false, true)
 	if call.Err != nil {
 		return fmt.Errorf("enable user units: %w", call.Err)
@@ -105,7 +107,7 @@ func (c *DBusClient) EnableUnitFiles(ctx context.Context, names []string) error 
 func (c *DBusClient) StartUnit(ctx context.Context, name string) (Unit, error) {
 	var job dbus.ObjectPath
 
-	call := c.conn.Object(managerInterface, managerPath).
+	call := c.conn.Object(managerService, managerPath).
 		CallWithContext(ctx, managerInterface+".StartUnit", 0, name, "replace")
 	if call.Err != nil {
 		return Unit{}, fmt.Errorf("start unit %q: %w", name, call.Err)
@@ -126,7 +128,7 @@ func (c *DBusClient) StartUnit(ctx context.Context, name string) (Unit, error) {
 func (c *DBusClient) StartTransientUnit(ctx context.Context, name string, properties []Property) (Unit, error) {
 	var path dbus.ObjectPath
 
-	call := c.conn.Object(managerInterface, managerPath).
+	call := c.conn.Object(managerService, managerPath).
 		CallWithContext(ctx, managerInterface+".StartTransientUnit", 0, name, "replace", properties, []AuxiliaryUnit{})
 	if call.Err != nil {
 		return Unit{}, fmt.Errorf("start transient unit %q: %w", name, call.Err)
@@ -142,7 +144,7 @@ func (c *DBusClient) StartTransientUnit(ctx context.Context, name string, proper
 func (c *DBusClient) StopUnit(ctx context.Context, name string) error {
 	var ignored dbus.ObjectPath
 
-	call := c.conn.Object(managerInterface, managerPath).
+	call := c.conn.Object(managerService, managerPath).
 		CallWithContext(ctx, managerInterface+".StopUnit", 0, name, "replace")
 	if call.Err != nil {
 		return fmt.Errorf("stop unit %q: %w", name, call.Err)
@@ -158,7 +160,7 @@ func (c *DBusClient) StopUnit(ctx context.Context, name string) error {
 func (c *DBusClient) GetUnit(ctx context.Context, name string) (Unit, error) {
 	var path dbus.ObjectPath
 
-	call := c.conn.Object(managerInterface, managerPath).CallWithContext(ctx, managerInterface+".GetUnit", 0, name)
+	call := c.conn.Object(managerService, managerPath).CallWithContext(ctx, managerInterface+".GetUnit", 0, name)
 	if call.Err != nil {
 		return Unit{}, fmt.Errorf("get unit %q: %w", name, call.Err)
 	}
@@ -169,8 +171,8 @@ func (c *DBusClient) GetUnit(ctx context.Context, name string) (Unit, error) {
 
 	unit := Unit{Name: name, Path: path}
 
-	pidProperty, err := c.conn.Object("org.freedesktop.systemd1.Unit", path).
-		GetProperty("org.freedesktop.systemd1.Service.MainPID")
+	pidProperty, err := c.conn.Object(managerService, path).
+		GetProperty(serviceInterface + ".MainPID")
 	if err == nil {
 		unit.PID, _ = pidProperty.Value().(uint32)
 	}
@@ -187,7 +189,7 @@ func (c *DBusClient) ListUnits(ctx context.Context) ([]Unit, error) {
 		JobPath                                                       dbus.ObjectPath
 	}
 
-	call := c.conn.Object(managerInterface, managerPath).CallWithContext(ctx, managerInterface+".ListUnits", 0)
+	call := c.conn.Object(managerService, managerPath).CallWithContext(ctx, managerInterface+".ListUnits", 0)
 	if call.Err != nil {
 		return nil, fmt.Errorf("list units: %w", call.Err)
 	}
