@@ -5,6 +5,7 @@ import (
 	"context"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/godbus/dbus/v5"
@@ -64,13 +65,24 @@ func TestClientContractSupportsOwnedTransientLifecycle(t *testing.T) {
 }
 
 type testManager struct {
+	mu       sync.Mutex
 	reloads  int
 	unitPath dbus.ObjectPath
 }
 
 func (m *testManager) Reload() *dbus.Error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.reloads++
 	return nil
+}
+
+func (m *testManager) reloadCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.reloads
 }
 
 func (m *testManager) GetUnit(string) (dbus.ObjectPath, *dbus.Error) {
@@ -78,19 +90,29 @@ func (m *testManager) GetUnit(string) (dbus.ObjectPath, *dbus.Error) {
 }
 
 type testProperties struct {
+	mu            sync.Mutex
 	interfaceName string
 	propertyName  string
 }
 
 func (p *testProperties) Get(interfaceName, propertyName string) (dbus.Variant, *dbus.Error) {
-	p.interfaceName = interfaceName
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
+	p.interfaceName = interfaceName
 	p.propertyName = propertyName
 	if interfaceName != serviceInterface || propertyName != "MainPID" {
 		return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []any{"unexpected property"})
 	}
 
 	return dbus.MakeVariant(uint32(42)), nil
+}
+
+func (p *testProperties) lookup() (string, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.interfaceName, p.propertyName
 }
 
 func TestDBusClientUsesSystemdServiceDestination(t *testing.T) {
@@ -131,16 +153,17 @@ func TestDBusClientUsesSystemdServiceDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if manager.reloads != 1 {
-		t.Fatalf("Reload calls = %d, want 1", manager.reloads)
+	if manager.reloadCount() != 1 {
+		t.Fatalf("Reload calls = %d, want 1", manager.reloadCount())
 	}
 
 	if unit.Path != unitPath || unit.PID != 42 {
 		t.Fatalf("GetUnit() = %#v", unit)
 	}
 
-	if properties.interfaceName != serviceInterface || properties.propertyName != "MainPID" {
-		t.Fatalf("property lookup = %s.%s", properties.interfaceName, properties.propertyName)
+	interfaceName, propertyName := properties.lookup()
+	if interfaceName != serviceInterface || propertyName != "MainPID" {
+		t.Fatalf("property lookup = %s.%s", interfaceName, propertyName)
 	}
 }
 
