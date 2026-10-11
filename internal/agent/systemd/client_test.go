@@ -67,6 +67,7 @@ func TestClientContractSupportsOwnedTransientLifecycle(t *testing.T) {
 type testManager struct {
 	mu       sync.Mutex
 	reloads  int
+	enabled  []string
 	unitPath dbus.ObjectPath
 }
 
@@ -87,6 +88,30 @@ func (m *testManager) reloadCount() int {
 
 func (m *testManager) GetUnit(string) (dbus.ObjectPath, *dbus.Error) {
 	return m.unitPath, nil
+}
+
+func (m *testManager) EnableUnitFiles(names []string, _ bool, _ bool) (bool, []struct {
+	Type   string
+	Path   string
+	Source string
+}, *dbus.Error,
+) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.enabled = append(m.enabled, names...)
+	return true, []struct {
+		Type   string
+		Path   string
+		Source string
+	}{{Type: "symlink", Path: "/home/test/.config/systemd/user/test.service", Source: "/tmp/test.service"}}, nil
+}
+
+func (m *testManager) enabledUnits() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]string(nil), m.enabled...)
 }
 
 type testProperties struct {
@@ -148,6 +173,10 @@ func TestDBusClientUsesSystemdServiceDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := client.EnableUnitFiles(t.Context(), []string{"test.service"}); err != nil {
+		t.Fatal(err)
+	}
+
 	unit, err := client.GetUnit(t.Context(), "test.service")
 	if err != nil {
 		t.Fatal(err)
@@ -155,6 +184,10 @@ func TestDBusClientUsesSystemdServiceDestination(t *testing.T) {
 
 	if manager.reloadCount() != 1 {
 		t.Fatalf("Reload calls = %d, want 1", manager.reloadCount())
+	}
+
+	if enabled := manager.enabledUnits(); len(enabled) != 1 || enabled[0] != "test.service" {
+		t.Fatalf("EnableUnitFiles() names = %v", enabled)
 	}
 
 	if unit.Path != unitPath || unit.PID != 42 {

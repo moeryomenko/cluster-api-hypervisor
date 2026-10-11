@@ -84,10 +84,9 @@ func (c *DBusClient) EnableUnitFiles(ctx context.Context, names []string) error 
 	var (
 		carriesInstallInfo bool
 		changes            []struct {
-			Type        string
-			Path        string
-			Source      string
-			Destination string
+			Type   string
+			Path   string
+			Source string
 		}
 	)
 
