@@ -76,6 +76,7 @@ func (m *testManager) Reload() *dbus.Error {
 	defer m.mu.Unlock()
 
 	m.reloads++
+
 	return nil
 }
 
@@ -100,6 +101,7 @@ func (m *testManager) EnableUnitFiles(names []string, _ bool, _ bool) (bool, []s
 	defer m.mu.Unlock()
 
 	m.enabled = append(m.enabled, names...)
+
 	return true, []struct {
 		Type   string
 		Path   string
@@ -125,6 +127,7 @@ func (p *testProperties) Get(interfaceName, propertyName string) (dbus.Variant, 
 	defer p.mu.Unlock()
 
 	p.interfaceName = interfaceName
+
 	p.propertyName = propertyName
 	if interfaceName != serviceInterface || propertyName != "MainPID" {
 		return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []any{"unexpected property"})

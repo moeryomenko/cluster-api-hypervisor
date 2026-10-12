@@ -199,6 +199,7 @@ func testVMExecutor(t *testing.T, states ...ch.VMState) (*Executor, hostagent.VM
 
 	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		requests <- request.URL.Path
+
 		if request.URL.Path == "/api/v1/vm.info" {
 			state := ch.VMState("")
 			if stateIndex < len(states) {
@@ -213,6 +214,7 @@ func testVMExecutor(t *testing.T, states ...ch.VMState) (*Executor, hostagent.VM
 
 			writer.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprintf(writer, `{"state":%q}`, state)
+
 			return
 		}
 
@@ -327,6 +329,7 @@ func TestEnsureVMRetriesAfterFailedRecovery(t *testing.T) {
 	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err == nil {
 		t.Fatal("EnsureVM() error = nil, want unexpected state")
 	}
+
 	if got := <-requests; got != "/api/v1/vm.info" {
 		t.Fatalf("first Cloud Hypervisor request = %q, want vm.info", got)
 	}
@@ -334,6 +337,7 @@ func TestEnsureVMRetriesAfterFailedRecovery(t *testing.T) {
 	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err != nil {
 		t.Fatalf("EnsureVM() retry error = %v", err)
 	}
+
 	if got := <-requests; got != "/api/v1/vm.info" {
 		t.Fatalf("retry Cloud Hypervisor request = %q, want vm.info", got)
 	}
@@ -341,6 +345,7 @@ func TestEnsureVMRetriesAfterFailedRecovery(t *testing.T) {
 	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err != nil {
 		t.Fatalf("EnsureVM() replay error = %v", err)
 	}
+
 	select {
 	case got := <-requests:
 		t.Fatalf("recovered VM made Cloud Hypervisor request %q", got)
@@ -355,9 +360,11 @@ func TestEnsureVMCreatesAPISocketParentBeforeStartingUnit(t *testing.T) {
 	started := false
 	executor.Systemd.(*fakeSystemd).start = func(string) error {
 		started = true
+
 		if info, err := os.Stat(parent); err != nil || !info.IsDir() {
 			t.Errorf("API socket parent at unit start = %v, %v", info, err)
 		}
+
 		return nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -367,6 +374,7 @@ func TestEnsureVMCreatesAPISocketParentBeforeStartingUnit(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("EnsureVM() error = %v, want canceled", err)
 	}
+
 	if !started {
 		t.Fatal("EnsureVM() did not start the persistent unit")
 	}
@@ -589,10 +597,12 @@ func TestPublishPortReturnsRecordedMappingBeforeJournal(t *testing.T) {
 	}
 
 	m.IdempotencyKey = "new-publish-key"
+
 	hostPort, err := executor.PublishPort(context.Background(), m, 6443, 0)
 	if err != nil || hostPort != 20000 {
 		t.Fatalf("PublishPort()=%d,%v", hostPort, err)
 	}
+
 	if len(network.publishCalls) != 0 {
 		t.Fatalf("PublishPort made network calls: %#v", network.publishCalls)
 	}

@@ -66,6 +66,8 @@ spec:
         - name: webhook-certs
           mountPath: /tmp/k8s-webhook-server/serving-certs
           readOnly: true
+        - name: api-sockets
+          mountPath: /tmp/ch-capi
         - name: agent-client-certs
           mountPath: /tls/agent-client
           readOnly: true
@@ -76,6 +78,8 @@ spec:
       - name: webhook-certs
         secret:
           secretName: hypervisor-webhook-serving-cert
+      - name: api-sockets
+        emptyDir: {}
       - name: agent-client-certs
         secret:
           secretName: hypervisor-manager-agent-client-cert

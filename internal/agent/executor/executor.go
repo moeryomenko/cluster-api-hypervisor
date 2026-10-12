@@ -144,13 +144,13 @@ func (e *Executor) EnsureVM(
 		return hostagent.VMObserved{}, err
 	}
 
-	disks := []ch.DiskConfig{{Path: desired.Disk}}
+	disks := []ch.DiskConfig{ch.NewDiskConfig(desired.Disk, false)}
 	for _, path := range desired.AdditionalDisks {
 		if path == "" {
 			return hostagent.VMObserved{}, hostagent.ErrInvalidRequest
 		}
 
-		disks = append(disks, ch.DiskConfig{Path: path, Readonly: true})
+		disks = append(disks, ch.NewDiskConfig(path, true))
 	}
 
 	checksums := append([]string{desired.DiskSHA256}, desired.AdditionalDiskSHA256s...)
@@ -166,8 +166,10 @@ func (e *Executor) EnsureVM(
 
 	state, err := api.Info(ctx)
 	notCreated := false
+
 	if err != nil {
 		var statusError *ch.StatusError
+
 		notCreated = errors.As(err, &statusError) && (statusError.StatusCode == 404 ||
 			(statusError.StatusCode == 500 && strings.Contains(strings.ToLower(statusError.Body), "vm is not created")))
 		if !notCreated {
@@ -677,6 +679,7 @@ func (e *Executor) PublishPort(
 	if err == nil {
 		return publishedPort.HostPort, nil
 	}
+
 	if !errors.Is(err, sql.ErrNoRows) {
 		return 0, fmt.Errorf("get published port %d: %w", guestPort, err)
 	}

@@ -15,6 +15,7 @@ func TestEnsureVMFailsClosedWhenUnitDoesNotExposeAPISocket(t *testing.T) {
 	mutation.IdempotencyKey = "ensure-machine-a-1"
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+
 	apiSocket := filepath.Join(t.TempDir(), "vms", "machine-a.sock")
 
 	_, err := executor.EnsureVM(

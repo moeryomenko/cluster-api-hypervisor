@@ -214,7 +214,7 @@ func (c *VMClient) pushConfig(ctx context.Context) error {
 	}
 
 	for _, path := range c.diskPaths {
-		cfg.Disks = append(cfg.Disks, ch.DiskConfig{Path: path, Readonly: isCIDATADisk(path)})
+		cfg.Disks = append(cfg.Disks, ch.NewDiskConfig(path, isCIDATADisk(path)))
 	}
 
 	if c.netConfig != "" {

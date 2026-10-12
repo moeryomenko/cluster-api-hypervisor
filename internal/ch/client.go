@@ -91,8 +91,19 @@ type MemoryConfig struct {
 // disk read-only (readonly: true in the vm.create body); the CIDATA disk is
 // the only read-only disk — the guest must not rewrite its cloud-init parts.
 type DiskConfig struct {
-	Path     string `json:"path"`
-	Readonly bool   `json:"readonly,omitempty"`
+	Path      string `json:"path"`
+	Readonly  bool   `json:"readonly,omitempty"`
+	ImageType string `json:"image_type"`
+}
+
+// NewDiskConfig classifies a disk image for the Cloud Hypervisor API.
+func NewDiskConfig(path string, readonly bool) DiskConfig {
+	imageType := "raw"
+	if strings.HasSuffix(strings.ToLower(path), ".qcow2") {
+		imageType = "qcow2"
+	}
+
+	return DiskConfig{Path: path, Readonly: readonly, ImageType: imageType}
 }
 
 // NetConfig is one net device entry of a VmConfig. VhostUser with

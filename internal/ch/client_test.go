@@ -275,13 +275,30 @@ func TestClientInfo(t *testing.T) {
 	}
 }
 
+func TestNewDiskConfigSetsImageType(t *testing.T) {
+	for _, tt := range []struct {
+		path      string
+		readonly  bool
+		imageType string
+	}{
+		{path: "/build/vm-disks/node-root.qcow2", imageType: "qcow2"},
+		{path: "/build/vm-disks/node-cidata.img", readonly: true, imageType: "raw"},
+		{path: "/build/vm-disks/node-data.raw", imageType: "raw"},
+	} {
+		got := ch.NewDiskConfig(tt.path, tt.readonly)
+		if got.Path != tt.path || got.Readonly != tt.readonly || got.ImageType != tt.imageType {
+			t.Errorf("NewDiskConfig(%q, %t) = %#v", tt.path, tt.readonly, got)
+		}
+	}
+}
+
 // TestClientCreate pins the vm.create contract: PUT /api/v1/vm.create with
 // the VmConfig as the JSON body, nil for a 2xx response, and a typed
 // StatusError carrying the status code for any non-2xx response. The body is
 // decoded on the server side and must carry the firmware path, the cpus
 // section (boot_vcpus and max_vcpus from the spec vCPU count), the memory
-// size in bytes derived from the spec RAM, every disk path, and the
-// vhost-user net parameters verbatim.
+// size in bytes derived from the spec RAM, every disk path, its image type,
+// and the vhost-user net parameters verbatim.
 func TestClientCreate(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -317,8 +334,8 @@ func TestClientCreate(t *testing.T) {
 				Cpus:    &ch.CpusConfig{BootVCPUs: 2, MaxVCPUs: 2},
 				Memory:  &ch.MemoryConfig{Size: 2048 * 1024 * 1024, Shared: true},
 				Disks: []ch.DiskConfig{
-					{Path: "/build/vm-disks/node-1-root.qcow2"},
-					{Path: "/build/vm-disks/node-1-data/z-kubelet.raw"},
+					ch.NewDiskConfig("/build/vm-disks/node-1-root.qcow2", false),
+					ch.NewDiskConfig("/build/vm-disks/node-1-data/z-kubelet.raw", false),
 				},
 				Net: []ch.NetConfig{
 					{VhostUser: true, VhostSocket: "/run/user/1000/k8snet/node-1.sock", MAC: "c6:e5:50:1c:ec:ab", NumQueues: 2},
@@ -356,7 +373,9 @@ func TestClientCreate(t *testing.T) {
 			assertJSONPath(t, got, "memory.size", float64(cfg.Memory.Size))
 			assertJSONPath(t, got, "memory.shared", true)
 			assertJSONPath(t, got, "disks.0.path", cfg.Disks[0].Path)
+			assertJSONPath(t, got, "disks.0.image_type", cfg.Disks[0].ImageType)
 			assertJSONPath(t, got, "disks.1.path", cfg.Disks[1].Path)
+			assertJSONPath(t, got, "disks.1.image_type", cfg.Disks[1].ImageType)
 			assertJSONPath(t, got, "net.0.vhost_user", true)
 			assertJSONPath(t, got, "net.0.vhost_socket", cfg.Net[0].VhostSocket)
 			assertJSONPath(t, got, "net.0.mac", cfg.Net[0].MAC)
