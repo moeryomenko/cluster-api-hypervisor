@@ -650,6 +650,14 @@ func (e *Executor) PublishPort(
 		return 0, hostagent.ErrUnauthorized
 	}
 
+	publishedPort, err := e.Store.GetPublishedPort(mutation.Owner.InstallationID, mutation.Owner.UID, guestPort)
+	if err == nil {
+		return publishedPort.HostPort, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("get published port %d: %w", guestPort, err)
+	}
+
 	operation, err := e.begin(mutation, "PublishPort", guestPort)
 	if err != nil {
 		return 0, err

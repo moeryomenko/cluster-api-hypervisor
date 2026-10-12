@@ -470,6 +470,32 @@ func TestNetworkResourceOwnershipSupportsPublishAndCleanup(t *testing.T) {
 	}
 }
 
+func TestPublishPortReturnsRecordedMappingBeforeJournal(t *testing.T) {
+	executor, _, store := testExecutor(t)
+	network := &fakeNetwork{}
+	executor.Network = network
+	m := mutation()
+	seedNetworkResource(t, store, m)
+
+	if err := store.UpsertPublishedPort(inventory.PublishedPort{
+		InstallationID: m.Owner.InstallationID,
+		OwnerUID:       m.Owner.UID,
+		GuestPort:      6443,
+		HostPort:       20000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	m.IdempotencyKey = "new-publish-key"
+	hostPort, err := executor.PublishPort(context.Background(), m, 6443, 0)
+	if err != nil || hostPort != 20000 {
+		t.Fatalf("PublishPort()=%d,%v", hostPort, err)
+	}
+	if len(network.publishCalls) != 0 {
+		t.Fatalf("PublishPort made network calls: %#v", network.publishCalls)
+	}
+}
+
 func seedNetworkResource(t *testing.T, store *inventory.Store, m hostagent.Mutation) {
 	t.Helper()
 

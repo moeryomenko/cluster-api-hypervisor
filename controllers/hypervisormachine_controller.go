@@ -661,7 +661,9 @@ func (r *HypervisorMachineReconciler) publishControlPlaneEndpoints(
 		)
 
 		if r.Agent != nil {
-			published, publishErr := r.Agent.PublishPort(ctx, mutation, uint32(vmPort), 0)
+			publishMutation := mutation
+			publishMutation.IdempotencyKey += fmt.Sprintf("-publish-%d", vmPort)
+			published, publishErr := r.Agent.PublishPort(ctx, publishMutation, uint32(vmPort), 0)
 			hostPort, err = int32(published), publishErr
 		} else {
 			hostPort, err = r.K8Netd.PublishPort(ctx, hm.Name, vmPort)
