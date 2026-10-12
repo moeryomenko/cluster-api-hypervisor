@@ -13,21 +13,21 @@
       "kind": "provenance",
       "source": "Containerfile",
       "output": "provenance/Containerfile",
-      "sha256": "642548edbf89bfc423c3552bfb37d62aadffcd0a85c9b351b25d059d8b579b85"
+      "sha256": "8ce21229e5b2324a01ab013304e2d95e56558d5ef98a57fe963549f05ef18c6f"
     },
     {
       "name": "containerfile-agent",
       "kind": "provenance",
       "source": "Containerfile.agent",
       "output": "provenance/Containerfile.agent",
-      "sha256": "1939683d39c2c216e4f2791992fbe89662c2a687ca9f53ea2f5b49c7b48b7a31"
+      "sha256": "4e3fd406e2cd2e45196d87a154728bb912ce23f00a0a18432013131f71fc1ec9"
     },
     {
       "name": "versions",
       "kind": "provenance",
       "source": "VERSIONS.md",
       "output": "provenance/VERSIONS.md",
-      "sha256": "3b46a49f5ac341aed7b33af078056a7eee5e62a62bd13f990535e907a2413283"
+      "sha256": "42bbfea597ac97ad203a2a94958b1a8b5790bf133def628797a0ab7e62b0f476"
     }
   ]
 }

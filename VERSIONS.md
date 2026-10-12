@@ -20,7 +20,7 @@ the source of truth listed in the table — keep them in sync when bumping.
 | protoc-gen-go | v1.36.12 | `.github/workflows/push-images.yml:15` (`PROTOC_GEN_GO_VERSION`) |
 | protoc-gen-go-grpc | v1.6.2 | `.github/workflows/push-images.yml:16` (`PROTOC_GEN_GO_GRPC_VERSION`) |
 | cloud-hypervisor | 48.0-r0 | `Containerfile:40` (`CLOUD_HYPERVISOR_VERSION`) |
-| qemu-img | 11.1.1-r0 | `Containerfile:44` (`QEMU_IMG_VERSION`) |
+| qemu-img | 11.1.2-r0 | `Containerfile:44` (`QEMU_IMG_VERSION`) |
 | squashfs-tools | 4.7.5-r0 | `Containerfile:45` (`SQUASHFS_TOOLS_VERSION`) |
 | dosfstools | 4.2-r2 | `Containerfile:46` (`DOSFSTOOLS_VERSION`) |
 | mtools | 4.0.49-r0 | `Containerfile:47` (`MTOOLS_VERSION`) |
