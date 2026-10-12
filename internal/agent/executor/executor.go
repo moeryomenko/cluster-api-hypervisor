@@ -116,6 +116,10 @@ func (e *Executor) EnsureVM(
 		return e.GetVM(ctx, mutation.Owner)
 	}
 
+	if err := os.MkdirAll(filepath.Dir(desired.APISocket), 0o700); err != nil {
+		return hostagent.VMObserved{}, fmt.Errorf("create Cloud Hypervisor API socket directory: %w", err)
+	}
+
 	unitName := "k8slab-vm-" + mutation.Owner.UID + ".service"
 	arguments := []string{e.CloudHypervisor, "--api-socket", "path=" + desired.APISocket}
 
@@ -132,7 +136,6 @@ func (e *Executor) EnsureVM(
 		},
 	)
 	if err != nil {
-		_ = e.complete(mutation, "EnsureVM", operation.RequestHash, inventory.OperationFailed, "", err.Error())
 		return hostagent.VMObserved{}, err
 	}
 
@@ -154,42 +157,62 @@ func (e *Executor) EnsureVM(
 
 	paths := append([]string{desired.Disk}, desired.AdditionalDisks...)
 	if err := e.Artifacts.Verify(paths, checksums); err != nil {
-		_ = e.complete(mutation, "EnsureVM", operation.RequestHash, inventory.OperationFailed, "", err.Error())
 		return hostagent.VMObserved{}, fmt.Errorf("verify VM disks: %w", err)
 	}
 
 	if err := artifact.VerifyOwnedFile(e.FirmwareRoot, desired.Firmware, desired.FirmwareSHA256); err != nil {
-		_ = e.complete(mutation, "EnsureVM", operation.RequestHash, inventory.OperationFailed, "", err.Error())
 		return hostagent.VMObserved{}, fmt.Errorf("verify VM firmware: %w", err)
 	}
 
-	err = api.Create(ctx, ch.VmConfig{
-		Payload: &ch.PayloadConfig{
-			Firmware: desired.Firmware,
-		},
-		Cpus: &ch.CpusConfig{
-			BootVCPUs: int(desired.CPUs),
-			MaxVCPUs:  int(desired.CPUs),
-		},
-		Memory: &ch.MemoryConfig{
-			Size:   int64(desired.MemoryMiB) * 1024 * 1024,
-			Shared: true,
-		},
-		Disks: disks,
-		Net: []ch.NetConfig{
-			{
-				VhostUser:   true,
-				VhostSocket: desired.VhostSocket,
-				MAC:         desired.MAC,
-				NumQueues:   2,
-			},
-		},
-	})
+	state, err := api.Info(ctx)
+	notCreated := false
 	if err != nil {
-		return hostagent.VMObserved{}, err
+		var statusError *ch.StatusError
+		notCreated = errors.As(err, &statusError) && (statusError.StatusCode == 404 ||
+			(statusError.StatusCode == 500 && strings.Contains(strings.ToLower(statusError.Body), "vm is not created")))
+		if !notCreated {
+			return hostagent.VMObserved{}, err
+		}
 	}
 
-	if err := api.Boot(ctx); err != nil {
+	if notCreated {
+		err = api.Create(ctx, ch.VmConfig{
+			Payload: &ch.PayloadConfig{
+				Firmware: desired.Firmware,
+			},
+			Cpus: &ch.CpusConfig{
+				BootVCPUs: int(desired.CPUs),
+				MaxVCPUs:  int(desired.CPUs),
+			},
+			Memory: &ch.MemoryConfig{
+				Size:   int64(desired.MemoryMiB) * 1024 * 1024,
+				Shared: true,
+			},
+			Disks: disks,
+			Net: []ch.NetConfig{
+				{
+					VhostUser:   true,
+					VhostSocket: desired.VhostSocket,
+					MAC:         desired.MAC,
+					NumQueues:   2,
+				},
+			},
+		})
+		if err != nil {
+			return hostagent.VMObserved{}, err
+		}
+
+		state = "Created"
+	}
+
+	switch state {
+	case "Running":
+	case "Created":
+		if err := api.Boot(ctx); err != nil {
+			return hostagent.VMObserved{}, err
+		}
+	default:
+		err := fmt.Errorf("unexpected Cloud Hypervisor VM state %q", state)
 		return hostagent.VMObserved{}, err
 	}
 

@@ -15,6 +15,7 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/artifact"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/inventory"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/agent/systemd"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/ch"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
 )
 
@@ -93,11 +94,18 @@ func (f *fakeNetwork) UnpublishPort(_ context.Context, _ string, guestPort int32
 type fakeSystemd struct {
 	units   map[string]systemd.Unit
 	stopped []string
+	start   func(string) error
 }
 
 func (*fakeSystemd) Reload(context.Context) error                    { return nil }
 func (*fakeSystemd) EnableUnitFiles(context.Context, []string) error { return nil }
 func (f *fakeSystemd) StartUnit(_ context.Context, name string) (systemd.Unit, error) {
+	if f.start != nil {
+		if err := f.start(name); err != nil {
+			return systemd.Unit{}, err
+		}
+	}
+
 	return f.units[name], nil
 }
 
@@ -165,7 +173,7 @@ func TestHealthRequiresNodeID(t *testing.T) {
 	}
 }
 
-func testVMExecutor(t *testing.T) (*Executor, hostagent.VMDesired, <-chan string) {
+func testVMExecutor(t *testing.T, states ...ch.VMState) (*Executor, hostagent.VMDesired, <-chan string) {
 	t.Helper()
 
 	executor, _, _ := testExecutor(t)
@@ -186,10 +194,27 @@ func testVMExecutor(t *testing.T) (*Executor, hostagent.VMDesired, <-chan string
 		t.Fatal(err)
 	}
 
-	requests := make(chan string, 2)
+	stateIndex := 0
+	requests := make(chan string, 3)
 
 	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		requests <- request.URL.Path
+		if request.URL.Path == "/api/v1/vm.info" {
+			state := ch.VMState("")
+			if stateIndex < len(states) {
+				state = states[stateIndex]
+				stateIndex++
+			}
+
+			if state == "" {
+				writer.WriteHeader(http.StatusNotFound)
+				return
+			}
+
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(writer, `{"state":%q}`, state)
+			return
+		}
 
 		writer.WriteHeader(http.StatusNoContent)
 	})}
@@ -258,7 +283,7 @@ func TestEnsureVMVerifiesFirmwareBeforeCreatingVM(t *testing.T) {
 		t.Fatalf("EnsureVM() error = %v", err)
 	}
 
-	for _, want := range []string{"/api/v1/vm.create", "/api/v1/vm.boot"} {
+	for _, want := range []string{"/api/v1/vm.info", "/api/v1/vm.create", "/api/v1/vm.boot"} {
 		select {
 		case got := <-requests:
 			if got != want {
@@ -267,6 +292,83 @@ func TestEnsureVMVerifiesFirmwareBeforeCreatingVM(t *testing.T) {
 		default:
 			t.Fatalf("missing Cloud Hypervisor request %q", want)
 		}
+	}
+}
+
+func TestEnsureVMRecoversRunningVMWithoutMutation(t *testing.T) {
+	executor, desired, requests := testVMExecutor(t, ch.VMState("Running"))
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err != nil {
+		t.Fatalf("EnsureVM() error = %v", err)
+	}
+
+	if got := <-requests; got != "/api/v1/vm.info" {
+		t.Fatalf("Cloud Hypervisor request = %q, want vm.info", got)
+	}
+
+	if _, err := executor.Store.GetVM("install-a", "machine-a"); err != nil {
+		t.Fatalf("recovered VM was not persisted: %v", err)
+	}
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err != nil {
+		t.Fatalf("EnsureVM() replay error = %v", err)
+	}
+
+	select {
+	case got := <-requests:
+		t.Fatalf("recovered VM made Cloud Hypervisor request %q", got)
+	default:
+	}
+}
+
+func TestEnsureVMRetriesAfterFailedRecovery(t *testing.T) {
+	executor, desired, requests := testVMExecutor(t, ch.VMState("Shutdown"), ch.VMState("Running"))
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err == nil {
+		t.Fatal("EnsureVM() error = nil, want unexpected state")
+	}
+	if got := <-requests; got != "/api/v1/vm.info" {
+		t.Fatalf("first Cloud Hypervisor request = %q, want vm.info", got)
+	}
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err != nil {
+		t.Fatalf("EnsureVM() retry error = %v", err)
+	}
+	if got := <-requests; got != "/api/v1/vm.info" {
+		t.Fatalf("retry Cloud Hypervisor request = %q, want vm.info", got)
+	}
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err != nil {
+		t.Fatalf("EnsureVM() replay error = %v", err)
+	}
+	select {
+	case got := <-requests:
+		t.Fatalf("recovered VM made Cloud Hypervisor request %q", got)
+	default:
+	}
+}
+
+func TestEnsureVMCreatesAPISocketParentBeforeStartingUnit(t *testing.T) {
+	executor, desired, _ := testVMExecutor(t)
+	desired.APISocket = filepath.Join(t.TempDir(), "api", "api.sock")
+	parent := filepath.Dir(desired.APISocket)
+	started := false
+	executor.Systemd.(*fakeSystemd).start = func(string) error {
+		started = true
+		if info, err := os.Stat(parent); err != nil || !info.IsDir() {
+			t.Errorf("API socket parent at unit start = %v, %v", info, err)
+		}
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := executor.EnsureVM(ctx, mutation(), desired)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("EnsureVM() error = %v, want canceled", err)
+	}
+	if !started {
+		t.Fatal("EnsureVM() did not start the persistent unit")
 	}
 }
 

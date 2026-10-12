@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
@@ -14,6 +15,7 @@ func TestEnsureVMFailsClosedWhenUnitDoesNotExposeAPISocket(t *testing.T) {
 	mutation.IdempotencyKey = "ensure-machine-a-1"
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	apiSocket := filepath.Join(t.TempDir(), "vms", "machine-a.sock")
 
 	_, err := executor.EnsureVM(
 		ctx,
@@ -23,7 +25,7 @@ func TestEnsureVMFailsClosedWhenUnitDoesNotExposeAPISocket(t *testing.T) {
 			Disk:           "/host-state/vms/machine-a-root.qcow2",
 			Firmware:       "/host-state/CLOUDHV.fd",
 			FirmwareSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			APISocket:      "/host-state/vms/machine-a.sock",
+			APISocket:      apiSocket,
 			VhostSocket:    "/run/user/1000/k8snet/machine-a.sock",
 			MAC:            "02:00:00:00:00:01",
 			CPUs:           1,
