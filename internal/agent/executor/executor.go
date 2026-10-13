@@ -222,7 +222,11 @@ func (e *Executor) EnsureVM(
 			body := strings.ToLower(statusError.Body)
 			if !strings.Contains(body, "image type required for disk") &&
 				!(strings.Contains(body, "error manipulating firmware file") &&
-					strings.Contains(body, "no such file or directory (os error 2)")) {
+					strings.Contains(body, "no such file or directory (os error 2)")) &&
+				!(statusError.StatusCode == 500 &&
+					strings.Contains(body, "error from api") &&
+					strings.Contains(body, "the vm could not boot") &&
+					strings.Contains(body, "vm is already created")) {
 				return hostagent.VMObserved{}, err
 			}
 

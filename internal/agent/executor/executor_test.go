@@ -498,6 +498,39 @@ func TestEnsureVMRecoversUnrecordedCreatedVMWithMissingFirmware(t *testing.T) {
 	}
 }
 
+func TestEnsureVMRecoversUnrecordedCreatedVMAlreadyCreated(t *testing.T) {
+	executor, desired, requests := testVMExecutorWithServer(t, vmTestServerConfig{
+		states: []ch.VMState{"Created"},
+		bootResponses: []vmTestResponse{
+			{
+				status:  http.StatusInternalServerError,
+				payload: `["Error from API","The VM could not boot","VM is already created"]`,
+			},
+			{status: http.StatusNoContent},
+		},
+	})
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err != nil {
+		t.Fatalf("EnsureVM() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"/api/v1/vm.info",
+		"/api/v1/vm.boot",
+		"/api/v1/vm.delete",
+		"/api/v1/vm.create",
+		"/api/v1/vm.boot",
+	} {
+		if got := <-requests; got != want {
+			t.Fatalf("Cloud Hypervisor request = %q, want %q", got, want)
+		}
+	}
+
+	if _, err := executor.Store.GetVM("install-a", "machine-a"); err != nil {
+		t.Fatalf("recovered VM was not persisted: %v", err)
+	}
+}
+
 func TestEnsureVMDoesNotRecoverUnrelatedCreatedBootFailure(t *testing.T) {
 	executor, desired, requests := testVMExecutorWithServer(t, vmTestServerConfig{
 		states: []ch.VMState{"Created"},
@@ -518,6 +551,31 @@ func TestEnsureVMDoesNotRecoverUnrelatedCreatedBootFailure(t *testing.T) {
 	select {
 	case got := <-requests:
 		t.Fatalf("unrelated boot failure made Cloud Hypervisor request %q", got)
+	default:
+	}
+}
+
+func TestEnsureVMDoesNotRecoverAlreadyCreatedNon500Failure(t *testing.T) {
+	executor, desired, requests := testVMExecutorWithServer(t, vmTestServerConfig{
+		states: []ch.VMState{"Created"},
+		bootResponses: []vmTestResponse{{
+			status:  http.StatusBadRequest,
+			payload: `["Error from API","The VM could not boot","VM is already created"]`,
+		}},
+	})
+
+	_, err := executor.EnsureVM(context.Background(), mutation(), desired)
+	assertCloudHypervisorStatus(t, err, http.StatusBadRequest)
+
+	for _, want := range []string{"/api/v1/vm.info", "/api/v1/vm.boot"} {
+		if got := <-requests; got != want {
+			t.Fatalf("Cloud Hypervisor request = %q, want %q", got, want)
+		}
+	}
+
+	select {
+	case got := <-requests:
+		t.Fatalf("non-500 boot failure made Cloud Hypervisor request %q", got)
 	default:
 	}
 }
