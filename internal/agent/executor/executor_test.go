@@ -465,6 +465,39 @@ func TestEnsureVMRecoversUnrecordedCreatedVMWithMissingDiskTypes(t *testing.T) {
 	}
 }
 
+func TestEnsureVMRecoversUnrecordedCreatedVMWithMissingFirmware(t *testing.T) {
+	executor, desired, requests := testVMExecutorWithServer(t, vmTestServerConfig{
+		states: []ch.VMState{"Created"},
+		bootResponses: []vmTestResponse{
+			{
+				status:  http.StatusBadRequest,
+				payload: `["Error manipulating firmware file","No such file or directory (os error 2)"]`,
+			},
+			{status: http.StatusNoContent},
+		},
+	})
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err != nil {
+		t.Fatalf("EnsureVM() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"/api/v1/vm.info",
+		"/api/v1/vm.boot",
+		"/api/v1/vm.delete",
+		"/api/v1/vm.create",
+		"/api/v1/vm.boot",
+	} {
+		if got := <-requests; got != want {
+			t.Fatalf("Cloud Hypervisor request = %q, want %q", got, want)
+		}
+	}
+
+	if _, err := executor.Store.GetVM("install-a", "machine-a"); err != nil {
+		t.Fatalf("recovered VM was not persisted: %v", err)
+	}
+}
+
 func TestEnsureVMDoesNotRecoverUnrelatedCreatedBootFailure(t *testing.T) {
 	executor, desired, requests := testVMExecutorWithServer(t, vmTestServerConfig{
 		states: []ch.VMState{"Created"},

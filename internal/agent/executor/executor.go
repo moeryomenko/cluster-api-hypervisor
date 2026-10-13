@@ -215,8 +215,14 @@ func (e *Executor) EnsureVM(
 	case "Created":
 		if err := api.Boot(ctx); err != nil {
 			var statusError *ch.StatusError
-			if !errors.As(err, &statusError) ||
-				!strings.Contains(strings.ToLower(statusError.Body), "image type required for disk") {
+			if !errors.As(err, &statusError) {
+				return hostagent.VMObserved{}, err
+			}
+
+			body := strings.ToLower(statusError.Body)
+			if !strings.Contains(body, "image type required for disk") &&
+				!(strings.Contains(body, "error manipulating firmware file") &&
+					strings.Contains(body, "no such file or directory (os error 2)")) {
 				return hostagent.VMObserved{}, err
 			}
 
