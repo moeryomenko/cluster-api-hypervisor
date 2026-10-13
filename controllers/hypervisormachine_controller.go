@@ -773,10 +773,17 @@ func (r *HypervisorMachineReconciler) resolveBaseImage(
 	)
 }
 
-const artifactOperationPathEpoch = "artifact-path-v2"
+const (
+	artifactOperationPathEpoch = "artifact-path-v2"
+	vmOperationPathEpoch       = "vm-path-v2"
+)
 
 func artifactOperationKey(uid, kind string, generation int64) string {
 	return uid + "-" + kind + "-" + fmt.Sprint(generation) + "-" + artifactOperationPathEpoch
+}
+
+func vmOperationKey(uid string, generation uint64) string {
+	return uid + "-vm-" + fmt.Sprint(generation) + "-" + vmOperationPathEpoch
 }
 
 // reconcileRootDisk ensures <vm-disks>/<name>-root.qcow2 exists at the spec
@@ -1259,7 +1266,7 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 			ProtocolMajor:  hostagent.ProtocolMajor,
 			Owner:          hostagent.Owner{InstallationID: "agent", NodeID: "k8labs-mgmt-control-plane", UID: string(hm.UID)},
 			Generation:     generation,
-			IdempotencyKey: string(hm.UID) + "-vm-" + fmt.Sprint(generation),
+			IdempotencyKey: vmOperationKey(string(hm.UID), generation),
 		}
 		if len(artifacts.Paths) == 0 || len(artifacts.Paths) != len(artifacts.SHA256s) {
 			return fmt.Errorf("invalid VM artifact result for %q", hm.Name)

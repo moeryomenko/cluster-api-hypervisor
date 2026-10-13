@@ -1317,6 +1317,13 @@ func TestArtifactOperationKeyUsesPathContractEpoch(t *testing.T) {
 	}
 }
 
+func TestVMOperationKeyUsesPathContractEpoch(t *testing.T) {
+	const legacy = "machine-uid-vm-7"
+	if got, want := vmOperationKey("machine-uid", 7), legacy+"-vm-path-v2"; got != want {
+		t.Errorf("vmOperationKey() = %q, want %q", got, want)
+	}
+}
+
 // TestMachineCIDATADiskBuilt pins requirement 1: reconcileCIDATA produces the
 // CIDATA disk image at <vm-disks>/<name>-cidata.img from the rendered parts
 // instead of discarding them. The disk must exist and be non-empty after a
