@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -173,7 +174,22 @@ func TestHealthRequiresNodeID(t *testing.T) {
 	}
 }
 
+type vmTestResponse struct {
+	status  int
+	payload string
+}
+
+type vmTestServerConfig struct {
+	states        []ch.VMState
+	bootResponses []vmTestResponse
+	created       chan<- ch.VmConfig
+}
+
 func testVMExecutor(t *testing.T, states ...ch.VMState) (*Executor, hostagent.VMDesired, <-chan string) {
+	return testVMExecutorWithServer(t, vmTestServerConfig{states: states})
+}
+
+func testVMExecutorWithServer(t *testing.T, config vmTestServerConfig) (*Executor, hostagent.VMDesired, <-chan string) {
 	t.Helper()
 
 	executor, _, _ := testExecutor(t)
@@ -195,15 +211,17 @@ func testVMExecutor(t *testing.T, states ...ch.VMState) (*Executor, hostagent.VM
 	}
 
 	stateIndex := 0
-	requests := make(chan string, 3)
+	bootIndex := 0
+	requests := make(chan string, 8)
 
 	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		requests <- request.URL.Path
 
-		if request.URL.Path == "/api/v1/vm.info" {
+		switch request.URL.Path {
+		case "/api/v1/vm.info":
 			state := ch.VMState("")
-			if stateIndex < len(states) {
-				state = states[stateIndex]
+			if stateIndex < len(config.states) {
+				state = config.states[stateIndex]
 				stateIndex++
 			}
 
@@ -216,6 +234,28 @@ func testVMExecutor(t *testing.T, states ...ch.VMState) (*Executor, hostagent.VM
 			_, _ = fmt.Fprintf(writer, `{"state":%q}`, state)
 
 			return
+		case "/api/v1/vm.create":
+			if config.created != nil {
+				var created ch.VmConfig
+				if err := json.NewDecoder(request.Body).Decode(&created); err != nil {
+					t.Errorf("decode vm.create: %v", err)
+				}
+
+				config.created <- created
+			}
+		case "/api/v1/vm.boot":
+			if bootIndex < len(config.bootResponses) {
+				response := config.bootResponses[bootIndex]
+				bootIndex++
+
+				writer.WriteHeader(response.status)
+
+				if response.payload != "" {
+					_, _ = writer.Write([]byte(response.payload))
+				}
+
+				return
+			}
 		}
 
 		writer.WriteHeader(http.StatusNoContent)
@@ -244,6 +284,19 @@ func testVMExecutor(t *testing.T, states ...ch.VMState) (*Executor, hostagent.VM
 		CPUs:           1,
 		MemoryMiB:      512,
 	}, requests
+}
+
+func assertCloudHypervisorStatus(t *testing.T, err error, want int) {
+	t.Helper()
+
+	var statusErr *ch.StatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("error %v does not wrap *ch.StatusError", err)
+	}
+
+	if statusErr.StatusCode != want {
+		t.Fatalf("status = %d, want %d", statusErr.StatusCode, want)
+	}
 }
 
 func TestEnsureVMRejectsMissingFirmwareChecksum(t *testing.T) {
@@ -349,6 +402,122 @@ func TestEnsureVMRetriesAfterFailedRecovery(t *testing.T) {
 	select {
 	case got := <-requests:
 		t.Fatalf("recovered VM made Cloud Hypervisor request %q", got)
+	default:
+	}
+}
+
+func TestEnsureVMRecoversUnrecordedCreatedVMWithMissingDiskTypes(t *testing.T) {
+	created := make(chan ch.VmConfig, 1)
+	executor, desired, requests := testVMExecutorWithServer(t, vmTestServerConfig{
+		states: []ch.VMState{"Created"},
+		bootResponses: []vmTestResponse{
+			{
+				status:  http.StatusBadRequest,
+				payload: `["Error from API","The VM could not boot","Failed to validate config","Image type required for disk"]`,
+			},
+			{status: http.StatusNoContent},
+		},
+		created: created,
+	})
+
+	cidata := filepath.Join(filepath.Dir(desired.Disk), "machine-a-cidata.img")
+	if err := os.WriteFile(cidata, []byte("cidata"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cidataHash := sha256.Sum256([]byte("cidata"))
+	desired.AdditionalDisks = []string{cidata}
+	desired.AdditionalDiskSHA256s = []string{fmt.Sprintf("%x", cidataHash)}
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err != nil {
+		t.Fatalf("EnsureVM() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"/api/v1/vm.info",
+		"/api/v1/vm.boot",
+		"/api/v1/vm.delete",
+		"/api/v1/vm.create",
+		"/api/v1/vm.boot",
+	} {
+		if got := <-requests; got != want {
+			t.Fatalf("Cloud Hypervisor request = %q, want %q", got, want)
+		}
+	}
+
+	config := <-created
+	if len(config.Disks) != 2 || config.Disks[0].ImageType != "Qcow2" || config.Disks[1].ImageType != "Raw" {
+		t.Fatalf("vm.create disks = %#v, want Qcow2 root and Raw CIDATA", config.Disks)
+	}
+
+	if _, err := executor.Store.GetVM("install-a", "machine-a"); err != nil {
+		t.Fatalf("recovered VM was not persisted: %v", err)
+	}
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err != nil {
+		t.Fatalf("EnsureVM() replay error = %v", err)
+	}
+
+	select {
+	case got := <-requests:
+		t.Fatalf("completed replay made Cloud Hypervisor request %q", got)
+	default:
+	}
+}
+
+func TestEnsureVMDoesNotRecoverUnrelatedCreatedBootFailure(t *testing.T) {
+	executor, desired, requests := testVMExecutorWithServer(t, vmTestServerConfig{
+		states: []ch.VMState{"Created"},
+		bootResponses: []vmTestResponse{
+			{status: http.StatusBadRequest, payload: `["Error from API","The VM could not boot"]`},
+		},
+	})
+
+	_, err := executor.EnsureVM(context.Background(), mutation(), desired)
+	assertCloudHypervisorStatus(t, err, http.StatusBadRequest)
+
+	for _, want := range []string{"/api/v1/vm.info", "/api/v1/vm.boot"} {
+		if got := <-requests; got != want {
+			t.Fatalf("Cloud Hypervisor request = %q, want %q", got, want)
+		}
+	}
+
+	select {
+	case got := <-requests:
+		t.Fatalf("unrelated boot failure made Cloud Hypervisor request %q", got)
+	default:
+	}
+}
+
+func TestEnsureVMDoesNotRecoverRecordedCreatedVM(t *testing.T) {
+	executor, desired, requests := testVMExecutorWithServer(t, vmTestServerConfig{
+		states: []ch.VMState{"Created"},
+		bootResponses: []vmTestResponse{{
+			status:  http.StatusBadRequest,
+			payload: `["Error from API","The VM could not boot","Image type required for disk"]`,
+		}},
+	})
+	if err := executor.Store.UpsertVM(inventory.VM{
+		InstallationID: "install-a",
+		OwnerUID:       "machine-a",
+		NodeID:         "node-a",
+		Unit:           "k8slab-vm-machine-a.service",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := executor.EnsureVM(context.Background(), mutation(), desired)
+	assertCloudHypervisorStatus(t, err, http.StatusBadRequest)
+
+	for _, want := range []string{"/api/v1/vm.info", "/api/v1/vm.boot"} {
+		if got := <-requests; got != want {
+			t.Fatalf("Cloud Hypervisor request = %q, want %q", got, want)
+		}
+	}
+
+	select {
+	case got := <-requests:
+		t.Fatalf("recorded VM made recovery request %q", got)
 	default:
 	}
 }

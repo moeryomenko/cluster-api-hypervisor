@@ -77,6 +77,7 @@ var (
 	_ interface {
 		Boot(context.Context) error
 		Shutdown(context.Context) error
+		Delete(context.Context) error
 		Info(context.Context) (ch.VMState, error)
 	} = &ch.Client{}
 )
@@ -202,6 +203,59 @@ func TestClientShutdown(t *testing.T) {
 	}
 }
 
+// TestClientDelete pins the delete request contract: PUT /api/v1/vm.delete
+// with an empty body, nil for a 2xx response, and a typed StatusError carrying
+// the status code for any non-2xx response.
+func TestClientDelete(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		payload    string
+		wantErr    bool
+		wantStatus int
+	}{
+		{name: "no content", status: http.StatusNoContent},
+		{
+			name:       "not created",
+			status:     http.StatusNotFound,
+			payload:    `{"error":"VM not created"}`,
+			wantErr:    true,
+			wantStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := newRecorder(tt.status, tt.payload)
+			client := mustNewClient(t, newSocketServer(t, rec))
+
+			err := client.Delete(t.Context())
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("Delete returned nil for a non-2xx response, want error")
+				}
+
+				assertStatusError(t, err, tt.wantStatus)
+			} else if err != nil {
+				t.Fatalf("Delete returned %v for a 2xx response, want nil", err)
+			}
+
+			method, path, body := rec.snapshot()
+			if method != http.MethodPut {
+				t.Errorf("Delete method = %q, want %q", method, http.MethodPut)
+			}
+
+			if path != "/api/v1/vm.delete" {
+				t.Errorf("Delete path = %q, want %q", path, "/api/v1/vm.delete")
+			}
+
+			if len(body) != 0 {
+				t.Errorf("Delete sent a %d-byte request body, want none", len(body))
+			}
+		})
+	}
+}
+
 // TestClientInfo pins the info request contract: GET /api/v1/vm.info, parsing
 // the VM state from the JSON response, with a typed StatusError on non-2xx
 // and a plain error when the body is not valid JSON.
@@ -281,9 +335,9 @@ func TestNewDiskConfigSetsImageType(t *testing.T) {
 		readonly  bool
 		imageType string
 	}{
-		{path: "/build/vm-disks/node-root.qcow2", imageType: "qcow2"},
-		{path: "/build/vm-disks/node-cidata.img", readonly: true, imageType: "raw"},
-		{path: "/build/vm-disks/node-data.raw", imageType: "raw"},
+		{path: "/build/vm-disks/node-root.qcow2", imageType: "Qcow2"},
+		{path: "/build/vm-disks/node-cidata.img", readonly: true, imageType: "Raw"},
+		{path: "/build/vm-disks/node-data.raw", imageType: "Raw"},
 	} {
 		got := ch.NewDiskConfig(tt.path, tt.readonly)
 		if got.Path != tt.path || got.Readonly != tt.readonly || got.ImageType != tt.imageType {
@@ -373,9 +427,9 @@ func TestClientCreate(t *testing.T) {
 			assertJSONPath(t, got, "memory.size", float64(cfg.Memory.Size))
 			assertJSONPath(t, got, "memory.shared", true)
 			assertJSONPath(t, got, "disks.0.path", cfg.Disks[0].Path)
-			assertJSONPath(t, got, "disks.0.image_type", cfg.Disks[0].ImageType)
+			assertJSONPath(t, got, "disks.0.image_type", "Qcow2")
 			assertJSONPath(t, got, "disks.1.path", cfg.Disks[1].Path)
-			assertJSONPath(t, got, "disks.1.image_type", cfg.Disks[1].ImageType)
+			assertJSONPath(t, got, "disks.1.image_type", "Raw")
 			assertJSONPath(t, got, "net.0.vhost_user", true)
 			assertJSONPath(t, got, "net.0.vhost_socket", cfg.Net[0].VhostSocket)
 			assertJSONPath(t, got, "net.0.mac", cfg.Net[0].MAC)
@@ -544,6 +598,34 @@ func TestClientContextDeadline(t *testing.T) {
 	}
 }
 
+func TestClientDoesNotKeepUnixConnectionAlive(t *testing.T) {
+	closed := make(chan struct{}, 1)
+	client := mustNewClient(t, newSocketServer(
+		t,
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+		func(_ net.Conn, state http.ConnState) {
+			if state == http.StateClosed {
+				select {
+				case closed <- struct{}{}:
+				default:
+				}
+			}
+		},
+	))
+
+	if err := client.Boot(t.Context()); err != nil {
+		t.Fatalf("Boot() error = %v", err)
+	}
+
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Unix connection remained open after Boot")
+	}
+}
+
 // TestClientStatusErrorMessage pins that a non-2xx answer's body travels
 // with the StatusError: the controller surfaces the API's own reason (for
 // example ["The VM could not boot","VM config is missing"]) in events and
@@ -652,10 +734,14 @@ func (r *requestRecorder) snapshot() (method, path string, body []byte) {
 // newSocketServer starts an HTTP server on a unix socket in a temporary
 // directory and returns the socket path. The server is closed when the test
 // ends.
-func newSocketServer(t *testing.T, handler http.Handler) string {
+func newSocketServer(t *testing.T, handler http.Handler, connStates ...func(net.Conn, http.ConnState)) string {
 	t.Helper()
 
 	srv := httptest.NewUnstartedServer(handler)
+	if len(connStates) > 0 {
+		srv.Config.ConnState = connStates[0]
+	}
+
 	if err := srv.Listener.Close(); err != nil {
 		t.Fatalf("close default listener: %v", err)
 	}

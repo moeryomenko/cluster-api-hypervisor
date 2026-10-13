@@ -98,9 +98,9 @@ type DiskConfig struct {
 
 // NewDiskConfig classifies a disk image for the Cloud Hypervisor API.
 func NewDiskConfig(path string, readonly bool) DiskConfig {
-	imageType := "raw"
+	imageType := "Raw"
 	if strings.HasSuffix(strings.ToLower(path), ".qcow2") {
-		imageType = "qcow2"
+		imageType = "Qcow2"
 	}
 
 	return DiskConfig{Path: path, Readonly: readonly, ImageType: imageType}
@@ -146,6 +146,7 @@ func NewClient(socketPath string) *Client {
 	return &Client{
 		httpClient: &http.Client{
 			Transport: &http.Transport{
+				DisableKeepAlives: true,
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					// The request URL host is arbitrary; the dialer always
 					// connects to the API socket.
@@ -169,6 +170,13 @@ func (c *Client) Boot(ctx context.Context) error {
 // success and error semantics as Boot.
 func (c *Client) Shutdown(ctx context.Context) error {
 	_, err := c.do(ctx, http.MethodPut, vmShutdownPath, nil)
+	return err
+}
+
+// Delete sends PUT /api/v1/vm.delete with no request body, with the same
+// success and error semantics as Boot.
+func (c *Client) Delete(ctx context.Context) error {
+	_, err := c.do(ctx, http.MethodPut, vmDeletePath, nil)
 	return err
 }
 
@@ -216,6 +224,7 @@ const (
 	vmCreatePath   = "/api/v1/vm.create"
 	vmBootPath     = "/api/v1/vm.boot"
 	vmShutdownPath = "/api/v1/vm.shutdown"
+	vmDeletePath   = "/api/v1/vm.delete"
 	vmInfoPath     = "/api/v1/vm.info"
 )
 

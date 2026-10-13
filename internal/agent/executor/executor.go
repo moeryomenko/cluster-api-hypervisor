@@ -164,21 +164,8 @@ func (e *Executor) EnsureVM(
 		return hostagent.VMObserved{}, fmt.Errorf("verify VM firmware: %w", err)
 	}
 
-	state, err := api.Info(ctx)
-	notCreated := false
-
-	if err != nil {
-		var statusError *ch.StatusError
-
-		notCreated = errors.As(err, &statusError) && (statusError.StatusCode == 404 ||
-			(statusError.StatusCode == 500 && strings.Contains(strings.ToLower(statusError.Body), "vm is not created")))
-		if !notCreated {
-			return hostagent.VMObserved{}, err
-		}
-	}
-
-	if notCreated {
-		err = api.Create(ctx, ch.VmConfig{
+	create := func() error {
+		return api.Create(ctx, ch.VmConfig{
 			Payload: &ch.PayloadConfig{
 				Firmware: desired.Firmware,
 			},
@@ -200,7 +187,23 @@ func (e *Executor) EnsureVM(
 				},
 			},
 		})
-		if err != nil {
+	}
+
+	state, err := api.Info(ctx)
+	notCreated := false
+
+	if err != nil {
+		var statusError *ch.StatusError
+
+		notCreated = errors.As(err, &statusError) && (statusError.StatusCode == 404 ||
+			(statusError.StatusCode == 500 && strings.Contains(strings.ToLower(statusError.Body), "vm is not created")))
+		if !notCreated {
+			return hostagent.VMObserved{}, err
+		}
+	}
+
+	if notCreated {
+		if err := create(); err != nil {
 			return hostagent.VMObserved{}, err
 		}
 
@@ -211,7 +214,29 @@ func (e *Executor) EnsureVM(
 	case "Running":
 	case "Created":
 		if err := api.Boot(ctx); err != nil {
-			return hostagent.VMObserved{}, err
+			var statusError *ch.StatusError
+			if !errors.As(err, &statusError) ||
+				!strings.Contains(strings.ToLower(statusError.Body), "image type required for disk") {
+				return hostagent.VMObserved{}, err
+			}
+
+			if _, inventoryErr := e.Store.GetVM(mutation.Owner.InstallationID, mutation.Owner.UID); inventoryErr == nil {
+				return hostagent.VMObserved{}, err
+			} else if !errors.Is(inventoryErr, sql.ErrNoRows) {
+				return hostagent.VMObserved{}, fmt.Errorf("load VM inventory: %w", inventoryErr)
+			}
+
+			if err := api.Delete(ctx); err != nil {
+				return hostagent.VMObserved{}, err
+			}
+
+			if err := create(); err != nil {
+				return hostagent.VMObserved{}, err
+			}
+
+			if err := api.Boot(ctx); err != nil {
+				return hostagent.VMObserved{}, err
+			}
 		}
 	default:
 		err := fmt.Errorf("unexpected Cloud Hypervisor VM state %q", state)
