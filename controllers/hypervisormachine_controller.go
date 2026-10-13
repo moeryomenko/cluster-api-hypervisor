@@ -773,6 +773,12 @@ func (r *HypervisorMachineReconciler) resolveBaseImage(
 	)
 }
 
+const artifactOperationPathEpoch = "artifact-path-v2"
+
+func artifactOperationKey(uid, kind string, generation int64) string {
+	return uid + "-" + kind + "-" + fmt.Sprint(generation) + "-" + artifactOperationPathEpoch
+}
+
 // reconcileRootDisk ensures <vm-disks>/<name>-root.qcow2 exists at the spec
 // size: qemu-img info checks the current disk, and a disk that is absent or
 // at the wrong size is converted from the base image and resized. The size
@@ -790,7 +796,7 @@ func (r *HypervisorMachineReconciler) reconcileRootDisk(
 			ProtocolMajor:  hostagent.ProtocolMajor,
 			Owner:          hostagent.Owner{InstallationID: "agent", NodeID: "k8labs-mgmt-control-plane", UID: string(hm.UID)},
 			Generation:     uint64(hm.Generation),
-			IdempotencyKey: string(hm.UID) + "-root-" + fmt.Sprint(hm.Generation),
+			IdempotencyKey: artifactOperationKey(string(hm.UID), "root", hm.Generation),
 		}
 		result, err := r.Agent.PrepareRootDisk(
 			ctx,
@@ -929,7 +935,7 @@ func (r *HypervisorMachineReconciler) reconcileConfextDataDisk(
 			ProtocolMajor:  hostagent.ProtocolMajor,
 			Owner:          hostagent.Owner{InstallationID: "agent", NodeID: "k8labs-mgmt-control-plane", UID: string(hm.UID)},
 			Generation:     uint64(hm.Generation),
-			IdempotencyKey: string(hm.UID) + "-confext-" + fmt.Sprint(hm.Generation),
+			IdempotencyKey: artifactOperationKey(string(hm.UID), "confext", hm.Generation),
 		}
 
 		result, err := r.Agent.PrepareConfext(ctx, mutation, machine.Name, files)
@@ -1120,7 +1126,7 @@ func (r *HypervisorMachineReconciler) reconcileCIDATA(
 			ProtocolMajor:  hostagent.ProtocolMajor,
 			Owner:          hostagent.Owner{InstallationID: "agent", NodeID: "k8labs-mgmt-control-plane", UID: string(hm.UID)},
 			Generation:     uint64(hm.Generation),
-			IdempotencyKey: string(hm.UID) + "-cidata-" + fmt.Sprint(hm.Generation),
+			IdempotencyKey: artifactOperationKey(string(hm.UID), "cidata", hm.Generation),
 		}
 
 		result, err := r.Agent.PrepareCIDATA(ctx, mutation, hm.Name, files)

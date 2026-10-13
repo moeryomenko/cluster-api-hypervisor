@@ -1305,6 +1305,18 @@ func TestMachineCIDATARenderedWithAllocatedIP(t *testing.T) {
 	}
 }
 
+func TestArtifactOperationKeyUsesPathContractEpoch(t *testing.T) {
+	for kind, want := range map[string]string{
+		"root":    "machine-uid-root-7-artifact-path-v2",
+		"cidata":  "machine-uid-cidata-7-artifact-path-v2",
+		"confext": "machine-uid-confext-7-artifact-path-v2",
+	} {
+		if got := artifactOperationKey("machine-uid", kind, 7); got != want {
+			t.Errorf("artifactOperationKey(%q) = %q, want %q", kind, got, want)
+		}
+	}
+}
+
 // TestMachineCIDATADiskBuilt pins requirement 1: reconcileCIDATA produces the
 // CIDATA disk image at <vm-disks>/<name>-cidata.img from the rendered parts
 // instead of discarding them. The disk must exist and be non-empty after a
