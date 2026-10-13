@@ -8,6 +8,13 @@ RACE_DETECTOR ?= -race
 COUNT ?= 1
 TEST ?= $(shell go list ./...)
 IMPORT_PATH := $(shell go list -m -f {{.Path}} | head -1)
+GIT_VERSION ?= $(shell git describe --tags --always --dirty)
+GIT_MAJOR ?= $(shell git describe --tags --abbrev=0 2>/dev/null | sed -E 's/^v([0-9]+)\..*/\1/')
+GIT_MINOR ?= $(shell git describe --tags --abbrev=0 2>/dev/null | sed -E 's/^v[0-9]+\.([0-9]+)\..*/\1/')
+GIT_COMMIT ?= $(shell git rev-parse HEAD)
+GIT_TREE_STATE ?= $(shell test -z "$$(git status --porcelain)" && printf clean || printf dirty)
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+VERSION_LDFLAGS := -X $(IMPORT_PATH)/version.gitMajor=$(GIT_MAJOR) -X $(IMPORT_PATH)/version.gitMinor=$(GIT_MINOR) -X $(IMPORT_PATH)/version.gitVersion=$(GIT_VERSION) -X $(IMPORT_PATH)/version.gitCommit=$(GIT_COMMIT) -X $(IMPORT_PATH)/version.gitTreeState=$(GIT_TREE_STATE) -X $(IMPORT_PATH)/version.buildDate=$(BUILD_DATE)
 ENVTEST_K8S_VERSION ?= 1.35.0
 
 # Release tree knobs for the clusterctl provider packaging targets. OUT_DIR is
@@ -37,7 +44,7 @@ default: help
 
 .PHONY: build
 build: ## Build the manager binary
-	@go build -o $(BINARY) .
+	@go build -ldflags "$(VERSION_LDFLAGS)" -o $(BINARY) .
 
 .PHONY: test
 test: ## Run all tests with race detector and coverage
