@@ -46,7 +46,7 @@ ARG QEMU_IMG_VERSION=11.1.2-r0
 ARG SQUASHFS_TOOLS_VERSION=4.7.5-r0
 ARG DOSFSTOOLS_VERSION=4.2-r2
 ARG MTOOLS_VERSION=4.0.49-r0
-ARG LIBCAP_VERSION=2.78-r0
+ARG LIBCAP_VERSION=2.78-r1
 
 # libcap ships setcap, used below to strip the file capability the Alpine
 # cloud-hypervisor package carries (security.capability xattr cap_net_admin=ep).

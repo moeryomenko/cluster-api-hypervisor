@@ -24,7 +24,7 @@ the source of truth listed in the table — keep them in sync when bumping.
 | squashfs-tools | 4.7.5-r0 | `Containerfile:45` (`SQUASHFS_TOOLS_VERSION`) |
 | dosfstools | 4.2-r2 | `Containerfile:46` (`DOSFSTOOLS_VERSION`) |
 | mtools | 4.0.49-r0 | `Containerfile:47` (`MTOOLS_VERSION`) |
-| libcap | 2.78-r0 | `Containerfile:48` (`LIBCAP_VERSION`) |
+| libcap | 2.78-r1 | `Containerfile:48` (`LIBCAP_VERSION`) |
 | agent runtime dbus | Alpine edge package | `Containerfile.agent:24` |
 
 Source files:
