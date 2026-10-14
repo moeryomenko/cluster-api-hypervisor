@@ -64,6 +64,7 @@ fmt: ## Format Go source files
 	@gofmt -s -w .
 	@git ls-files -m -o --exclude-standard -- '*.go' | xargs -r -I{} go tool golines --base-formatter=gofumpt --ignore-generated --tab-len=1 --max-len=120 -w {}
 	@git ls-files -m -o --exclude-standard -- '*.go' | xargs -r -I{} go tool goimports -local $(IMPORT_PATH) -w {}
+	@go fix ./...
 
 .PHONY: vet
 vet: ## Run go vet
