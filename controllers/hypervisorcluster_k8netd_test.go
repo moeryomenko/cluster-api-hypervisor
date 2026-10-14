@@ -603,7 +603,7 @@ func TestHypervisorClusterK8netd_ReconcileNormal_ErrorLeavesNotReady(t *testing.
 
 // TestHypervisorClusterK8netd_ReconcileControlPlaneEndpointStillReconciles
 // asserts that the k8netd-wired controller still publishes the control-plane
-// endpoint (host+6443) when the linked control plane is initialized and a
+// endpoint (management hostname+published port) when the linked control plane is initialized and a
 // control-plane machine has an IP, and that every reconcile still issues
 // CreateNetwork before endpoint logic.
 func TestHypervisorClusterK8netd_ReconcileControlPlaneEndpointStillReconciles(t *testing.T) {
@@ -624,7 +624,7 @@ func TestHypervisorClusterK8netd_ReconcileControlPlaneEndpointStillReconciles(t 
 		t.Fatalf("Get HypervisorCluster: %v", err)
 	}
 
-	const wantHost = "127.0.0.1"
+	const wantHost = "host.containers.internal"
 	if hc.Status.ControlPlaneEndpoint.Host != wantHost {
 		t.Errorf(
 			"controlPlaneEndpoint.host = %q, want %q (endpoint must still reconcile with k8netd)",

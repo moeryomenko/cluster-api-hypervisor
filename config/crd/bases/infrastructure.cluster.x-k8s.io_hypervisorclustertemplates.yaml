@@ -69,9 +69,9 @@ spec:
                           the CAPI cluster controller reads spec.controlPlaneEndpoint from this
                           object and copies it to the Cluster's spec.controlPlaneEndpoint, which
                           drives the cluster phase transition to Provisioned. The host is
-                          127.0.0.1 (the management plane reaches the VM through the host-side
-                          passt forwarding) and the port is the k8netd-published host port for
-                          the API server.
+                          host.containers.internal (the management plane reaches the VM through
+                          the host-side passt forwarding) and the port is the k8netd-published
+                          host port for the API server.
                         minProperties: 1
                         properties:
                           host:

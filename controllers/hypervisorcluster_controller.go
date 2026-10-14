@@ -279,10 +279,10 @@ func isInfrastructureReady(hc *infrastructurev1alpha1.HypervisorCluster) bool {
 // path the CAPI cluster controller copies to the Cluster's
 // spec.controlPlaneEndpoint, driving the phase transition to Provisioned)
 // and status.controlPlaneEndpoint (legacy, kept for observability). The
-// host is 127.0.0.1 and the port is the k8netd-published host port for the
-// API server, falling back to 6443 when the machine has not recorded a
-// publication yet. An absent or uninitialized control plane leaves the
-// endpoint untouched without error.
+// hostname is the management-reachable host.containers.internal alias, and
+// the port is the k8netd-published API server host port, falling back to 6443
+// when the machine has not recorded a publication yet. An absent or
+// uninitialized control plane leaves the endpoint untouched without error.
 func (r *HypervisorClusterReconciler) reconcileControlPlaneEndpoint(
 	ctx context.Context,
 	cluster *clusterv1.Cluster,
@@ -349,7 +349,7 @@ func (r *HypervisorClusterReconciler) reconcileControlPlaneEndpoint(
 		}
 
 		endpoint := clusterv1.APIEndpoint{
-			Host: "127.0.0.1",
+			Host: "host.containers.internal",
 			Port: publishedAPIPort(hm.Status.PublishedPorts),
 		}
 		hc.Spec.ControlPlaneEndpoint = endpoint

@@ -26,12 +26,11 @@ limitations under the License.
 //     object carrying the standard paused annotation is left untouched with
 //     no reconcile actions. A missing object and a missing linked Cluster
 //     are both no-ops, not errors.
-//   - Control-plane endpoint publication (TASK-011/012): once the linked
-//     control plane reports initialized and a control-plane machine holds an
-//     internal IP, the endpoint is published as 127.0.0.1:6443 — loopback,
-//     reachable via the control-plane VM's per-VM passt forwarding — never
-//     the machine's internal IP. An absent or uninitialized control plane
-//     leaves the endpoint empty without error.
+//   - Control-plane endpoint publication: once the linked control plane
+//     reports initialized and a control-plane machine holds an internal IP,
+//     the endpoint is published as host.containers.internal with the
+//     k8netd-allocated host port, never the machine's internal IP. An absent
+//     or uninitialized control plane leaves the endpoint empty without error.
 //
 // The reconciler is exercised through the committed envtest harness with a
 // fake k8netd server standing in for the daemon, so no real host state is
@@ -502,22 +501,20 @@ func TestReconcileMissingObjectIsNoop(t *testing.T) {
 	}
 }
 
-// TASK-011 VC-06 REQ-006 — endpoint + PKI: reconcileControlPlaneEndpoint
-// publishes 127.0.0.1:6443, not the VM's internal IP.
+// REQ-006 — endpoint publication uses the management-reachable hostname and
+// the API server's recorded published host port, not the VM's internal IP.
 //
-// Grill-me: reserved IP is dynamic (not hardcoded .20); endpoint must be
-// loopback even when the machine's InternalIP differs; port must be 6443;
+// reserved IP is dynamic (not hardcoded .20); endpoint host is independent of
+// machine InternalIP; port is the recorded host-side publication;
 // uninitialized control plane still leaves endpoint empty; second reconcile
 // converges.
-// RED: current impl publishes the machine's internal IP (e.g. 192.168.124.77),
-// so the host assertion fails.
-func TestReconcileControlPlaneEndpointPublishesLoopback(t *testing.T) {
+func TestReconcileControlPlaneEndpointPublishesManagementHostname(t *testing.T) {
 	c := mustReconcileClient(t)
 	// Use non-default reserved IP to prove not hardcoded .20.
 	const (
 		reservedIP = "192.168.124.77"
-		wantHost   = "127.0.0.1"
-		wantPort   = 6443
+		wantHost   = "host.containers.internal"
+		wantPort   = 26443
 	)
 
 	r := newTestReconciler(t, c)
@@ -525,6 +522,9 @@ func TestReconcileControlPlaneEndpointPublishesLoopback(t *testing.T) {
 	lc := newLinkedCluster(t, c, "hc-endpoint-loopback", "capi-cluster")
 	newControlPlane(t, c, lc, true)
 	newControlPlaneMachine(t, c, lc, reservedIP)
+	setHMPublishedPorts(t, c, &infrastructurev1alpha1.HypervisorMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: lc.name + "-cp-0", Namespace: lc.namespace},
+	}, infrastructurev1alpha1.MachinePublishedPort{VMPort: controlPlaneAPIServerPort, HostPort: 26443})
 
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 		t.Fatalf("Reconcile error: %v", err)
@@ -537,7 +537,7 @@ func TestReconcileControlPlaneEndpointPublishesLoopback(t *testing.T) {
 
 	if hc.Status.ControlPlaneEndpoint.Host != wantHost {
 		t.Errorf(
-			"controlPlaneEndpoint.host = %q, want %q (REQ-006 VC-06: must be loopback, not %s)",
+			"controlPlaneEndpoint.host = %q, want %q (must be management-reachable, not machine IP %s)",
 			hc.Status.ControlPlaneEndpoint.Host,
 			wantHost,
 			reservedIP,
@@ -547,15 +547,21 @@ func TestReconcileControlPlaneEndpointPublishesLoopback(t *testing.T) {
 	if hc.Status.ControlPlaneEndpoint.Port != wantPort {
 		t.Errorf("controlPlaneEndpoint.port = %d, want %d", hc.Status.ControlPlaneEndpoint.Port, wantPort)
 	}
+
+	if hc.Spec.ControlPlaneEndpoint.Host != wantHost || hc.Spec.ControlPlaneEndpoint.Port != wantPort {
+		t.Errorf(
+			"spec.controlPlaneEndpoint = %s:%d, want %s:%d",
+			hc.Spec.ControlPlaneEndpoint.Host,
+			hc.Spec.ControlPlaneEndpoint.Port,
+			wantHost,
+			wantPort,
+		)
+	}
 	// Prove not still publishing the reserved IP.
 	if hc.Status.ControlPlaneEndpoint.Host == reservedIP {
-		t.Errorf("controlPlaneEndpoint still publishes reserved IP %q, want loopback", reservedIP)
+		t.Errorf("controlPlaneEndpoint still publishes reserved IP %q", reservedIP)
 	}
-	// Prove not hardcoded to old default testCPIP.
-	if hc.Status.ControlPlaneEndpoint.Host == testCPIP && wantHost != testCPIP {
-		t.Logf("endpoint is old default %q, want loopback", testCPIP)
-	}
-	// Second reconcile converges: still loopback.
+	// Second reconcile converges to the same endpoint.
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 		t.Fatalf("second Reconcile error: %v", err)
 	}
@@ -575,9 +581,9 @@ func TestReconcileControlPlaneEndpointPublishesLoopback(t *testing.T) {
 	}
 }
 
-// TestReconcileControlPlaneEndpointLoopbackWithDynamicIPs proves the
-// loopback endpoint does not vary with the reserved IP AllocateIP returns.
-func TestReconcileControlPlaneEndpointLoopbackWithDynamicIPs(t *testing.T) {
+// TestReconcileControlPlaneEndpointUsesPublishedPort proves the endpoint
+// tracks the published API host port, independent of each reserved VM IP.
+func TestReconcileControlPlaneEndpointUsesPublishedPort(t *testing.T) {
 	for _, reservedIP := range []string{"192.168.124.50", "192.168.124.90", "192.168.124.200"} {
 		t.Run(reservedIP, func(t *testing.T) {
 			c := mustReconcileClient(t)
@@ -587,6 +593,9 @@ func TestReconcileControlPlaneEndpointLoopbackWithDynamicIPs(t *testing.T) {
 			lc := newLinkedCluster(t, c, ns, "capi-cluster")
 			newControlPlane(t, c, lc, true)
 			newControlPlaneMachine(t, c, lc, reservedIP)
+			setHMPublishedPorts(t, c, &infrastructurev1alpha1.HypervisorMachine{
+				ObjectMeta: metav1.ObjectMeta{Name: lc.name + "-cp-0", Namespace: lc.namespace},
+			}, infrastructurev1alpha1.MachinePublishedPort{VMPort: controlPlaneAPIServerPort, HostPort: 26443})
 
 			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: lc.key()}); err != nil {
 				t.Fatalf("Reconcile error: %v", err)
@@ -597,19 +606,23 @@ func TestReconcileControlPlaneEndpointLoopbackWithDynamicIPs(t *testing.T) {
 				t.Fatalf("Get HypervisorCluster: %v", err)
 			}
 
-			if hc.Status.ControlPlaneEndpoint.Host != "127.0.0.1" {
-				t.Errorf("reserved %s: endpoint host = %q, want 127.0.0.1", reservedIP, hc.Status.ControlPlaneEndpoint.Host)
+			if hc.Status.ControlPlaneEndpoint.Host != "host.containers.internal" {
+				t.Errorf(
+					"reserved %s: endpoint host = %q, want host.containers.internal",
+					reservedIP,
+					hc.Status.ControlPlaneEndpoint.Host,
+				)
 			}
 
-			if hc.Status.ControlPlaneEndpoint.Port != 6443 {
-				t.Errorf("reserved %s: endpoint port = %d, want 6443", reservedIP, hc.Status.ControlPlaneEndpoint.Port)
+			if hc.Status.ControlPlaneEndpoint.Port != 26443 {
+				t.Errorf("reserved %s: endpoint port = %d, want 26443", reservedIP, hc.Status.ControlPlaneEndpoint.Port)
 			}
 		})
 	}
 }
 
-// TestReconcileControlPlaneEndpointLoopbackWhenNoMachine ensures that even
-// with the loopback contract, an absent or uninitialized control plane still
+// TestReconcileControlPlaneEndpointWhenNoMachine ensures that an absent or
+// uninitialized control plane still
 // leaves the endpoint empty (no regression of the paused/not-ready gate).
 func TestReconcileControlPlaneEndpointLoopbackGate(t *testing.T) {
 	c := mustReconcileClient(t)

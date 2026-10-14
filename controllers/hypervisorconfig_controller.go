@@ -368,11 +368,11 @@ func (r *HypervisorConfigReconciler) controlPlaneAddress(
 		return ip, defaultControlPlanePort, nil
 	}
 
-	// The HypervisorCluster endpoint is 127.0.0.1:6443 (host reachability via
-	// the control-plane VM's passt forward), which is wrong for a worker's
-	// kubelet: the kubelet must reach the apiserver over the k8netd L2 segment
-	// at the control-plane VM's internal IP, not the loopback. Resolve the
-	// first control-plane machine's internal IP instead.
+	// The HypervisorCluster endpoint is host.containers.internal:<hostPort>
+	// for management-plane clients, which is not the endpoint a worker's
+	// kubelet should use. The kubelet must reach the apiserver over the k8netd
+	// L2 segment at the control-plane VM's internal IP. Resolve the first
+	// control-plane machine's internal IP instead.
 	cpIP, ok, err := r.controlPlaneMachineInternalIP(ctx, cluster)
 	if err != nil {
 		return "", 0, err
