@@ -1086,7 +1086,7 @@ func TestControlPlaneMachineCreationFailure(t *testing.T) {
 //     the control-plane role label) and its linked HypervisorMachine (the
 //     conventional same-name infrastructure object), reads the InternalIP
 //     address and the recorded 6443 allocation from status.publishedPorts,
-//     and polls the apiserver at https://127.0.0.1:<hostPort> through the
+//     and polls the apiserver at https://host.containers.internal:<hostPort> through the
 //     seam with the cluster PKI material as the client certificate and CA.
 //     A machine without a recorded allocation requeues without polling —
 //     there is no fallback to the VM IP, which has no host route.
@@ -1417,8 +1417,12 @@ func TestControlPlaneReadinessWritesKubeconfig(t *testing.T) {
 	}
 
 	call := fx.health.calls[0]
-	if call.host != "127.0.0.1" || call.port != 26443 {
-		t.Errorf("healthz polled endpoint %s:%d, want 127.0.0.1:26443 (the recorded allocation)", call.host, call.port)
+	if call.host != "host.containers.internal" || call.port != 26443 {
+		t.Errorf(
+			"healthz polled endpoint %s:%d, want host.containers.internal:26443 (the recorded allocation)",
+			call.host,
+			call.port,
+		)
 	}
 
 	if !bytes.Equal(call.caCert, pk.CA) {
@@ -1487,8 +1491,8 @@ func TestControlPlaneReadinessRespectsTimeout(t *testing.T) {
 
 	if len(fx.health.calls) == 0 {
 		t.Error("apiserver healthz seam never called")
-	} else if call := fx.health.calls[0]; call.host != "127.0.0.1" || call.port != 26443 {
-		t.Errorf("healthz polled endpoint %s:%d, want 127.0.0.1:26443 (the recorded allocation)", call.host, call.port)
+	} else if call := fx.health.calls[0]; call.host != "host.containers.internal" || call.port != 26443 {
+		t.Errorf("healthz polled endpoint %s:%d, want host.containers.internal:26443 (the recorded allocation)", call.host, call.port)
 	}
 
 	wantNoKubeconfigSecret(t, c, kubeconfigSecretKey(lc.name, lc.namespace))
@@ -1946,9 +1950,9 @@ func TestControlPlaneKubeconfigServerIsLoopback(t *testing.T) {
 	}
 	// Health check must be polled through the published loopback endpoint,
 	// never the VM internal IP (no host route into the k8netd L2 segment).
-	if call := fx.health.calls[0]; call.host != "127.0.0.1" || call.port != 26443 {
+	if call := fx.health.calls[0]; call.host != "host.containers.internal" || call.port != 26443 {
 		t.Errorf(
-			"healthz polled endpoint %s:%d, want 127.0.0.1:26443 (published allocation, not the VM IP)",
+			"healthz polled endpoint %s:%d, want host.containers.internal:26443 (published allocation, not the VM IP)",
 			call.host,
 			call.port,
 		)

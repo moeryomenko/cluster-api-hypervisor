@@ -26,15 +26,139 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/pki"
 )
+
+// TestSeedClusterAdminUsesPublishedEndpoint pins the published HTTPS endpoint
+// used by the management-plane controller. Replacing its hostname with
+// pod-local 127.0.0.1 breaks both routing and TLS hostname verification.
+func TestSeedClusterAdminUsesPublishedEndpoint(t *testing.T) {
+	const cpIP = "192.168.124.2"
+
+	clusterPKI, err := pki.GenerateClusterPKI(cpIP, "k8labs-cp")
+	if err != nil {
+		t.Fatalf("GenerateClusterPKI: %v", err)
+	}
+
+	caBlock, _ := pem.Decode(clusterPKI.CA)
+	if caBlock == nil {
+		t.Fatal("cluster CA is not PEM encoded")
+	}
+
+	caCert, err := x509.ParseCertificate(caBlock.Bytes)
+	if err != nil {
+		t.Fatalf("parse cluster CA: %v", err)
+	}
+
+	keyBlock, _ := pem.Decode(clusterPKI.CAKey)
+	if keyBlock == nil {
+		t.Fatal("cluster CA key is not PEM encoded")
+	}
+
+	caKey, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+	if err != nil {
+		t.Fatalf("parse cluster CA key: %v", err)
+	}
+
+	serverKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate test apiserver key: %v", err)
+	}
+
+	now := time.Now()
+	serverTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test workload apiserver"},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     now.Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+	}
+
+	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caCert, &serverKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create test apiserver certificate: %v", err)
+	}
+
+	serverCert, err := tls.X509KeyPair(
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(serverKey)}),
+	)
+	if err != nil {
+		t.Fatalf("parse test apiserver keypair: %v", err)
+	}
+
+	var (
+		sawPublishedAuthority bool
+		publishedAuthority    string
+	)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host == publishedAuthority {
+			sawPublishedAuthority = true
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/cluster-ca-admin":
+			_, _ = w.Write(
+				[]byte(
+					`{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRoleBinding","metadata":{"name":"cluster-ca-admin"}}`,
+				),
+			)
+		case "/api/v1/namespaces/kube-system/services/kube-dns":
+			_, _ = w.Write(
+				[]byte(`{"apiVersion":"v1","kind":"Service","metadata":{"name":"kube-dns","namespace":"kube-system"}}`),
+			)
+		case "/api/v1/namespaces/kube-system/configmaps/cilium-config":
+			_, _ = w.Write(
+				[]byte(
+					`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cilium-config","namespace":"kube-system"},"data":{"k8sServiceHost":"192.168.124.2","k8sServicePort":"6443"}}`,
+				),
+			)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	server := httptest.NewUnstartedServer(handler)
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{serverCert}}
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+	publishedAuthority = net.JoinHostPort("localhost", strconv.Itoa(port))
+
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	serverURL := "https://" + publishedAuthority
+	if err := seedClusterAdmin(t.Context(), serverURL, cpIP, clusterPKI); err != nil {
+		t.Fatalf("seedClusterAdmin: %v", err)
+	}
+
+	if !sawPublishedAuthority {
+		t.Errorf("seed client did not reach the published endpoint authority %q", publishedAuthority)
+	}
+}
 
 // TestSeedClusterAdminBinding pins the RBAC seed: it creates the
 // cluster-ca -> cluster-admin binding and is idempotent on a second call.

@@ -18,7 +18,7 @@ limitations under the License.
 // RED).
 //
 // REQ-009 / VC-07 / TASK-013: ensureKubeconfigSecret renders the server URL
-// as https://127.0.0.1:<hostPort> using the 6443 allocation recorded by
+// as https://host.containers.internal:<hostPort> using the 6443 allocation recorded by
 // REQ-008 on the cluster's control-plane machines' HypervisorMachine status.
 // Write-once semantics become reconcile-to-current: when the recorded
 // allocation changes, the existing Secret's data.value is updated in place.
@@ -98,7 +98,7 @@ func newKubeconfigAllocationFixture(
 }
 
 // TestControlPlaneKubeconfigServerURLFromPublishedAllocation pins REQ-009:
-// the rendered kubeconfig server URL is https://127.0.0.1:<hostPort> taken
+// the rendered kubeconfig server URL is https://host.containers.internal:<hostPort> taken
 // from the cp machine's recorded 6443 allocation — not the static
 // https://127.0.0.1:6443 of the pre-allocation flow.
 func TestControlPlaneKubeconfigServerURLFromPublishedAllocation(t *testing.T) {
@@ -208,7 +208,7 @@ func TestControlPlaneKubeconfigWaitsForPublishedAllocation(t *testing.T) {
 }
 
 // TestControlPlaneHealthProbeUsesAllocatedHostPort pins the TASK-021 P3 fix:
-// the readiness probe dials https://127.0.0.1:<hostPort> — exactly the 6443
+// the readiness probe dials https://host.containers.internal:<hostPort> — exactly the 6443
 // allocation recorded on the cp machine's status.publishedPorts, like the
 // kubeconfig server URL — never the VM internal IP and never a static port.
 func TestControlPlaneHealthProbeUsesAllocatedHostPort(t *testing.T) {
@@ -230,9 +230,9 @@ func TestControlPlaneHealthProbeUsesAllocatedHostPort(t *testing.T) {
 	}
 
 	call := fx.health.calls[0]
-	if call.host != "127.0.0.1" || call.port != allocatedHostPort {
+	if call.host != "host.containers.internal" || call.port != allocatedHostPort {
 		t.Errorf(
-			"healthz polled endpoint %s:%d, want 127.0.0.1:%d (the recorded allocation)",
+			"healthz polled endpoint %s:%d, want host.containers.internal:%d (the recorded allocation)",
 			call.host,
 			call.port,
 			allocatedHostPort,

@@ -520,7 +520,7 @@ func buildConfextTree(
 // checkAPIServerHealth polls the workload apiserver healthz endpoint at
 // https://host:port with an HTTP client that trusts caCert and authenticates
 // with the clientCert/clientKey pair, returning nil exactly when the apiserver
-// answers 200 OK. host/port are the published loopback endpoint recorded on
+// answers 200 OK. host/port are the published endpoint recorded on
 // the control-plane machine's status.publishedPorts. The cluster CA doubles as
 // the client certificate in the control-plane readiness flow, mirroring the
 // KTHW apiserver client-ca-file authentication.
@@ -532,33 +532,26 @@ func buildConfextTree(
 // management-plane clustercache / ClusterResourceSet controllers could never
 // connect to apply the addons. The provider mints a one-time system:masters
 // client cert from the workload CA (system:masters is a kube-apiserver
-// superuser group), connects to the workload apiserver over the published
-// loopback endpoint, and performs all three idempotently. The provider
-// container runs with Network=host, so the published 127.0.0.1:<hostPort>
-// endpoint is reachable.
+// superuser group), connects to the workload apiserver at the published
+// endpoint, and performs all three idempotently.
 func seedClusterAdmin(ctx context.Context, serverURL, cpIP string, pk pki.ClusterPKI) error {
 	certPEM, keyPEM, err := pki.MintClientCert(pk, "system:masters-admin", []string{"system:masters"})
 	if err != nil {
 		return fmt.Errorf("mint system:masters bootstrap client cert: %w", err)
 	}
 
-	// serverURL is host.containers.internal:<port> (written into the
-	// kubeconfig for the management pod); the provider container shares the
-	// host network namespace, so the published loopback endpoint is what is
-	// actually reachable from here.
-	hostPort, err := urlHostPort(serverURL)
-	if err != nil {
+	// Keep the published hostname: the provider runs in a management-cluster
+	// Pod, where 127.0.0.1 would point back to the Pod rather than the host.
+	if _, err := urlHostPort(serverURL); err != nil {
 		return fmt.Errorf("parse workload apiserver endpoint %q: %w", serverURL, err)
 	}
-
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(hostPort)))
 
 	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
 		return fmt.Errorf("build RBAC seed client certificate: %w", err)
 	}
 
 	cfg := &rest.Config{
-		Host: "https://" + addr,
+		Host: serverURL,
 		TLSClientConfig: rest.TLSClientConfig{
 			CAData:   pk.CA,
 			CertData: certPEM,
@@ -703,7 +696,7 @@ func seedCiliumConfig(ctx context.Context, clientset kubernetes.Interface, cpIP 
 	return nil
 }
 
-// urlHostPort extracts the numeric TCP port from an https://host:port URL.
+// urlHostPort validates and extracts the numeric TCP port from an https://host:port URL.
 func urlHostPort(raw string) (int32, error) {
 	u, err := url.Parse(raw)
 	if err != nil {

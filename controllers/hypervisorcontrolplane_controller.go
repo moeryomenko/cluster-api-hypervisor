@@ -978,8 +978,7 @@ func (r *HypervisorControlPlaneReconciler) clusterToHypervisorControlPlane(
 // on status.publishedPorts — a machine without one requeues, there is no
 // fallback to the VM IP because the host has no route into the k8netd L2
 // segment. The workload apiserver healthz endpoint is polled through the
-// CheckAPIServerHealth seam at https://127.0.0.1:<hostPort> with the cluster
-// PKI material. A healthy poll renders the admin kubeconfig into the
+// CheckAPIServerHealth seam at https://host.containers.internal:<hostPort> with the cluster\n// PKI material. A healthy poll renders the admin kubeconfig into the
 // conventional <cluster>-kubeconfig Secret with the same server URL (REQ-009)
 // and marks the control plane initialized and ready. After readiness, the
 // kubeconfig keeps reconciling to the currently recorded allocation so a
@@ -1039,7 +1038,7 @@ func (r *HypervisorControlPlaneReconciler) reconcileReadiness(
 			return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
 		}
 
-		if err := r.CheckAPIServerHealth(ctx, "127.0.0.1", apiHostPort, pk.CA, pk.CAKey, pk.CA); err != nil {
+		if err := r.CheckAPIServerHealth(ctx, "host.containers.internal", apiHostPort, pk.CA, pk.CAKey, pk.CA); err != nil {
 			log.Info("workload apiserver not healthy yet, waiting", "endpoint", serverURL, "error", err)
 			return ctrl.Result{RequeueAfter: controlPlaneReadinessPollInterval}, nil
 		}
