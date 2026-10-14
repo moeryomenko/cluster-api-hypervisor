@@ -100,6 +100,7 @@ import (
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/cloudinit"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
+	"github.com/moeryomenko/cluster-api-hypervisor/internal/hostagent"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/k8netd/fake"
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/mac"
@@ -1871,6 +1872,75 @@ func TestMachineVMProviderID(t *testing.T) {
 
 	if host := statusHostName(hm); host != lm.name {
 		t.Errorf("status.addresses hostname = %q, want %q", host, lm.name)
+	}
+}
+
+// TestMachineVMRepairsSpecProviderIDWithoutReboot pins recovery of Machines
+// created by a provider version that wrote providerID only through the status
+// subresource. Reconciliation must persist the spec contract without rebooting
+// an already-running VM.
+func TestMachineVMRepairsSpecProviderIDWithoutReboot(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	lc := newLinkedCluster(t, c, "machine-vm-providerid-repair", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+	wantProviderID := fmt.Sprintf("hypervisor://%s/%s", lc.name, lm.name)
+	hm := getMachine(t, c, lm.hm)
+
+	hm.Status.ProviderID = &wantProviderID
+	if err := c.Status().Update(t.Context(), hm); err != nil {
+		t.Fatalf("seed legacy status.providerID: %v", err)
+	}
+
+	fx.vm.State = ch.VMState("Running")
+	fx.reconcileMachine(t, lm.hm)
+
+	got := getMachine(t, c, lm.hm)
+	if got.Spec.ProviderID == nil || *got.Spec.ProviderID != wantProviderID {
+		t.Errorf("spec.providerID = %v, want %q", got.Spec.ProviderID, wantProviderID)
+	}
+
+	if !reflect.DeepEqual(fx.vm.Calls, []string{"Info"}) {
+		t.Errorf("VM client calls = %v, want [Info] without re-booting the existing VM", fx.vm.Calls)
+	}
+}
+
+// TestMachineAgentVMRepairsSpecProviderID pins the HostAgent-backed lifecycle
+// path: an existing VM with the legacy status-only providerID must get its
+// spec.providerID persisted after idempotent EnsureVM reconciliation.
+func TestMachineAgentVMRepairsSpecProviderID(t *testing.T) {
+	c := mustReconcileClient(t)
+	fx := newMachineFixture(t, c)
+	lc := newLinkedCluster(t, c, "machine-agent-providerid-repair", "capi-cluster")
+	lm := newLinkedMachine(t, c, lc, "node-1", true)
+
+	wantProviderID := fmt.Sprintf("hypervisor://%s/%s", lc.name, lm.name)
+	hm := getMachine(t, c, lm.hm)
+	hm.Status.ProviderID = &wantProviderID
+	hm.Status.Image = testBaseImage
+
+	hm.Status.Addresses = []clusterv1.MachineAddress{
+		{Type: clusterv1.MachineInternalIP, Address: testPoolStart},
+	}
+	if err := c.Status().Update(t.Context(), hm); err != nil {
+		t.Fatalf("seed legacy HostAgent machine status: %v", err)
+	}
+
+	fx.r.Agent = &hostagent.Fake{}
+
+	artifacts := hostagent.ArtifactResult{Paths: []string{"/existing/root.qcow2"}, SHA256s: []string{"sha256"}}
+	if err := fx.r.reconcileVMLifecycle(t.Context(), hm, lm.machine, mac.Derive(lc.name, lm.name), artifacts); err != nil {
+		t.Fatalf("reconcile HostAgent VM lifecycle: %v", err)
+	}
+
+	got := getMachine(t, c, lm.hm)
+	if got.Spec.ProviderID == nil || *got.Spec.ProviderID != wantProviderID {
+		t.Errorf("spec.providerID = %v, want %q", got.Spec.ProviderID, wantProviderID)
+	}
+
+	if got.Status.ProviderID == nil || *got.Status.ProviderID != wantProviderID {
+		t.Errorf("status.providerID = %v, want %q", got.Status.ProviderID, wantProviderID)
 	}
 }
 

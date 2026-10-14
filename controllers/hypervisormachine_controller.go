@@ -1307,7 +1307,10 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 		}
 
 		providerID := fmt.Sprintf("hypervisor://%s/%s", machine.Spec.ClusterName, hm.Name)
-		hm.Spec.ProviderID = &providerID
+		if err := r.ensureSpecProviderID(ctx, hm, providerID); err != nil {
+			return err
+		}
+
 		hm.Status.ProviderID = &providerID
 		markVMProvisioned(hm)
 		hm.Status.Ready = true
@@ -1376,18 +1379,14 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 			r.Recorder.Eventf(hm, corev1.EventTypeWarning, "FailedProvision", "failed to boot VM for %q: %v", machine.Name, err)
 			return fmt.Errorf("boot VM for %q: %w", machine.Name, err)
 		}
-
-		providerID := fmt.Sprintf("hypervisor://%s/%s", machine.Spec.ClusterName, hm.Name)
-		// The CAPI v1beta2 machine controller reads the provider identity
-		// from spec.providerID per the infrastructure contract, so persist it
-		// there (not just in status) or the Machine never becomes Ready.
-		hm.Spec.ProviderID = &providerID
-		if err := r.Update(ctx, hm); err != nil {
-			return fmt.Errorf("update HypervisorMachine spec.providerID: %w", err)
-		}
-
-		hm.Status.ProviderID = &providerID
 	}
+
+	providerID := fmt.Sprintf("hypervisor://%s/%s", machine.Spec.ClusterName, hm.Name)
+	if err := r.ensureSpecProviderID(ctx, hm, providerID); err != nil {
+		return err
+	}
+
+	hm.Status.ProviderID = &providerID
 
 	state, err := vm.Info(ctx)
 	if err != nil || state != ch.VMState("Running") {
@@ -1440,6 +1439,26 @@ func (r *HypervisorMachineReconciler) reconcileVMLifecycle(
 
 	if err := r.Status().Update(ctx, hm); err != nil {
 		return fmt.Errorf("update HypervisorMachine status: %w", err)
+	}
+
+	return nil
+}
+
+// ensureSpecProviderID persists the Cluster API provider identity in the
+// resource spec. Status-only identities from earlier controller versions are
+// repaired in place, without changing VM identity or disks.
+func (r *HypervisorMachineReconciler) ensureSpecProviderID(
+	ctx context.Context,
+	hm *infrastructurev1alpha1.HypervisorMachine,
+	providerID string,
+) error {
+	if hm.Spec.ProviderID != nil && *hm.Spec.ProviderID == providerID {
+		return nil
+	}
+
+	hm.Spec.ProviderID = &providerID
+	if err := r.Update(ctx, hm); err != nil {
+		return fmt.Errorf("update HypervisorMachine spec.providerID: %w", err)
 	}
 
 	return nil
