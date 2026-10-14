@@ -129,6 +129,37 @@ func TestVerifyOwnedFileRejectsInvalidInputAndOutsidePath(t *testing.T) {
 	}
 }
 
+func TestVerifyOwnedPathChecksOwnershipWithoutComparingContents(t *testing.T) {
+	root := t.TempDir()
+
+	owned := filepath.Join(root, "root.qcow2")
+	if err := os.WriteFile(owned, []byte("guest-mutated disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := VerifyOwnedPath(root, owned); err != nil {
+		t.Fatalf("VerifyOwnedPath() rejected owned regular file: %v", err)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.qcow2")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := VerifyOwnedPath(root, outside); err == nil {
+		t.Fatal("VerifyOwnedPath() accepted file outside owned root")
+	}
+
+	link := filepath.Join(root, "root-link.qcow2")
+	if err := os.Symlink(owned, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := VerifyOwnedPath(root, link); err == nil {
+		t.Fatal("VerifyOwnedPath() accepted symlink")
+	}
+}
+
 func TestVerifyOwnedFileAllowsResolvedOwnedRoot(t *testing.T) {
 	parent := t.TempDir()
 

@@ -41,7 +41,7 @@ func (b Builder) Verify(paths, checksums []string) error {
 
 // VerifyOwnedFile verifies a regular file under root against an externally supplied SHA-256.
 func VerifyOwnedFile(root, path, checksum string) error {
-	if !filepath.IsAbs(path) || len(checksum) != sha256.Size*2 {
+	if len(checksum) != sha256.Size*2 {
 		return fmt.Errorf("invalid artifact path or checksum: %q", path)
 	}
 
@@ -49,19 +49,9 @@ func VerifyOwnedFile(root, path, checksum string) error {
 		return fmt.Errorf("invalid artifact path or checksum: %q", path)
 	}
 
-	resolvedRoot, err := filepath.EvalSymlinks(root)
+	resolved, err := resolveOwnedPath(root, path)
 	if err != nil {
-		return fmt.Errorf("resolve artifact root: %w", err)
-	}
-
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return fmt.Errorf("artifact path is not an owned regular file: %q", path)
-	}
-
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil || !within(resolvedRoot, resolved) {
-		return fmt.Errorf("artifact path is not an owned regular file: %q", path)
+		return err
 	}
 
 	actual, err := fileSHA256(resolved)
@@ -74,6 +64,35 @@ func VerifyOwnedFile(root, path, checksum string) error {
 	}
 
 	return nil
+}
+
+// VerifyOwnedPath verifies that path is a regular, non-symlink file beneath root.
+func VerifyOwnedPath(root, path string) error {
+	_, err := resolveOwnedPath(root, path)
+	return err
+}
+
+func resolveOwnedPath(root, path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("invalid artifact path: %q", path)
+	}
+
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve artifact root: %w", err)
+	}
+
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("artifact path is not an owned regular file: %q", path)
+	}
+
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || !within(resolvedRoot, resolved) {
+		return "", fmt.Errorf("artifact path is not an owned regular file: %q", path)
+	}
+
+	return resolved, nil
 }
 
 func fileSHA256(path string) (string, error) {

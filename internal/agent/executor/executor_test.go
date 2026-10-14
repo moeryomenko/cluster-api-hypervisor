@@ -140,6 +140,12 @@ func mutation() hostagent.Mutation {
 	}
 }
 
+type unusedArtifactRunner struct{}
+
+func (unusedArtifactRunner) Run(context.Context, string, ...string) ([]byte, error) {
+	return nil, errors.New("unexpected artifact conversion")
+}
+
 func testExecutor(t *testing.T) (*Executor, *fakeSystemd, *inventory.Store) {
 	t.Helper()
 
@@ -324,9 +330,15 @@ func TestEnsureVMRejectsFirmwareMismatchBeforeCreate(t *testing.T) {
 		t.Fatal("EnsureVM() accepted a firmware checksum mismatch")
 	}
 
+	if got := <-requests; got != "/api/v1/vm.info" {
+		t.Fatalf("Cloud Hypervisor request = %q, want vm.info before firmware verification", got)
+	}
+
 	select {
 	case request := <-requests:
-		t.Fatalf("EnsureVM() made Cloud Hypervisor request %q before rejecting firmware", request)
+		if request == "/api/v1/vm.create" || request == "/api/v1/vm.boot" {
+			t.Fatalf("EnsureVM() made Cloud Hypervisor request %q after rejecting firmware", request)
+		}
 	default:
 	}
 }
@@ -372,6 +384,135 @@ func TestEnsureVMRecoversRunningVMWithoutMutation(t *testing.T) {
 	select {
 	case got := <-requests:
 		t.Fatalf("recovered VM made Cloud Hypervisor request %q", got)
+	default:
+	}
+}
+
+func TestEnsureVMRunningAllowsMutableRootDiskChanges(t *testing.T) {
+	executor, desired, requests := testVMExecutor(t, ch.VMState("Running"))
+	if err := executor.Store.UpsertVM(inventory.VM{
+		InstallationID: "install-a",
+		OwnerUID:       "machine-a",
+		NodeID:         "node-a",
+		Disk:           desired.Disk,
+		APISocket:      desired.APISocket,
+		VhostSocket:    desired.VhostSocket,
+		MAC:            desired.MAC,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(desired.Disk, []byte("guest changed its root filesystem"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err != nil {
+		t.Fatalf("EnsureVM() rejected a running VM's mutable root disk: %v", err)
+	}
+
+	if got := <-requests; got != "/api/v1/vm.info" {
+		t.Fatalf("Cloud Hypervisor request = %q, want vm.info only", got)
+	}
+
+	select {
+	case got := <-requests:
+		t.Fatalf("running VM recovery made unexpected Cloud Hypervisor request %q", got)
+	default:
+	}
+}
+
+func TestEnsureVMRunningStillVerifiesImmutableAdditionalDisk(t *testing.T) {
+	executor, desired, _ := testVMExecutor(t, ch.VMState("Running"))
+
+	additional := filepath.Join(executor.Artifacts.Root, "cidata.img")
+	if err := os.WriteFile(additional, []byte("cidata before boot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	desired.AdditionalDisks = []string{additional}
+	desired.AdditionalDiskSHA256s = []string{fmt.Sprintf("%x", sha256.Sum256([]byte("cidata before boot")))}
+
+	if err := os.WriteFile(additional, []byte("unexpected cidata change"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err == nil {
+		t.Fatal("EnsureVM() accepted an immutable additional-disk checksum mismatch")
+	}
+}
+
+func TestEnsureVMRunningRejectsRootDiskOutsideOwnedRoot(t *testing.T) {
+	executor, desired, _ := testVMExecutor(t, ch.VMState("Running"))
+
+	desired.Disk = filepath.Join(t.TempDir(), "outside-root.qcow2")
+	if err := os.WriteFile(desired.Disk, []byte("guest disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err == nil {
+		t.Fatal("EnsureVM() accepted a running VM root disk outside the owned artifact root")
+	}
+}
+
+func TestPrepareRootDiskReplayKeepsOriginalContentChecksum(t *testing.T) {
+	executor, _, _ := testExecutor(t)
+	root := t.TempDir()
+	executor.Artifacts = artifact.Builder{Root: root, QemuImg: "qemu-img", Run: unusedArtifactRunner{}}
+	source := filepath.Join(root, "base.qcow2")
+	disk := filepath.Join(root, "machine-a-root.qcow2")
+
+	if err := os.WriteFile(source, []byte("base image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(disk, []byte("root disk before first boot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	request := hostagent.RootDiskRequest{Name: "machine-a", SourceImage: source}
+
+	first, err := executor.PrepareRootDisk(context.Background(), mutation(), request)
+	if err != nil {
+		t.Fatalf("PrepareRootDisk() initial: %v", err)
+	}
+
+	if err := os.WriteFile(disk, []byte("root filesystem changed by the guest"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	replayed, err := executor.PrepareRootDisk(context.Background(), mutation(), request)
+	if err != nil {
+		t.Fatalf("PrepareRootDisk() replay: %v", err)
+	}
+
+	if replayed.SHA256s[0] != first.SHA256s[0] {
+		t.Errorf(
+			"replayed root disk checksum = %q, want original prepared checksum %q",
+			replayed.SHA256s[0],
+			first.SHA256s[0],
+		)
+	}
+}
+
+func TestEnsureVMStillVerifiesMutableRootDiskBeforeFirstCreate(t *testing.T) {
+	executor, desired, requests := testVMExecutor(t)
+	if err := os.WriteFile(desired.Disk, []byte("unexpected pre-boot disk change"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := executor.EnsureVM(context.Background(), mutation(), desired); err == nil {
+		t.Fatal("EnsureVM() created a VM from a root disk with a checksum mismatch")
+	}
+
+	if got := <-requests; got != "/api/v1/vm.info" {
+		t.Fatalf("Cloud Hypervisor request = %q, want vm.info before disk verification", got)
+	}
+
+	select {
+	case got := <-requests:
+		if got == "/api/v1/vm.create" || got == "/api/v1/vm.boot" {
+			t.Fatalf("EnsureVM() mutated a VM after disk verification failed: %q", got)
+		}
 	default:
 	}
 }

@@ -156,13 +156,6 @@ func (e *Executor) EnsureVM(
 	checksums := append([]string{desired.DiskSHA256}, desired.AdditionalDiskSHA256s...)
 
 	paths := append([]string{desired.Disk}, desired.AdditionalDisks...)
-	if err := e.Artifacts.Verify(paths, checksums); err != nil {
-		return hostagent.VMObserved{}, fmt.Errorf("verify VM disks: %w", err)
-	}
-
-	if err := artifact.VerifyOwnedFile(e.FirmwareRoot, desired.Firmware, desired.FirmwareSHA256); err != nil {
-		return hostagent.VMObserved{}, fmt.Errorf("verify VM firmware: %w", err)
-	}
 
 	create := func() error {
 		return api.Create(ctx, ch.VmConfig{
@@ -200,6 +193,22 @@ func (e *Executor) EnsureVM(
 		if !notCreated {
 			return hostagent.VMObserved{}, err
 		}
+	}
+
+	existingVM, inventoryErr := e.Store.GetVM(mutation.Owner.InstallationID, mutation.Owner.UID)
+
+	hasInventory := inventoryErr == nil
+	if inventoryErr != nil && !errors.Is(inventoryErr, sql.ErrNoRows) {
+		return hostagent.VMObserved{}, fmt.Errorf("load VM inventory: %w", inventoryErr)
+	}
+
+	if hasInventory && existingVM.Disk != "" && existingVM.Disk != desired.Disk {
+		return hostagent.VMObserved{}, fmt.Errorf("%w: VM root disk path changed", hostagent.ErrConflict)
+	}
+
+	verifyRootContents := !hasInventory && (notCreated || state == "Created")
+	if err := e.verifyVMArtifacts(desired, paths, checksums, verifyRootContents); err != nil {
+		return hostagent.VMObserved{}, err
 	}
 
 	if notCreated {
@@ -288,6 +297,42 @@ func (e *Executor) EnsureVM(
 	}
 
 	return observed, nil
+}
+
+// verifyVMArtifacts checks immutable boot inputs on every reconcile while
+// treating a previously booted root disk as mutable guest state. It verifies
+// the root checksum only before the first create/boot; an existing root must
+// still be an owned regular file beneath the artifact root.
+func (e *Executor) verifyVMArtifacts(
+	desired hostagent.VMDesired,
+	paths, checksums []string,
+	verifyRootContents bool,
+) error {
+	if len(paths) == 0 || len(paths) != len(checksums) {
+		return fmt.Errorf("verify VM disks: artifact paths and checksums must have equal non-zero lengths")
+	}
+
+	if verifyRootContents {
+		if err := e.Artifacts.Verify(paths, checksums); err != nil {
+			return fmt.Errorf("verify VM disks: %w", err)
+		}
+	} else {
+		if err := artifact.VerifyOwnedPath(e.Artifacts.Root, desired.Disk); err != nil {
+			return fmt.Errorf("verify VM root disk ownership: %w", err)
+		}
+
+		if len(paths) > 1 {
+			if err := e.Artifacts.Verify(paths[1:], checksums[1:]); err != nil {
+				return fmt.Errorf("verify VM additional disks: %w", err)
+			}
+		}
+	}
+
+	if err := artifact.VerifyOwnedFile(e.FirmwareRoot, desired.Firmware, desired.FirmwareSHA256); err != nil {
+		return fmt.Errorf("verify VM firmware: %w", err)
+	}
+
+	return nil
 }
 
 func waitForSocket(ctx context.Context, path string) error {
@@ -871,8 +916,8 @@ func (e *Executor) PrepareRootDisk(
 			return hostagent.ArtifactResult{}, err
 		}
 
-		if err := addArtifactChecksums(&result); err != nil {
-			return hostagent.ArtifactResult{}, err
+		if len(result.Paths) != 1 || len(result.SHA256s) != 1 {
+			return hostagent.ArtifactResult{}, fmt.Errorf("invalid completed root-disk artifact result")
 		}
 
 		return result, nil
