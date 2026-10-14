@@ -14,8 +14,9 @@
 package webhook_test
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -146,8 +147,10 @@ func TestHypervisorClusterDefaulting(t *testing.T) {
 				t.Fatalf("Default: %v", err)
 			}
 
-			if got := tt.give.Spec.Network; !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("network after Default = %#v, want %#v", got, tt.want)
+			got := tt.give.Spec.Network
+
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("defaulted spec mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

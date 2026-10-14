@@ -85,6 +85,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -854,8 +856,8 @@ func TestMachineDisksRootDiskQemuImgArgs(t *testing.T) {
 	}
 
 	wantConvert := []string{"convert", "-O", "qcow2", testBaseImage, diskPath}
-	if !reflect.DeepEqual(converts[0].args, wantConvert) {
-		t.Errorf("convert args = %v, want %v", converts[0].args, wantConvert)
+	if diff := cmp.Diff(wantConvert, converts[0].args); diff != "" {
+		t.Errorf("convert args mismatch (-want +got):\n%s", diff)
 	}
 
 	resizes := fx.qemu.qemuCalls("resize")
@@ -864,8 +866,8 @@ func TestMachineDisksRootDiskQemuImgArgs(t *testing.T) {
 	}
 
 	wantResize := []string{"resize", diskPath, fmt.Sprintf("%dM", testMachineDisk)}
-	if !reflect.DeepEqual(resizes[0].args, wantResize) {
-		t.Errorf("resize args = %v, want %v", resizes[0].args, wantResize)
+	if diff := cmp.Diff(wantResize, resizes[0].args); diff != "" {
+		t.Errorf("resize args mismatch (-want +got):\n%s", diff)
 	}
 
 	// The size probe reads the disk with the -U force-share flag so a disk
@@ -877,8 +879,8 @@ func TestMachineDisksRootDiskQemuImgArgs(t *testing.T) {
 	}
 
 	wantInfo := []string{"info", "-U", "--output=json", diskPath}
-	if !reflect.DeepEqual(infos[0].args, wantInfo) {
-		t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
+	if diff := cmp.Diff(wantInfo, infos[0].args); diff != "" {
+		t.Errorf("info args mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -981,8 +983,8 @@ func TestMachineDisksRootDiskIdempotent(t *testing.T) {
 		}
 
 		wantInfo := []string{"info", "-U", "--output=json", diskPath}
-		if !reflect.DeepEqual(infos[0].args, wantInfo) {
-			t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
+		if diff := cmp.Diff(wantInfo, infos[0].args); diff != "" {
+			t.Errorf("info args mismatch (-want +got):\n%s", diff)
 		}
 	})
 
@@ -1139,8 +1141,8 @@ func TestMachineDisksRootDiskInfoParseError(t *testing.T) {
 			}
 
 			wantInfo := []string{"info", "-U", "--output=json", diskPath}
-			if !reflect.DeepEqual(infos[0].args, wantInfo) {
-				t.Errorf("info args = %v, want %v", infos[0].args, wantInfo)
+			if diff := cmp.Diff(wantInfo, infos[0].args); diff != "" {
+				t.Errorf("info args mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

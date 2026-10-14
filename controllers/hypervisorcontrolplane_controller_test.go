@@ -87,9 +87,10 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
 
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
@@ -489,9 +490,8 @@ func TestControlPlaneMachineCreatedPerReplica(t *testing.T) {
 			Kind:     "HypervisorMachine",
 			Name:     m.Name,
 		}
-		if !reflect.DeepEqual(m.Spec.InfrastructureRef, wantRef) {
-			t.Errorf("spec.infrastructureRef = %+v, want the concrete HypervisorMachine reference %+v",
-				m.Spec.InfrastructureRef, wantRef)
+		if diff := cmp.Diff(wantRef, m.Spec.InfrastructureRef); diff != "" {
+			t.Errorf("spec.infrastructureRef mismatch (-want +got):\n%s", diff)
 		}
 
 		hm := &infrastructurev1alpha1.HypervisorMachine{}
@@ -624,12 +624,8 @@ func TestControlPlaneMachineInfraResolvedThroughMachineTemplateSpec(t *testing.T
 		Kind:     "HypervisorMachine",
 		Name:     m.Name,
 	}
-	if !reflect.DeepEqual(m.Spec.InfrastructureRef, wantRef) {
-		t.Errorf(
-			"spec.infrastructureRef = %+v, want the concrete HypervisorMachine reference %+v resolved through machineTemplate.spec.infrastructureRef",
-			m.Spec.InfrastructureRef,
-			wantRef,
-		)
+	if diff := cmp.Diff(wantRef, m.Spec.InfrastructureRef); diff != "" {
+		t.Errorf("spec.infrastructureRef mismatch (-want +got):\n%s", diff)
 	}
 
 	hm := &infrastructurev1alpha1.HypervisorMachine{}

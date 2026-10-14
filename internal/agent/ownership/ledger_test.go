@@ -3,8 +3,9 @@ package ownership
 import (
 	"errors"
 	"path/filepath"
-	"reflect"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestRegisterRetainsExplicitPredecessorOwnership(t *testing.T) {
@@ -21,8 +22,12 @@ func TestRegisterRetainsExplicitPredecessorOwnership(t *testing.T) {
 	}
 
 	loaded, err := Load(path)
-	if err != nil || !reflect.DeepEqual(loaded, ledger) {
-		t.Fatalf("Load()=%#v error=%v, want %#v", loaded, err, ledger)
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+
+	if diff := cmp.Diff(ledger, loaded); diff != "" {
+		t.Errorf("Load() result mismatch (-want +got):\n%s", diff)
 	}
 }
 

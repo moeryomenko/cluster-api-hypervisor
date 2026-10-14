@@ -39,8 +39,9 @@ package v1alpha1_test
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 
@@ -209,8 +210,8 @@ func TestHypervisorMachinePublishedPortsDeepCopyNonAliasing(t *testing.T) {
 				t.Fatal("DeepCopyObject returned the original pointer")
 			}
 
-			if !reflect.DeepEqual(copyObj, original) {
-				t.Fatalf("DeepCopyObject did not preserve the value:\ncopy:     %#v\noriginal: %#v", copyObj, original)
+			if diff := cmp.Diff(original, copyObj); diff != "" {
+				t.Errorf("DeepCopyObject result mismatch (-want +got):\n%s", diff)
 			}
 
 			// want is built from literals, so it is independent of the
@@ -219,8 +220,8 @@ func TestHypervisorMachinePublishedPortsDeepCopyNonAliasing(t *testing.T) {
 
 			tt.mutate(copyObj)
 
-			if !reflect.DeepEqual(original, want) {
-				t.Errorf("mutating the copy changed the original:\nwant: %#v\ngot:  %#v", want, original)
+			if diff := cmp.Diff(want, original); diff != "" {
+				t.Errorf("original mutation mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

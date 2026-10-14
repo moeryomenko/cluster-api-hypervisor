@@ -92,6 +92,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1092,8 +1094,8 @@ func TestConfigClusterPKISecretCreatedOnce(t *testing.T) {
 		t.Errorf("GenerateKubeletCert calls = %+v, want one call for node cp-1", fx.genCert.calls)
 	}
 
-	if !reflect.DeepEqual(fx.genCert.calls[0].pk, fixtureClusterPKI()) {
-		t.Error("GenerateKubeletCert did not receive the stored cluster PKI")
+	if diff := cmp.Diff(fixtureClusterPKI(), fx.genCert.calls[0].pk); diff != "" {
+		t.Errorf("GenerateKubeletCert cluster PKI mismatch (-want +got):\n%s", diff)
 	}
 
 	fx.reconcileConfig(t, lcfg.cfg)

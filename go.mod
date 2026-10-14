@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/godbus/dbus/v5 v5.1.0
+	github.com/google/go-cmp v0.7.0
 	github.com/spf13/pflag v1.0.10
 	golang.org/x/mod v0.40.0
 	google.golang.org/grpc v1.83.1
@@ -38,7 +39,6 @@ require (
 	github.com/go-openapi/swag v0.23.0 // indirect
 	github.com/gobuffalo/flect v1.0.3 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
-	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/pprof v0.0.0-20260709232956-b9395ee17fa0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect

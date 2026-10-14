@@ -41,6 +41,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/config"
 )
 
@@ -277,12 +279,8 @@ func TestHYPERVISOR_DNSMASQ_DoesNotAffectConfig(t *testing.T) {
 	// Compare all remaining fields via reflect.DeepEqual equivalent — here
 	// use string representation check for simplicity, or compare known fields.
 	// The two configs should be equal when the only difference is HYPERVISOR_DNSMASQ.
-	if !reflect.DeepEqual(cfgWithout, cfgWith) {
-		t.Errorf(
-			"Load() result changed when only HYPERVISOR_DNSMASQ varied:\n without: %#v\n with:    %#v\n HYPERVISOR_DNSMASQ must be ignored per REQ-002",
-			cfgWithout,
-			cfgWith,
-		)
+	if diff := cmp.Diff(cfgWith, cfgWithout); diff != "" {
+		t.Errorf("Load() result mismatch (-want +got):\n%s", diff)
 	}
 }
 

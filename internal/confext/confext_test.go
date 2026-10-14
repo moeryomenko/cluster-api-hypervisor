@@ -59,9 +59,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/moeryomenko/cluster-api-hypervisor/internal/confext"
 )
@@ -79,8 +80,8 @@ var (
 // recordedCall is one captured command invocation: the program name and the
 // exact argument list.
 type recordedCall struct {
-	name string
-	args []string
+	Name string
+	Args []string
 }
 
 // fakeRunner records every invocation and returns a canned output. When
@@ -100,7 +101,7 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte
 	argsCopy := make([]string, len(args))
 	copy(argsCopy, args)
 
-	f.calls = append(f.calls, recordedCall{name: name, args: argsCopy})
+	f.calls = append(f.calls, recordedCall{Name: name, Args: argsCopy})
 	if f.failOn > 0 && len(f.calls) == f.failOn {
 		return nil, f.err
 	}
@@ -219,12 +220,12 @@ func TestBuildRawsInvokesMksquashfsPerConfext(t *testing.T) {
 
 	want := []recordedCall{
 		{
-			name: "mksquashfs",
-			args: []string{filepath.Join(staging, "z-etcd"), filepath.Join(out, "z-etcd.raw"), "-noappend", "-all-root"},
+			Name: "mksquashfs",
+			Args: []string{filepath.Join(staging, "z-etcd"), filepath.Join(out, "z-etcd.raw"), "-noappend", "-all-root"},
 		},
 		{
-			name: "mksquashfs",
-			args: []string{
+			Name: "mksquashfs",
+			Args: []string{
 				filepath.Join(staging, "z-kubernetes-cp"),
 				filepath.Join(out, "z-kubernetes-cp.raw"),
 				"-noappend",
@@ -232,8 +233,8 @@ func TestBuildRawsInvokesMksquashfsPerConfext(t *testing.T) {
 			},
 		},
 		{
-			name: "mksquashfs",
-			args: []string{
+			Name: "mksquashfs",
+			Args: []string{
 				filepath.Join(staging, "z-kubelet-node1"),
 				filepath.Join(out, "z-kubelet-node1.raw"),
 				"-noappend",
@@ -243,11 +244,11 @@ func TestBuildRawsInvokesMksquashfsPerConfext(t *testing.T) {
 	}
 	// Invocation order is not part of the contract; compare as multisets
 	// keyed by the source tree path.
-	sort.Slice(runner.calls, func(i, j int) bool { return runner.calls[i].args[0] < runner.calls[j].args[0] })
-	sort.Slice(want, func(i, j int) bool { return want[i].args[0] < want[j].args[0] })
+	sort.Slice(runner.calls, func(i, j int) bool { return runner.calls[i].Args[0] < runner.calls[j].Args[0] })
+	sort.Slice(want, func(i, j int) bool { return want[i].Args[0] < want[j].Args[0] })
 
-	if !reflect.DeepEqual(runner.calls, want) {
-		t.Errorf("mksquashfs invocations = %+v, want %+v", runner.calls, want)
+	if diff := cmp.Diff(want, runner.calls); diff != "" {
+		t.Errorf("mksquashfs invocation mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -272,8 +273,8 @@ func TestBuildRawsReturnsRawPaths(t *testing.T) {
 	sort.Strings(got)
 	sort.Strings(want)
 
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("BuildRaws paths = %v, want %v", got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("BuildRaws paths mismatch (-want +got):\n%s", diff)
 	}
 }
 

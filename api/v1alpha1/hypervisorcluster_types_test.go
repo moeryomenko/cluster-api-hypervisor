@@ -9,9 +9,10 @@ package v1alpha1_test
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -214,8 +215,8 @@ func TestHypervisorClusterDeepCopyNonAliasing(t *testing.T) {
 				t.Fatal("DeepCopyObject returned the original pointer")
 			}
 
-			if !reflect.DeepEqual(copy, original) {
-				t.Fatalf("DeepCopyObject did not preserve the value:\ncopy:     %#v\noriginal: %#v", copy, original)
+			if diff := cmp.Diff(original, copy); diff != "" {
+				t.Errorf("DeepCopyObject result mismatch (-want +got):\n%s", diff)
 			}
 
 			// want is built from literals, so it is independent of the
@@ -224,8 +225,8 @@ func TestHypervisorClusterDeepCopyNonAliasing(t *testing.T) {
 
 			tt.mutate(copy)
 
-			if !reflect.DeepEqual(original, want) {
-				t.Errorf("mutating the copy changed the original:\nwant: %#v\ngot:  %#v", want, original)
+			if diff := cmp.Diff(want, original); diff != "" {
+				t.Errorf("original mutation mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -258,8 +259,8 @@ func TestHypervisorClusterConditionsContract(t *testing.T) {
 			cluster.SetConditions(tt.give)
 
 			got := cluster.GetConditions()
-			if !reflect.DeepEqual(got, tt.give) {
-				t.Errorf("conditions round trip mismatch:\nwant: %#v\ngot:  %#v", tt.give, got)
+			if diff := cmp.Diff(tt.give, got); diff != "" {
+				t.Errorf("conditions round trip mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
