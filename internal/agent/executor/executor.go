@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -948,16 +949,37 @@ func addArtifactChecksums(result *hostagent.ArtifactResult) error {
 
 	result.SHA256s = make([]string, 0, len(result.Paths))
 	for _, path := range result.Paths {
-		contents, err := os.ReadFile(path)
+		digest, err := digestFile(path)
 		if err != nil {
-			return fmt.Errorf("read artifact %q: %w", path, err)
+			return err
 		}
-
-		digest := sha256.Sum256(contents)
-		result.SHA256s = append(result.SHA256s, hex.EncodeToString(digest[:]))
+		result.SHA256s = append(result.SHA256s, digest)
 	}
 
 	return nil
+}
+
+// digestFile streams path through SHA-256 instead of reading it whole.
+//
+// These artifacts are disk and extension images that run to gigabytes, and the
+// agent runs on a host that also carries the VMs; buffering a multi-gigabyte
+// image to hash it makes the agent's resident set spike by that much and gets
+// it OOM-killed under memory pressure.
+func digestFile(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open artifact %q: %w", path, err)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", fmt.Errorf("digest artifact %q: %w", path, err)
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func (e *Executor) PrepareCIDATA(
@@ -1051,13 +1073,11 @@ func (e *Executor) PrepareConfext(
 
 	result := hostagent.ArtifactResult{Paths: paths}
 	for _, path := range paths {
-		contents, err := os.ReadFile(path)
+		digest, err := digestFile(path)
 		if err != nil {
 			return hostagent.ArtifactResult{}, err
 		}
-
-		digest := sha256.Sum256(contents)
-		result.SHA256s = append(result.SHA256s, hex.EncodeToString(digest[:]))
+		result.SHA256s = append(result.SHA256s, digest)
 	}
 
 	encoded, _ := json.Marshal(result)
